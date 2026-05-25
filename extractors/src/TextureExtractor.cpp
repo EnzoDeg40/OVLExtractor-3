@@ -239,6 +239,107 @@ bool sane_dimensions(std::uint32_t w, std::uint32_t h) {
     return w > 0 && w <= 8192 && h > 0 && h <= 8192;
 }
 
+// Bytes for the full mipmap chain in a block-compressed format.
+// bytes_per_block = 8 for BC1/DXT1, 16 for BC2/BC3 (DXT3/DXT5).
+std::uint32_t dxt_chain_size(std::uint32_t w, std::uint32_t h,
+                             std::uint32_t mipmaps,
+                             std::uint32_t bytes_per_block) {
+    std::uint32_t total = 0;
+    for (std::uint32_t lvl = 0; lvl < std::max(1u, mipmaps); ++lvl) {
+        std::uint32_t lw = std::max(1u, w >> lvl);
+        std::uint32_t lh = std::max(1u, h >> lvl);
+        std::uint32_t bw = std::max(1u, (lw + 3u) / 4u);
+        std::uint32_t bh = std::max(1u, (lh + 3u) / 4u);
+        total += bw * bh * bytes_per_block;
+    }
+    return total;
+}
+
+// Write DXT1/DXT3/DXT5 candidate DDS files. Caller picks visually which one
+// matches reality; mapping is then hard-coded per format code.
+void write_dxt_variants(const std::filesystem::path& out_dir,
+                        const std::string& base,
+                        const FtxHeader& h,
+                        const std::vector<std::byte>& pixels) {
+    struct V { const char* fourcc; std::uint32_t bpb; };
+    static const V variants[] = {{"DXT1", 8}, {"DXT3", 16}, {"DXT5", 16}};
+    const std::uint32_t mips = std::max(1u, h.mipmap_count);
+    for (const auto& v : variants) {
+        std::uint32_t need = dxt_chain_size(h.width, h.height, mips, v.bpb);
+        if (pixels.size() < need) continue;
+        std::vector<std::byte> sized(pixels.begin(), pixels.begin() + need);
+        auto p = out_dir / (base + "." + v.fourcc + ".dds");
+        write_dds(p, h.width, h.height, mips, v.fourcc, sized);
+    }
+}
+
+// Decode a raw A8 pixel stream (1 byte per pixel, grayscale or alpha mask)
+// into BGRA suitable for TGA output. Returns false if not enough data.
+bool decode_a8(const FtxHeader& h,
+               const std::vector<std::byte>& pixels,
+               std::vector<std::uint8_t>& bgra_out) {
+    const std::size_t n = static_cast<std::size_t>(h.width) * h.height;
+    if (pixels.size() < n) return false;
+    bgra_out.resize(n * 4);
+    for (std::size_t i = 0; i < n; ++i) {
+        std::uint8_t v = std::to_integer<std::uint8_t>(pixels[i]);
+        bgra_out[i*4+0] = v;
+        bgra_out[i*4+1] = v;
+        bgra_out[i*4+2] = v;
+        bgra_out[i*4+3] = 255;
+    }
+    return true;
+}
+
+// Write uncompressed-format candidate TGA files: A8 (grayscale), RGB565,
+// BGRA8888, RGBA8888. Helps narrow down whether the raw pixel data is
+// actually a flat bitmap rather than DXT-compressed.
+void write_uncompressed_variants(const std::filesystem::path& out_dir,
+                                 const std::string& base,
+                                 const FtxHeader& h,
+                                 const std::vector<std::byte>& pixels) {
+    const std::size_t n = static_cast<std::size_t>(h.width) * h.height;
+
+    std::vector<std::uint8_t> a8;
+    if (decode_a8(h, pixels, a8)) {
+        write_tga(out_dir / (base + ".A8.tga"), h.width, h.height, a8);
+    }
+
+    // RGB565 (2 bytes / pixel, little-endian)
+    if (pixels.size() >= n * 2) {
+        std::vector<std::uint8_t> bgra(n * 4);
+        for (std::size_t i = 0; i < n; ++i) {
+            std::uint16_t v = static_cast<std::uint16_t>(
+                std::to_integer<std::uint8_t>(pixels[i*2]) |
+                (std::to_integer<std::uint8_t>(pixels[i*2+1]) << 8));
+            std::uint8_t r = static_cast<std::uint8_t>(((v >> 11) & 0x1F) * 255 / 31);
+            std::uint8_t g = static_cast<std::uint8_t>(((v >> 5)  & 0x3F) * 255 / 63);
+            std::uint8_t b = static_cast<std::uint8_t>((v & 0x1F) * 255 / 31);
+            bgra[i*4+0] = b; bgra[i*4+1] = g; bgra[i*4+2] = r; bgra[i*4+3] = 255;
+        }
+        write_tga(out_dir / (base + ".RGB565.tga"), h.width, h.height, bgra);
+    }
+
+    // BGRA8888 (4 bytes / pixel, direct copy)
+    if (pixels.size() >= n * 4) {
+        std::vector<std::uint8_t> bgra(n * 4);
+        for (std::size_t i = 0; i < n * 4; ++i) {
+            bgra[i] = std::to_integer<std::uint8_t>(pixels[i]);
+        }
+        write_tga(out_dir / (base + ".BGRA.tga"), h.width, h.height, bgra);
+
+        // RGBA8888 (swap R and B)
+        std::vector<std::uint8_t> rgba(n * 4);
+        for (std::size_t i = 0; i < n; ++i) {
+            rgba[i*4+0] = bgra[i*4+2];
+            rgba[i*4+1] = bgra[i*4+1];
+            rgba[i*4+2] = bgra[i*4+0];
+            rgba[i*4+3] = bgra[i*4+3];
+        }
+        write_tga(out_dir / (base + ".RGBA.tga"), h.width, h.height, rgba);
+    }
+}
+
 bool extract_one(const OvlParser& parser,
                  OvlSide side,
                  std::size_t lf_index,
@@ -308,7 +409,7 @@ bool extract_one(const OvlParser& parser,
     rawf.write(reinterpret_cast<const char*>(raw.data()),
                static_cast<std::streamsize>(raw.size()));
 
-    // Format-8 (indexed8 + palette) → decode to TGA. Other formats: best-effort.
+    // Format-8 (indexed8 + palette) → decode to TGA.
     if (h.format == 8) {
         std::vector<std::uint8_t> bgra;
         if (decode_indexed8(parser, h, raw, bgra)) {
@@ -316,13 +417,28 @@ bool extract_one(const OvlParser& parser,
             write_tga(tga_out, h.width, h.height, bgra);
         }
     } else {
-        // For non-format-8 textures, attempt a DDS guess (DXT5) - may need fix.
-        auto dds_out = out_dir / (base + ".dds");
-        constexpr std::size_t kHeaderGuess = 76;
-        if (raw.size() > kHeaderGuess) {
-            std::vector<std::byte> pixels(raw.begin() + kHeaderGuess, raw.end());
-            write_dds(dds_out, h.width, h.height,
-                      std::max(1u, h.mipmap_count), "DXT5", pixels);
+        // Other formats: pixel data lives at pixel_internal_offset.
+        // mipmap_count is unreliable for non-format-8 (header layout differs);
+        // use level 0 only.
+        FtxHeader h0 = h;
+        h0.mipmap_count = 1;
+        std::uint32_t cap = h0.width * h0.height * 4u;
+        auto pixels = read_pixels(parser, h0.pixel_internal_offset, cap);
+        if (pixels.empty()) {
+            ctx.log("skip (no pixel data at offset " +
+                    std::to_string(h0.pixel_internal_offset) + "): " + symbol);
+        } else if (h.format == 7) {
+            // Validated empirically: format=7 is A8 grayscale (alpha mask).
+            // Game applies tint at render time; raw texture is monochrome.
+            std::vector<std::uint8_t> a8;
+            if (decode_a8(h0, pixels, a8)) {
+                write_tga(out_dir / (base + ".tga"), h0.width, h0.height, a8);
+            }
+        } else {
+            // format=5, 6, 9 still unidentified: emit DXT and uncompressed
+            // candidates so they can be picked visually.
+            write_dxt_variants(out_dir, base, h0, pixels);
+            write_uncompressed_variants(out_dir, base, h0, pixels);
         }
     }
 
