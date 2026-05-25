@@ -102,54 +102,6 @@ std::vector<std::byte> read_pixels(const OvlParser& parser,
     return buf;
 }
 
-void write_le_u32(std::ostream& o, std::uint32_t v) {
-    char b[4] = {static_cast<char>(v & 0xFF),
-                 static_cast<char>((v >> 8) & 0xFF),
-                 static_cast<char>((v >> 16) & 0xFF),
-                 static_cast<char>((v >> 24) & 0xFF)};
-    o.write(b, 4);
-}
-
-// Write a minimal DDS file. Assumes DXT compression; user can re-interpret
-// if the format guess is wrong. Reference: Microsoft DDS_HEADER spec.
-void write_dds(const std::filesystem::path& path,
-               std::uint32_t width,
-               std::uint32_t height,
-               std::uint32_t mipmap_count,
-               const std::string& fourcc,
-               const std::vector<std::byte>& pixels) {
-    std::ofstream o(path, std::ios::binary);
-    if (!o) return;
-
-    o.write("DDS ", 4);
-    write_le_u32(o, 124);  // dwSize
-    // Flags: CAPS | HEIGHT | WIDTH | PIXELFORMAT | LINEARSIZE | MIPMAPCOUNT
-    std::uint32_t flags = 0x1 | 0x2 | 0x4 | 0x1000 | 0x80000 | 0x20000;
-    write_le_u32(o, flags);
-    write_le_u32(o, height);
-    write_le_u32(o, width);
-    write_le_u32(o, static_cast<std::uint32_t>(pixels.size()));   // pitchOrLinearSize
-    write_le_u32(o, 0);                                            // depth
-    write_le_u32(o, mipmap_count);
-    for (int i = 0; i < 11; ++i) write_le_u32(o, 0);              // reserved1[11]
-
-    // PixelFormat (32 bytes)
-    write_le_u32(o, 32);
-    write_le_u32(o, 0x4);                                         // FOURCC flag
-    o.write(fourcc.data(), 4);
-    for (int i = 0; i < 5; ++i) write_le_u32(o, 0);
-
-    // Caps
-    write_le_u32(o, 0x1000 | 0x400000 | 0x8);                     // TEXTURE | MIPMAP | COMPLEX
-    write_le_u32(o, 0);
-    write_le_u32(o, 0);
-    write_le_u32(o, 0);
-    write_le_u32(o, 0);                                           // reserved2
-
-    o.write(reinterpret_cast<const char*>(pixels.data()),
-            static_cast<std::streamsize>(pixels.size()));
-}
-
 void write_json_sidecar(const std::filesystem::path& path,
                         const FtxHeader& h,
                         const std::string& symbol,
@@ -239,40 +191,6 @@ bool sane_dimensions(std::uint32_t w, std::uint32_t h) {
     return w > 0 && w <= 8192 && h > 0 && h <= 8192;
 }
 
-// Bytes for the full mipmap chain in a block-compressed format.
-// bytes_per_block = 8 for BC1/DXT1, 16 for BC2/BC3 (DXT3/DXT5).
-std::uint32_t dxt_chain_size(std::uint32_t w, std::uint32_t h,
-                             std::uint32_t mipmaps,
-                             std::uint32_t bytes_per_block) {
-    std::uint32_t total = 0;
-    for (std::uint32_t lvl = 0; lvl < std::max(1u, mipmaps); ++lvl) {
-        std::uint32_t lw = std::max(1u, w >> lvl);
-        std::uint32_t lh = std::max(1u, h >> lvl);
-        std::uint32_t bw = std::max(1u, (lw + 3u) / 4u);
-        std::uint32_t bh = std::max(1u, (lh + 3u) / 4u);
-        total += bw * bh * bytes_per_block;
-    }
-    return total;
-}
-
-// Write DXT1/DXT3/DXT5 candidate DDS files. Caller picks visually which one
-// matches reality; mapping is then hard-coded per format code.
-void write_dxt_variants(const std::filesystem::path& out_dir,
-                        const std::string& base,
-                        const FtxHeader& h,
-                        const std::vector<std::byte>& pixels) {
-    struct V { const char* fourcc; std::uint32_t bpb; };
-    static const V variants[] = {{"DXT1", 8}, {"DXT3", 16}, {"DXT5", 16}};
-    const std::uint32_t mips = std::max(1u, h.mipmap_count);
-    for (const auto& v : variants) {
-        std::uint32_t need = dxt_chain_size(h.width, h.height, mips, v.bpb);
-        if (pixels.size() < need) continue;
-        std::vector<std::byte> sized(pixels.begin(), pixels.begin() + need);
-        auto p = out_dir / (base + "." + v.fourcc + ".dds");
-        write_dds(p, h.width, h.height, mips, v.fourcc, sized);
-    }
-}
-
 // Decode a raw A8 pixel stream (1 byte per pixel, grayscale or alpha mask)
 // into BGRA suitable for TGA output. Returns false if not enough data.
 bool decode_a8(const FtxHeader& h,
@@ -289,55 +207,6 @@ bool decode_a8(const FtxHeader& h,
         bgra_out[i*4+3] = 255;
     }
     return true;
-}
-
-// Write uncompressed-format candidate TGA files: A8 (grayscale), RGB565,
-// BGRA8888, RGBA8888. Helps narrow down whether the raw pixel data is
-// actually a flat bitmap rather than DXT-compressed.
-void write_uncompressed_variants(const std::filesystem::path& out_dir,
-                                 const std::string& base,
-                                 const FtxHeader& h,
-                                 const std::vector<std::byte>& pixels) {
-    const std::size_t n = static_cast<std::size_t>(h.width) * h.height;
-
-    std::vector<std::uint8_t> a8;
-    if (decode_a8(h, pixels, a8)) {
-        write_tga(out_dir / (base + ".A8.tga"), h.width, h.height, a8);
-    }
-
-    // RGB565 (2 bytes / pixel, little-endian)
-    if (pixels.size() >= n * 2) {
-        std::vector<std::uint8_t> bgra(n * 4);
-        for (std::size_t i = 0; i < n; ++i) {
-            std::uint16_t v = static_cast<std::uint16_t>(
-                std::to_integer<std::uint8_t>(pixels[i*2]) |
-                (std::to_integer<std::uint8_t>(pixels[i*2+1]) << 8));
-            std::uint8_t r = static_cast<std::uint8_t>(((v >> 11) & 0x1F) * 255 / 31);
-            std::uint8_t g = static_cast<std::uint8_t>(((v >> 5)  & 0x3F) * 255 / 63);
-            std::uint8_t b = static_cast<std::uint8_t>((v & 0x1F) * 255 / 31);
-            bgra[i*4+0] = b; bgra[i*4+1] = g; bgra[i*4+2] = r; bgra[i*4+3] = 255;
-        }
-        write_tga(out_dir / (base + ".RGB565.tga"), h.width, h.height, bgra);
-    }
-
-    // BGRA8888 (4 bytes / pixel, direct copy)
-    if (pixels.size() >= n * 4) {
-        std::vector<std::uint8_t> bgra(n * 4);
-        for (std::size_t i = 0; i < n * 4; ++i) {
-            bgra[i] = std::to_integer<std::uint8_t>(pixels[i]);
-        }
-        write_tga(out_dir / (base + ".BGRA.tga"), h.width, h.height, bgra);
-
-        // RGBA8888 (swap R and B)
-        std::vector<std::uint8_t> rgba(n * 4);
-        for (std::size_t i = 0; i < n; ++i) {
-            rgba[i*4+0] = bgra[i*4+2];
-            rgba[i*4+1] = bgra[i*4+1];
-            rgba[i*4+2] = bgra[i*4+0];
-            rgba[i*4+3] = bgra[i*4+3];
-        }
-        write_tga(out_dir / (base + ".RGBA.tga"), h.width, h.height, rgba);
-    }
 }
 
 bool extract_one(const OvlParser& parser,
@@ -417,28 +286,29 @@ bool extract_one(const OvlParser& parser,
             write_tga(tga_out, h.width, h.height, bgra);
         }
     } else {
-        // Other formats: pixel data lives at pixel_internal_offset.
-        // mipmap_count is unreliable for non-format-8 (header layout differs);
-        // use level 0 only.
+        // Non-format-8 (codes 4, 5, 6, 7, 9): all empirically validated as A8
+        // grayscale alpha masks. The format_code appears to encode a size
+        // class (texture is 2^code × 2^code), not a pixel layout — the game
+        // shader applies tint to the monochrome mask at render time.
+        // Pixel data lives at pixel_internal_offset (separate chunk from the
+        // header). mipmap_count read from the header is garbage for these
+        // formats, so we just emit level 0.
         FtxHeader h0 = h;
         h0.mipmap_count = 1;
-        std::uint32_t cap = h0.width * h0.height * 4u;
+        std::uint32_t cap = h0.width * h0.height;
         auto pixels = read_pixels(parser, h0.pixel_internal_offset, cap);
         if (pixels.empty()) {
             ctx.log("skip (no pixel data at offset " +
                     std::to_string(h0.pixel_internal_offset) + "): " + symbol);
-        } else if (h.format == 7) {
-            // Validated empirically: format=7 is A8 grayscale (alpha mask).
-            // Game applies tint at render time; raw texture is monochrome.
+        } else {
             std::vector<std::uint8_t> a8;
             if (decode_a8(h0, pixels, a8)) {
                 write_tga(out_dir / (base + ".tga"), h0.width, h0.height, a8);
+            } else {
+                ctx.log("skip (insufficient A8 data " +
+                        std::to_string(pixels.size()) + "/" +
+                        std::to_string(cap) + "): " + symbol);
             }
-        } else {
-            // format=5, 6, 9 still unidentified: emit DXT and uncompressed
-            // candidates so they can be picked visually.
-            write_dxt_variants(out_dir, base, h0, pixels);
-            write_uncompressed_variants(out_dir, base, h0, pixels);
         }
     }
 
