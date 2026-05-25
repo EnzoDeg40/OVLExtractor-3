@@ -41,7 +41,8 @@ Each side has:
 | `ftt`  | TextureType?                     | Treated as ftx (untested)       |
 | `gsi`  | Graphic Sprite Info (atlas rect) | Fully understood (this doc)     |
 | `psi`  | Particle Sprite Info             | Pre-resolved only, not extracted|
-| `sid`  | Sound (.wav)                     | Extracted via `SoundExtractor`  |
+| `snd`  | Sound (.wav)                     | Extracted via `SoundExtractor`  |
+| `sid`  | Sound sub-record inside `svd`/`phd` | Pre-resolved only, not a top-level loader |
 | `mdl`  | Model (3D geometry)              | Not yet attempted               |
 | `mms`  | Morphable Mesh                   | Not yet attempted               |
 | `svd`, `was`, `asd`, `vwg`, `ent` | Various game data | Listed by parser, not extracted |

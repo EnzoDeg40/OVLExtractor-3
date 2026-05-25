@@ -29,7 +29,8 @@ struct SidSoundHeader {
     std::uint32_t byterate;
     std::uint16_t blockalign;
     std::uint16_t bitspersample;
-    // 64 bytes of unknown metadata follow before channel1.
+    // 44 bytes of unknown metadata (unk1+pad, unk2-unk11) at offsets 16..60.
+    std::int32_t  loop;               // offset 60: 0 = one-shot, 1 = loop
     std::uint32_t channel1;           // internal offset to PCM channel 1
     std::int32_t  channel1_size;
     std::uint32_t channel2;           // internal offset to PCM channel 2 (0 if mono)
@@ -43,10 +44,11 @@ bool read_sid_header(BinaryReader& r, SidSoundHeader& h) {
     h.byterate      = r.read_u32();
     h.blockalign    = r.read_u16();
     h.bitspersample = r.read_u16();
-    // After fmt (16 bytes) the struct has 48 bytes of unknown metadata
-    // (unk1+pad, unk2-unk11, loop) before reaching channel1 at offset 64.
-    // Skipping 48 puts us exactly at channel1. PCM data follows at offset 80.
-    r.skip(48);
+    // After fmt (16 bytes), 44 bytes of unknown metadata
+    // (unk1+pad, unk2-unk11) at offsets 16..60, then `loop` at offset 60,
+    // then channel1 at offset 64. PCM data follows at offset 80.
+    r.skip(44);
+    h.loop          = r.read_i32();
     h.channel1      = r.read_u32();
     h.channel1_size = r.read_i32();
     h.channel2      = r.read_u32();
@@ -76,18 +78,52 @@ void write_le_u16(std::ostream& o, std::uint16_t v) {
     o.write(b, 2);
 }
 
+// Forward-loop `smpl` chunk per the WAV sampler-data spec
+// (https://www.recordingblogs.com/wiki/sample-chunk-of-a-wave-file).
+// Total payload = 36 (header) + 24 (one loop) = 60 bytes.
+void write_smpl_chunk(std::ostream& o,
+                      std::uint32_t loop_start_sample,
+                      std::uint32_t loop_end_sample,
+                      std::uint32_t samplerate) {
+    // Sample period = 1e9 / samplerate, expressed in nanoseconds.
+    std::uint32_t sample_period =
+        samplerate ? static_cast<std::uint32_t>(1000000000ULL / samplerate) : 0u;
+
+    o.write("smpl", 4);
+    write_le_u32(o, 36u + 24u);   // chunk size
+    write_le_u32(o, 0);           // manufacturer
+    write_le_u32(o, 0);           // product
+    write_le_u32(o, sample_period);
+    write_le_u32(o, 60);          // MIDI unity note (middle C)
+    write_le_u32(o, 0);           // MIDI pitch fraction
+    write_le_u32(o, 0);           // SMPTE format
+    write_le_u32(o, 0);           // SMPTE offset
+    write_le_u32(o, 1);           // num sample loops
+    write_le_u32(o, 0);           // sampler-specific data size
+    // Loop #0:
+    write_le_u32(o, 0);           // cue point id
+    write_le_u32(o, 0);           // type: 0 = forward
+    write_le_u32(o, loop_start_sample);
+    write_le_u32(o, loop_end_sample);
+    write_le_u32(o, 0);           // fractional sample
+    write_le_u32(o, 0);           // play count (0 = infinite)
+}
+
 void write_wav(const std::filesystem::path& out,
                std::uint16_t numchannels,
                std::uint32_t samplerate,
                std::uint16_t bitspersample,
-               const std::vector<std::byte>& pcm) {
+               const std::vector<std::byte>& pcm,
+               bool with_loop) {
     std::ofstream o(out, std::ios::binary);
     if (!o) throw OvlError("SoundExtractor: cannot write " + out.string());
 
     std::uint16_t blockalign = static_cast<std::uint16_t>(numchannels * (bitspersample / 8));
     std::uint32_t byterate   = samplerate * blockalign;
     std::uint32_t data_size  = static_cast<std::uint32_t>(pcm.size());
-    std::uint32_t riff_size  = 36 + data_size;
+
+    std::uint32_t smpl_bytes = with_loop ? (8u + 60u) : 0u;  // header + payload
+    std::uint32_t riff_size  = 36u + data_size + smpl_bytes;
 
     o.write("RIFF", 4);
     write_le_u32(o, riff_size);
@@ -106,6 +142,12 @@ void write_wav(const std::filesystem::path& out,
     write_le_u32(o, data_size);
     o.write(reinterpret_cast<const char*>(pcm.data()),
             static_cast<std::streamsize>(pcm.size()));
+
+    if (with_loop) {
+        std::uint32_t total_samples = blockalign ? data_size / blockalign : 0u;
+        std::uint32_t end_sample    = total_samples > 0 ? total_samples - 1u : 0u;
+        write_smpl_chunk(o, 0u, end_sample, samplerate);
+    }
 }
 
 // Read raw PCM bytes from the OVL file. The channel offset is an internal
@@ -199,11 +241,19 @@ bool extract_one(const OvlParser& parser,
         return false;
     }
 
-    write_wav(out_path, h.numchannels, h.samplerate, h.bitspersample, pcm);
+    // The SidSound `loop` field is a boolean: 0 = one-shot, 1 = loop the
+    // whole sample. Empirically verified on Sounds.{common,unique}.ovl —
+    // 276 zeros / 58 ones; all `loop=1` entries are ambient/continuous SFX
+    // (water, hums, lava, gears, hydraulics, …). When set, we emit a
+    // standard forward-loop `smpl` chunk spanning the entire sample so
+    // tools like Audacity / SoundForge pick it up.
+    bool emit_loop = (h.loop == 1);
+    write_wav(out_path, h.numchannels, h.samplerate, h.bitspersample, pcm, emit_loop);
     ctx.log("wrote " + out_path.string() + " (" +
             std::to_string(pcm.size()) + " bytes PCM, " +
             std::to_string(h.numchannels) + "ch @ " +
-            std::to_string(h.samplerate) + "Hz)");
+            std::to_string(h.samplerate) + "Hz" +
+            (emit_loop ? ", looping" : "") + ")");
     return true;
 }
 

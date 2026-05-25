@@ -167,12 +167,18 @@ At `loaderreference.datapointer` lies an 80-byte header containing:
 
 - `WAVE_FORMAT_PCM` (16 bytes): tag, channels, sample rate, byte rate,
   block-align, bits per sample
-- 48 bytes of unknown metadata (loop, volumes, …)
+- 44 bytes of unknown metadata (volumes, mix params, …)
+- `loop` (4 bytes, i32 at offset 60): boolean — 0 = one-shot, 1 = loop
 - `channel1` / `channel1_size` / `channel2` / `channel2_size` — internal
   offsets to the raw PCM payload(s)
 
 For stereo, the two channels are stored separately and we interleave them to
 `LRLRLR…` to produce a standard stereo WAV.
+
+When `loop == 1`, a standard `smpl` chunk is appended to the WAV with a
+single forward loop covering the entire sample. Audacity, SoundForge, and
+most DAWs read this automatically. Empirically 58/334 sounds in
+`Sounds.common.ovl` are looping (ambient SFX: water, hums, lava, gears).
 
 ### FlexiTexture (`ftx`)
 
