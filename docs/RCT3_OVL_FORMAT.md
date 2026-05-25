@@ -229,16 +229,103 @@ linkedfiles. For tex-backed atlases that's the wrong table; you need
   a non-square aspect applied at render time.
 
 
-## 7. What's still open
+## 7. MMS — 3D mesh (partially RE'd, positions BROKEN)
 
-- **tex format decode** — the big blocker. Cracking this would unlock
-  3679 individual sprites from the existing AtlasExtractor.
-- **mdl / mms loaders** — geometry not attempted. cobra-tools may help
-  for shared bits (vertex format conventions) even if RCT3-specific
-  parts differ.
-- **Texture atlas auto-split via UV coords** — alternative path if tex
-  decoding remains stuck. The mdl/mms vertex format includes UVs that
-  reference atlases; in principle we could derive the same rects gsi
-  gives us, but doing so via 3D geometry is much more work.
-- **The 5 stub textures** could be filtered out at extract time (they
-  pollute the JSON sidecar count). Low priority.
+The `mms` loader holds morphable meshes for animals, characters, and ride
+cars. Indices and UVs decode correctly; **vertex positions do not**.
+
+### 7.1 MMS header (40 bytes at datapointer)
+
+```
++0  u32  vertex_count
++4  u32  index_count                — count of u16 indices, /3 = triangle count
++8  u32  algo_unknown_1             — "lower for less vertices, can't be 0,
+                                       vertices leak if wrong" (legacy comment).
+                                       Probably controls position decode but
+                                       its exact role is unknown.
++12 u32  algo_unknown_2             — usually == unknown_1
++16 u32  type_flag                  — usually 0, 1 on some attachments
++20 u32  morph_count                — number of morph animations (≥1 even for
+                                       "static" meshes)
++24 u32  vertex_uv_offset           — points to base vertex+UV buffer (12B/vtx)
++28 u32  index_offset               — points to u16 triangle list
++32 u32  unknown_2                  — seen 0
++36 u32  morph_data_offset          — points to morph descriptors (64B each)
+```
+
+### 7.2 Base vertex/UV buffer (12 bytes per vertex)
+
+```
++0 u16  unknown_a       — possibly bone or morph index
++2 u16  unknown_b
++4 float  U             — texture U in [0, 1]
++8 float  V             — texture V in [0, 1]
+```
+
+UVs work — they extract cleanly and match expected ranges.
+
+### 7.3 Morph descriptor (64 bytes per morph)
+
+```
++0   32 bytes unknown
++32  u32 name_ptr           — pointer to morph name string (e.g. "1Swim")
++36  u32 times_count        — number of keyframes
++40  u32 times_offset       — pointer to keyframe timings list
++44  u32 positions_offset   — pointer to per-keyframe vertex positions ← KEY
++48  u32 attachment_offset
++52  12 bytes unknown
+```
+
+Morph 0 of any mesh is typically the "base" or "rest" animation — what we'd
+want for a static OBJ export. Each morph holds `times_count` keyframes.
+
+### 7.4 Why positions don't work
+
+The `MorhpMeshVertex` struct in `OVLExtractor-2/SFStructs.h:37` declares
+3 × uint8 per vertex (so 3 bytes per vertex per keyframe). We tried:
+
+- int8 / 127 (assuming signed normalized) → values in [-1, 1] but geometry
+  is incoherent (random-looking polygons in Preview)
+- uint8 / 255 (unsigned normalized) → same result
+- 4-byte stride (3 position + 1 padding) → also incoherent
+- 4-byte stride with shared-prefix observation (adjacent verts identical) →
+  still incoherent
+
+Adjacent vertices DO share leading bytes on disk, consistent with a smooth
+mesh having close-together vertices. But the indices then produce
+triangles whose actual 3D positions are scrambled.
+
+Possible explanations we did not get to test:
+- **Packed 10-bit per component** in u32 (DEC10/SNORM10, common in
+  GPU vertex compression) — would fit 3× 10-bit + 2-bit padding in 4 bytes
+- **Per-keyframe scale/bias header** before the positions — the
+  "Algorithm Unknown 1" / "Algorithm Unknown 2" header fields might
+  contain a scale factor
+- **Z-order swizzled** indices into a separate position table
+- **Compressed delta from a base pose** stored elsewhere (per-loader or
+  in a parent SID/SVD block)
+
+The legacy OVLExtractor-2 explicitly left position decoding commented out
+(`Form1.h:2222-2235`) — they couldn't figure it out either. Cobra-tools
+has no RCT3 mesh support.
+
+### 7.5 What ModelExtractor currently outputs
+
+- Valid OBJ structure
+- Correct topology (faces reference correct vertex indices)
+- Correct UVs (`vt` lines match in-game UV mapping)
+- **Incorrect vertex positions** (cosmetically wrong, mesh appears shattered)
+
+To actually use the output, someone would need to crack the position
+encoding. Until then `ovlextract -t model` produces files that load but
+don't look like anything in particular.
+
+
+## 8. What's still open
+
+- **tex texture format decode** — would unlock 3679 atlas sprites
+- **mms position decode** — would unlock readable 3D meshes
+- **Texture/material linking** for mms — once positions work, link to ftx
+  via parent svd/phd loaders for textured OBJ exports
+- **The 5 stub textures** could be filtered out at extract time
+- **Dice vertical stretch** — minor cosmetic question, not investigated

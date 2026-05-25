@@ -1,6 +1,7 @@
 add_library(ovlextractors STATIC
     src/AtlasExtractor.cpp
     src/DumpExtractor.cpp
+    src/ModelExtractor.cpp
     src/SoundExtractor.cpp
     src/TextureExtractor.cpp
 )
