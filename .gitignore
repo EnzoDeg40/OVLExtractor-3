@@ -1,0 +1,83 @@
+# Build outputs
+build/
+build-*/
+cmake-build-*/
+out/
+install/
+_deps/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+Makefile
+CTestTestfile.cmake
+compile_commands.json
+
+# Test outputs
+tests/external/Assets
+tests/data/golden/*.txt
+Testing/
+
+# Editor / IDE
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.user
+*.suo
+*.sln.docstates
+
+# Binaries and object files
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.app
+
+# Coverage / sanitizers
+*.gcda
+*.gcno
+*.gcov
+coverage/
+*.profraw
+*.profdata
+
+# Extracted RCT3 assets (user data, not source)
+extracted/
+*.ovltex
+*.wav
+*.tga
+*.dds
+*.png
+*.jpg
+*.bmp
+
+# Generated docs
+docs/_build/
+docs/html/
+docs/xml/
+
+# Python (if anyone adds tooling)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Temporary
+*.tmp
+*.log
+*.bak
+.cache/
