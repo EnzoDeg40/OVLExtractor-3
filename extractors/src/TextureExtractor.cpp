@@ -192,8 +192,10 @@ void write_tga(const std::filesystem::path& path,
 }
 
 // Decode format=8 (indexed8 + palette) into BGRA pixels.
-// Palette is 256 entries × 4 bytes. Observed byte order in palette: A R G B
-// (so palette[i*4+0]=A, +1=R, +2=G, +3=B). TGA needs B G R A.
+// Palette is 256 entries × 4 bytes. Byte order: B G R A (matches TGA pixel
+// order, so we copy through directly). Empirically validated against
+// Carcass.common.ovl — earlier RGB-first reading produced blue-tinted output
+// because brown (139,69,19) was rendered as (19,69,139).
 bool decode_indexed8(const OvlParser& parser,
                      const FtxHeader& h,
                      const std::vector<std::byte>& raw_header_block,
@@ -214,17 +216,16 @@ bool decode_indexed8(const OvlParser& parser,
         indices[i] = pr_reader.read_u8();
     }
 
-    // Palette starts at offset 64 in the header block. Byte order observed
-    // empirically: byte0=R, byte1=G, byte2=B, byte3=unused/padding.
+    // Palette starts at offset 64 in the header block. Byte order: B G R A.
     // Index 0 is treated as chroma-key transparent (alpha=0), all other
-    // indices are opaque - common pattern in early-2000s palette textures.
+    // indices are opaque — common pattern in early-2000s palette textures.
     const std::byte* pal = raw_header_block.data() + kPaletteOffset;
     bgra_out.resize(pixels * 4);
     for (std::size_t i = 0; i < pixels; ++i) {
         std::uint8_t idx = indices[i];
-        std::uint8_t r = std::to_integer<std::uint8_t>(pal[idx * 4 + 0]);
+        std::uint8_t b = std::to_integer<std::uint8_t>(pal[idx * 4 + 0]);
         std::uint8_t g = std::to_integer<std::uint8_t>(pal[idx * 4 + 1]);
-        std::uint8_t b = std::to_integer<std::uint8_t>(pal[idx * 4 + 2]);
+        std::uint8_t r = std::to_integer<std::uint8_t>(pal[idx * 4 + 2]);
         std::uint8_t a = (idx == 0) ? 0 : 255;
         bgra_out[i * 4 + 0] = b;
         bgra_out[i * 4 + 1] = g;
