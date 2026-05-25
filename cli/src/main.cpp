@@ -50,8 +50,10 @@ int do_dump(const ovl::OvlParser& p,
         ctx.log = [](std::string_view m) { std::cerr << "[dump] " << m << "\n"; };
     }
     auto r = dump.extract(p, ctx);
-    std::cout << "dump: " << r.files_written << " file(s) written, "
-              << r.errors << " error(s)\n";
+    if (r.files_written > 0 || r.errors > 0){
+        std::cout << "dump: " << r.files_written << " file(s) written, "
+                << r.errors << " error(s)\n";
+    }
     return r.errors == 0 ? 0 : 2;
 }
 
@@ -67,8 +69,10 @@ int do_extract_sound(const ovl::OvlParser& p,
         ctx.log = [](std::string_view m) { std::cerr << "[sound] " << m << "\n"; };
     }
     auto r = snd.extract(p, ctx);
-    std::cout << "sound: " << r.files_written << " .wav written, "
-              << r.errors << " error(s)\n";
+    if (r.files_written > 0 || r.errors > 0){
+        std::cout << "sound: " << r.files_written << " .wav written, "
+        << r.errors << " error(s)\n";
+    }
     return r.errors == 0 ? 0 : 2;
 }
 
@@ -84,8 +88,10 @@ int do_extract_texture(const ovl::OvlParser& p,
         ctx.log = [](std::string_view m) { std::cerr << "[texture] " << m << "\n"; };
     }
     auto r = tex.extract(p, ctx);
-    std::cout << "texture: " << r.files_written << " texture(s) written, "
-              << r.errors << " error(s)\n";
+    if (r.files_written > 0 || r.errors > 0){
+        std::cout << "texture: " << r.files_written << " texture(s) written, "
+                << r.errors << " error(s)\n";
+    }
     return r.errors == 0 ? 0 : 2;
 }
 
@@ -101,8 +107,10 @@ int do_extract_atlas(const ovl::OvlParser& p,
         ctx.log = [](std::string_view m) { std::cerr << "[atlas] " << m << "\n"; };
     }
     auto r = atl.extract(p, ctx);
-    std::cout << "atlas: " << r.files_written << " sprite(s) written, "
-              << r.errors << " error(s)\n";
+    if (r.files_written > 0 || r.errors > 0){
+        std::cout << "atlas: " << r.files_written << " sprite(s) written, "
+                << r.errors << " error(s)\n";
+    }
     return r.errors == 0 ? 0 : 2;
 }
 
@@ -118,8 +126,10 @@ int do_extract_model(const ovl::OvlParser& p,
         ctx.log = [](std::string_view m) { std::cerr << "[model] " << m << "\n"; };
     }
     auto r = m.extract(p, ctx);
-    std::cout << "model: " << r.files_written << " mesh(es) written, "
-              << r.errors << " error(s)\n";
+    if (r.files_written > 0 || r.errors > 0){
+        std::cout << "model: " << r.files_written << " mesh(es) written, "
+                << r.errors << " error(s)\n";
+    }
     return r.errors == 0 ? 0 : 2;
 }
 
