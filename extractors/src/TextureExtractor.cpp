@@ -68,40 +68,6 @@ std::string sanitize(std::string s) {
     return s;
 }
 
-// Pull pixel bytes from the OVL file starting at the given internal offset,
-// reading up to max_bytes (or until the containing block ends, whichever first).
-std::vector<std::byte> read_pixels(const OvlParser& parser,
-                                   std::uint32_t internal_offset,
-                                   std::uint32_t max_bytes) {
-    std::vector<std::byte> buf;
-    auto pr = parser.offset_to_position(internal_offset);
-    if (!pr.found) return buf;
-
-    // Find the containing block to clamp read size to its end.
-    std::uint32_t bytes_available = max_bytes;
-    const auto& d = parser.side(pr.currentOVL);
-    for (std::size_t i = 0; i < d.chunks.size(); ++i) {
-        for (const auto& blk : d.chunks[i].blocks) {
-            if (internal_offset >= blk.internal_offset &&
-                internal_offset < blk.internal_offset + blk.size) {
-                std::uint32_t in_block = internal_offset - blk.internal_offset;
-                std::uint32_t left = blk.size - in_block;
-                bytes_available = std::min(bytes_available, left);
-                break;
-            }
-        }
-    }
-    if (bytes_available == 0) return buf;
-
-    BinaryReader r(d.ovlname);
-    r.seek(pr.position);
-    buf.resize(bytes_available);
-    for (std::uint32_t i = 0; i < bytes_available; ++i) {
-        buf[i] = std::byte{r.read_u8()};
-    }
-    return buf;
-}
-
 void write_json_sidecar(const std::filesystem::path& path,
                         const FtxHeader& h,
                         const std::string& symbol,
@@ -191,24 +157,6 @@ bool sane_dimensions(std::uint32_t w, std::uint32_t h) {
     return w > 0 && w <= 8192 && h > 0 && h <= 8192;
 }
 
-// Decode a raw A8 pixel stream (1 byte per pixel, grayscale or alpha mask)
-// into BGRA suitable for TGA output. Returns false if not enough data.
-bool decode_a8(const FtxHeader& h,
-               const std::vector<std::byte>& pixels,
-               std::vector<std::uint8_t>& bgra_out) {
-    const std::size_t n = static_cast<std::size_t>(h.width) * h.height;
-    if (pixels.size() < n) return false;
-    bgra_out.resize(n * 4);
-    for (std::size_t i = 0; i < n; ++i) {
-        std::uint8_t v = std::to_integer<std::uint8_t>(pixels[i]);
-        bgra_out[i*4+0] = v;
-        bgra_out[i*4+1] = v;
-        bgra_out[i*4+2] = v;
-        bgra_out[i*4+3] = 255;
-    }
-    return true;
-}
-
 bool extract_one(const OvlParser& parser,
                  OvlSide side,
                  std::size_t lf_index,
@@ -278,38 +226,16 @@ bool extract_one(const OvlParser& parser,
     rawf.write(reinterpret_cast<const char*>(raw.data()),
                static_cast<std::streamsize>(raw.size()));
 
-    // Format-8 (indexed8 + palette) → decode to TGA.
-    if (h.format == 8) {
-        std::vector<std::uint8_t> bgra;
-        if (decode_indexed8(parser, h, raw, bgra)) {
-            auto tga_out = out_dir / (base + ".tga");
-            write_tga(tga_out, h.width, h.height, bgra);
-        }
+    // All FTX textures (format codes 3-9) share the same on-disk layout:
+    //   - 256-entry × 4-byte BGRA palette at offset 64 in the header block
+    //   - 1-byte index per pixel at pixel_internal_offset (different chunk)
+    // The format_code is a size class (2^code × 2^code); format=8 happens to
+    // be the only one with non-power-of-2 dimensions allowed.
+    std::vector<std::uint8_t> bgra;
+    if (decode_indexed8(parser, h, raw, bgra)) {
+        write_tga(out_dir / (base + ".tga"), h.width, h.height, bgra);
     } else {
-        // Non-format-8 (codes 4, 5, 6, 7, 9): all empirically validated as A8
-        // grayscale alpha masks. The format_code appears to encode a size
-        // class (texture is 2^code × 2^code), not a pixel layout — the game
-        // shader applies tint to the monochrome mask at render time.
-        // Pixel data lives at pixel_internal_offset (separate chunk from the
-        // header). mipmap_count read from the header is garbage for these
-        // formats, so we just emit level 0.
-        FtxHeader h0 = h;
-        h0.mipmap_count = 1;
-        std::uint32_t cap = h0.width * h0.height;
-        auto pixels = read_pixels(parser, h0.pixel_internal_offset, cap);
-        if (pixels.empty()) {
-            ctx.log("skip (no pixel data at offset " +
-                    std::to_string(h0.pixel_internal_offset) + "): " + symbol);
-        } else {
-            std::vector<std::uint8_t> a8;
-            if (decode_a8(h0, pixels, a8)) {
-                write_tga(out_dir / (base + ".tga"), h0.width, h0.height, a8);
-            } else {
-                ctx.log("skip (insufficient A8 data " +
-                        std::to_string(pixels.size()) + "/" +
-                        std::to_string(cap) + "): " + symbol);
-            }
-        }
+        ctx.log("skip (palette decode failed): " + symbol);
     }
 
     write_json_sidecar(json_out, h, symbol, std::string(ldr.tag), block_size);
