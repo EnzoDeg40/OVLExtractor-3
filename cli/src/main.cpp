@@ -1,5 +1,6 @@
 #include "ovl/Error.hpp"
 #include "ovl/OvlParser.hpp"
+#include "ovl/extract/AtlasExtractor.hpp"
 #include "ovl/extract/DumpExtractor.hpp"
 #include "ovl/extract/SoundExtractor.hpp"
 #include "ovl/extract/TextureExtractor.hpp"
@@ -87,11 +88,29 @@ int do_extract_texture(const ovl::OvlParser& p,
     return r.errors == 0 ? 0 : 2;
 }
 
+int do_extract_atlas(const ovl::OvlParser& p,
+                     const std::filesystem::path& out_dir,
+                     bool overwrite,
+                     bool verbose) {
+    ovl::AtlasExtractor atl;
+    ovl::ExtractContext ctx;
+    ctx.output_dir = out_dir;
+    ctx.overwrite = overwrite;
+    if (verbose) {
+        ctx.log = [](std::string_view m) { std::cerr << "[atlas] " << m << "\n"; };
+    }
+    auto r = atl.extract(p, ctx);
+    std::cout << "atlas: " << r.files_written << " sprite(s) written, "
+              << r.errors << " error(s)\n";
+    return r.errors == 0 ? 0 : 2;
+}
+
 struct Actions {
     bool dump = false;
     bool list = false;
     bool sound = false;
     bool texture = false;
+    bool atlas = false;
     bool overwrite = false;
     bool verbose = false;
 };
@@ -130,6 +149,10 @@ int process_one(const std::filesystem::path& input,
     }
     if (a.texture) {
         rc |= do_extract_texture(parser, out_dir, a.overwrite, a.verbose);
+        did_anything = true;
+    }
+    if (a.atlas) {
+        rc |= do_extract_atlas(parser, out_dir, a.overwrite, a.verbose);
         did_anything = true;
     }
     if (!did_anything) {
@@ -202,8 +225,8 @@ int main(int argc, char** argv) {
     app.add_flag("--dump", do_dump_flag, "Write a structural text dump");
     app.add_flag("--list-loaders", a.list, "List loaders + linked files to stdout");
     app.add_option("-t,--types", types,
-                   "Resource types to extract: sound, texture, dump, all (repeatable)")
-        ->check(CLI::IsMember({"sound", "texture", "dump", "all"}));
+                   "Resource types to extract: sound, texture, atlas, dump, all (repeatable)")
+        ->check(CLI::IsMember({"sound", "texture", "atlas", "dump", "all"}));
     app.add_option("-o,--output-dir", output_dir,
                    "Output directory (default: ./extracted/<basename>/ for single file, "
                    "./extracted/ for directory input)");
@@ -219,6 +242,7 @@ int main(int argc, char** argv) {
     a.dump = do_dump_flag || wants("dump");
     a.sound = wants("sound");
     a.texture = wants("texture");
+    a.atlas = wants("atlas");
 
     try {
         std::filesystem::path input_path(input);
