@@ -521,6 +521,120 @@ bool process_mms(const OvlParser& parser,
     return true;
 }
 
+// shs (StaticShape) — rigid LOD mesh used by scenery items.
+//
+// Header at loaderreference.datapointer (100 bytes):
+//   +0x00 .. +0x17  bounding box: float min[3], float max[3]
+//   +0x18           u32 vertex_count
+//   +0x1C           u32 index_count
+//   +0x20, +0x24    u32 (=1, =1)
+//   +0x28           u32 ptr (unique-side data, e.g. material entry)
+//   +0x2C           u32 (=1)
+//   +0x30           u32 ptr to data block (this is what we want)
+//   +0x34           u32 ptr to LOD name footer (16B = self-ref + 12B ascii name)
+//   +0x38           u32 ptr to unique-side per-LOD entry
+//   +0x3C           u32 -1 (terminator)
+//   +0x40 .. +0x63  zeros (padding)
+//
+// Data block (starting at +0x30 ptr) layout:
+//   [64B]   transform matrix (4x4 floats, row-major) — LOD's local→world
+//   [vc x 36B]  vertex array, each:
+//                 +0x00  pos.x, pos.y, pos.z      (3 floats)
+//                 +0x0C  norm.x, norm.y, norm.z   (3 floats)
+//                 +0x18  0xFFFFFFFF               (sentinel / unused)
+//                 +0x1C  uv.u, uv.v               (2 floats)
+//   [ic x 4B]   index array (u32 triangle list)
+//   [16B]   LOD name footer (matches +0x34 above)
+struct ShsHeader {
+    std::uint32_t vertex_count;
+    std::uint32_t index_count;
+    std::uint32_t data_off;       // +0x30
+};
+
+bool read_shs_header(const OvlParser& parser, const LinkedFiles& lf,
+                     ShsHeader& h) {
+    auto pr = parser.offset_to_position(lf.loaderreference.datapointer);
+    if (!pr.found) return false;
+    BinaryReader r(parser.side(pr.currentOVL).ovlname);
+    r.seek(pr.position + 0x18);
+    h.vertex_count = r.read_u32();
+    h.index_count  = r.read_u32();
+    r.seek(pr.position + 0x30);
+    h.data_off     = r.read_u32();
+    return true;
+}
+
+bool process_shs(const OvlParser& parser,
+                 OvlSide side,
+                 std::size_t lf_index,
+                 const std::filesystem::path& out_dir,
+                 bool overwrite,
+                 const ExtractContext& ctx) {
+    const auto& d = parser.side(side);
+    const auto& lf = d.linkedfiles[lf_index];
+
+    std::string symbol = parser.string_from_offset(lf.symbolresolve.stringpointer);
+    auto cut = symbol.rfind(':');
+    if (cut != std::string::npos) symbol = symbol.substr(0, cut);
+    std::string base = sanitize(symbol);
+
+    auto out_path = out_dir / (base + ".obj");
+    if (!overwrite && std::filesystem::exists(out_path)) {
+        ctx.log("skip (exists): " + base);
+        return true;
+    }
+
+    ShsHeader h{};
+    if (!read_shs_header(parser, lf, h)) return false;
+    ctx.log("shs " + symbol + ": v=" + std::to_string(h.vertex_count) +
+            " i=" + std::to_string(h.index_count));
+    if (h.vertex_count == 0 || h.index_count == 0 ||
+        h.vertex_count > 200000 || h.index_count > 600000) {
+        ctx.log("shs: implausible counts, skipping");
+        return false;
+    }
+
+    auto pd = parser.offset_to_position(h.data_off);
+    if (!pd.found) return false;
+    BinaryReader r(parser.side(pd.currentOVL).ovlname);
+    r.seek(pd.position + 64);  // skip 64-byte transform matrix
+
+    std::vector<Vertex> verts(h.vertex_count);
+    for (std::uint32_t i = 0; i < h.vertex_count; ++i) {
+        verts[i].x = r.read_f32();
+        verts[i].y = r.read_f32();
+        verts[i].z = r.read_f32();
+        (void)r.read_f32(); (void)r.read_f32(); (void)r.read_f32();  // normal
+        (void)r.read_u32();                                          // sentinel
+        verts[i].u = r.read_f32();
+        verts[i].v = r.read_f32();
+    }
+
+    std::vector<std::uint32_t> idx(h.index_count);
+    for (auto& x : idx) x = r.read_u32();
+
+    std::filesystem::create_directories(out_dir);
+    std::ofstream o(out_path);
+    if (!o) return false;
+    o << "# RCT3 OVL extract (shs) — " << symbol << "\n";
+    o << "# verts=" << h.vertex_count << " indices=" << h.index_count << "\n";
+    o << "o " << base << "\n";
+    for (const auto& vt : verts) o << "v " << vt.x << " " << vt.y << " " << vt.z << "\n";
+    for (const auto& vt : verts) o << "vt " << vt.u << " " << (1.0f - vt.v) << "\n";
+    std::uint32_t tris = h.index_count / 3;
+    for (std::uint32_t t = 0; t < tris; ++t) {
+        std::uint32_t a = idx[t*3 + 0] + 1;
+        std::uint32_t b = idx[t*3 + 1] + 1;
+        std::uint32_t c = idx[t*3 + 2] + 1;
+        o << "f " << a << "/" << a << " " << b << "/" << b
+          << " " << c << "/" << c << "\n";
+    }
+
+    ctx.log("wrote " + base + " (" + std::to_string(h.vertex_count) +
+            "v, " + std::to_string(tris) + "t)");
+    return true;
+}
+
 bool side_loop(const OvlParser& parser,
                OvlSide side,
                const ExtractContext& ctx,
@@ -530,18 +644,22 @@ bool side_loop(const OvlParser& parser,
     for (std::size_t i = 0; i < d.linkedfiles.size(); ++i) {
         const auto& lf = d.linkedfiles[i];
         Loader ldr = parser.loader_by_id(lf.loaderreference.loadernumber, side);
-        if (ldr.tag != "mms") continue;
         try {
-            if (process_mms(parser, side, i, ctx.output_dir,
-                            ctx.overwrite, ctx)) {
-                ++res.files_written;
-                any = true;
+            bool ok = false;
+            if (ldr.tag == "mms") {
+                ok = process_mms(parser, side, i, ctx.output_dir,
+                                 ctx.overwrite, ctx);
+            } else if (ldr.tag == "shs") {
+                ok = process_shs(parser, side, i, ctx.output_dir,
+                                 ctx.overwrite, ctx);
             } else {
-                ++res.errors;
+                continue;
             }
+            if (ok) { ++res.files_written; any = true; }
+            else    { ++res.errors; }
         } catch (const std::exception& e) {
             ++res.errors;
-            ctx.log(std::string("mms: exception — ") + e.what());
+            ctx.log(std::string(ldr.tag) + ": exception — " + e.what());
         }
     }
     return any;
