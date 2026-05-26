@@ -51,7 +51,11 @@ This project addresses both:
   correctly; vertex positions still broken across all 17 candidate decoders.
 - 🚧 **Atlas extractor** (`gsi` → cropped `.tga`): works for the rare
   `ftx`-backed atlas; blocked on `tex` decode for the typical case.
-- 🚧 **Qt GUI** (Phase 2 — not started).
+- ✅ **Qt 6 GUI** (`ovlextract_gui`): file picker, tree of resources grouped
+  by category (textures / models / sounds / atlas / other), texture preview,
+  embedded OpenGL viewer for shs meshes, "open externally" playback for snd
+  items, and bulk "Extract all to folder…". Off by default — pass
+  `-DOVL_BUILD_GUI=ON`.
 
 For the full file-format reverse-engineering notes, see
 [docs/RCT3_OVL_FORMAT.md](docs/RCT3_OVL_FORMAT.md). For extractor
@@ -76,7 +80,7 @@ ctest --test-dir build --output-on-failure
 |---|---|---|
 | `OVL_BUILD_CLI` | `ON`  | Build the `ovlextract` CLI binary |
 | `OVL_BUILD_TESTS` | `ON`  | Build Catch2 unit tests |
-| `OVL_BUILD_GUI` | `OFF` | Reserved for Phase 2 Qt GUI |
+| `OVL_BUILD_GUI` | `OFF` | Build the `ovlextract_gui` Qt 6 desktop app — needs Qt 6.5+ (Widgets / OpenGL / OpenGLWidgets). On macOS with Homebrew: `cmake -B build -DOVL_BUILD_GUI=ON -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase)"` |
 | `OVL_ENABLE_SANITIZERS` | `OFF` | ASan + UBSan in Debug builds |
 
 ## Usage
@@ -173,6 +177,13 @@ OVLExtractor-3/
 │   │   └── TextureIndex.hpp
 │   └── src/
 ├── cli/                        ovlextract — CLI11 single-header
+├── gui/                        ovlextract_gui — Qt 6 Widgets desktop app
+│   └── src/
+│       ├── main.cpp
+│       ├── MainWindow.{hpp,cpp}     menu, tree, stacked detail pages
+│       ├── OvlInventory.{hpp,cpp}   group linked-files by category
+│       ├── TexturePreview.{hpp,cpp} BGRA-TGA decoder + QLabel preview
+│       └── MeshViewer.{hpp,cpp}     QOpenGLWidget viewer for .obj
 ├── scripts/                    blender_import_objs.py (auxiliary tooling)
 ├── tests/                      Catch2 unit + smoke tests
 ├── third_party/CLI11/          vendored single-header
@@ -182,7 +193,33 @@ OVLExtractor-3/
 
 The split is intentional: `core/` has **zero** UI / runtime dependencies and
 can be embedded into other projects (Qt, command-line, web), while
-`extractors/` contains the per-resource decoding strategies.
+`extractors/` contains the per-resource decoding strategies. The CLI and GUI
+are independent executables linking those two libraries — building one does
+not require the other.
+
+### Running the GUI
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DOVL_BUILD_GUI=ON \
+    -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase)"
+cmake --build build --target ovlextract_gui -j
+
+./build/gui/ovlextract_gui                       # empty window, File → Open
+./build/gui/ovlextract_gui path/to/Main.common.ovl   # opens that OVL on start
+```
+
+The window shows a tree on the left grouped by category. Click a leaf:
+
+- **Texture** (ftx/tex/fts/ftt) → image preview pane (only ftx + DXT1 `tex`
+  decode currently; others fall back to a status message).
+- **3D Model** (shs) → embedded OpenGL viewer; left-drag to rotate, scroll
+  to zoom. Animated meshes (mms) are shown but won't render (positions WIP).
+- **Sound** (snd) → Play button opens the extracted .wav in the OS-default
+  audio player via QDesktopServices (no QtMultimedia dep needed).
+- Anything else shows the symbol / loader metadata only.
+
+`File → Extract all to folder…` runs every extractor in one go, equivalent
+to `ovlextract --types all -o <folder> file.ovl`.
 
 ## Cross-platform substitutions vs the legacy reader
 
@@ -252,7 +289,9 @@ The biggest open work items, in priority order:
 3. `txs` shader semantics — enrich `.mtl` output with alpha/spec/reflection
    flags per sub-mesh.
 4. OVL header version 6 — currently parser warns and continues.
-5. Qt 6 GUI reproducing the legacy WinForms UX.
+5. Polish the Qt 6 GUI: cross-platform launcher (`brew install qtbase` /
+   `apt install qt6-base-dev` / vcpkg notes), DXT3/5 texture preview once
+   the decoder lands, optional texture-mapped 3D viewer.
 6. CI matrix (GitHub Actions: Linux + macOS + Windows).
 
 PRs welcome. If you have format documentation from the RCT3 modding community,

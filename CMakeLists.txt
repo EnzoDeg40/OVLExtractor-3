@@ -41,7 +41,7 @@ if(OVL_BUILD_TESTS)
 endif()
 
 if(OVL_BUILD_GUI)
-    message(STATUS "GUI build is a Phase 2 feature - not yet implemented")
+    add_subdirectory(gui)
 endif()
 
 message(STATUS "")
