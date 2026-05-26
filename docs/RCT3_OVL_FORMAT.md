@@ -2,57 +2,76 @@
 
 Findings accumulated while building the cross-platform OVL extractor
 (`OVLExtractor-3`). This is **not** a complete spec — only the bits we needed
-to extract textures and that were either undocumented, wrong in the legacy
-OVLExtractor-2 source, or absent from cobra-tools.
+to extract textures, sounds, and meshes, and that were either undocumented,
+wrong in the legacy OVLExtractor-2 source, or absent from cobra-tools.
 
 Reference sources we cross-checked:
 - `OVLExtractor-2` (legacy .NET reader by Belgabor et al., partial)
 - `cobra-tools-master` (Frontier games — JWE, Planet Zoo, Planet Coaster;
   has **no** RCT3 support for `ftx`/`tex`/`gsi`)
 - Empirical hex inspection of `.common.ovl` files from the Steam release
+- Cross-checks against ~14 952 OVLs from a full RCT3 Complete Edition install
+
+For extractor implementations, CLI workflows and the Blender helper, see
+[EXTRACTORS.md](EXTRACTORS.md).
 
 
 ## 1. High-level structure
 
-An RCT3 asset comes as a **pair** of files :
+An RCT3 asset comes as a **pair** of files:
 - `<name>.common.ovl` — shared data (textures, palettes, geometry)
 - `<name>.unique.ovl` — per-instance data (gsi sprite refs, model instances…)
 
 The parser reads both into `data_[0]` (common) and `data_[1]` (unique).
 Cross-side references are normal: a `gsi` on the unique side typically
-points at a `ftx`/`tex` texture on the common side.
+points at an `ftx`/`tex` texture on the common side. Cross-OVL references
+are *also* normal — a `shs` mesh in `Track6.unique.ovl` may reference
+`gigacoaster:ftx` in `Track6_Textures.common.ovl` (see §9 for the index
+that resolves these).
 
 Each side has:
-- A header (magic `0x4b524746` = `"FGRK"`, versions 1/4/5/6)
-- 9 chunks of payload data
-- A loaders table (which loader handles each data block)
+- A header (magic `0x4b524746` = `"FGRK"`, versions 1/4/5/6 — v6 deferred)
+- 9 chunks of payload data (`OvlData::chunks[0..8]`, each a list of `Block`s)
+- A loaders table (which loader handles each data block, see §2)
 - A linkedfiles table (the actual data entries, each tied to a loader + symbol)
-- A symbol-resolves table (relocation slots, see §5)
+- A symbol-resolves table (relocation slots that bind pointers to symbol names)
 - A relocations table (pointer-fixup list)
 
+Internal offsets in any of the above are resolved to file positions through
+`OvlParser::offset_to_position(off)`, which walks the chunk/block table to
+find which `Block` contains `off` and returns the corresponding file pos
+plus the `OvlSide` of the OVL that hosts it.
 
-## 2. Loaders we touched
+The parsing fidelity has been verified on **14 952 real OVL files** from a
+complete RCT3 installation (Main + all expansions) — zero parse errors.
 
-| Tag    | Meaning                          | Status                          |
-|--------|----------------------------------|---------------------------------|
-| `ftx`  | FlexiTexture (palette indexed8)  | Fully decoded (this doc)        |
-| `tex`  | Texture (atlas wrapper)          | Partially RE'd, **not decoded** |
-| `fts`  | TextureSet?                      | Treated as ftx (untested)       |
-| `ftt`  | TextureType?                     | Treated as ftx (untested)       |
-| `gsi`  | Graphic Sprite Info (atlas rect) | Fully understood (this doc)     |
-| `psi`  | Particle Sprite Info             | Pre-resolved only, not extracted|
-| `snd`  | Sound (.wav)                     | Extracted via `SoundExtractor`  |
+
+## 2. Loader registry
+
+| Tag    | Meaning                          | Status                                  |
+|--------|----------------------------------|-----------------------------------------|
+| `ftx`  | FlexiTexture (palette indexed8)  | Fully decoded (§3)                      |
+| `tex`  | Texture (atlas wrapper)          | Partially RE'd, **not decoded** (§4)    |
+| `fts`  | TextureSet?                      | Treated as ftx (untested)               |
+| `ftt`  | TextureType?                     | Treated as ftx (untested)               |
+| `gsi`  | Graphic Sprite Info (atlas rect) | Fully understood (§5)                   |
+| `psi`  | Particle Sprite Info             | Pre-resolved only, not extracted        |
+| `snd`  | Sound (.wav)                     | Fully decoded (§6)                      |
 | `sid`  | Sound sub-record inside `svd`/`phd` | Pre-resolved only, not a top-level loader |
-| `mdl`  | Model (3D geometry)              | Not yet attempted               |
-| `mms`  | Morphable Mesh                   | Topology + UVs OK, positions broken |
-| `shs`  | Static Shape (rigid mesh)        | Fully decoded (this doc, §8)    |
-| `svd`, `was`, `asd`, `vwg`, `ent` | Various game data | Listed by parser, not extracted |
+| `mms`  | Morphable Mesh                   | Topology + UVs OK, positions broken (§7)|
+| `shs`  | Static Shape (rigid mesh)        | Fully decoded (§8)                      |
+| `svd`, `was`, `asd`, `vwg`, `ent`, `mdl` | Various game data | Listed by parser, not extracted |
+
+What "fully decoded" buys you, per loader, is documented in
+[EXTRACTORS.md](EXTRACTORS.md).
 
 
-## 3. FTX texture format (the one that works)
+## 3. FTX texture format
 
-Every `ftx` linked file points at a 76-byte header followed by a palette
-and an unrelated pixel-data block (see §3.2 for the split).
+Every `ftx` linked file points at a 76-byte header followed by a palette and
+an unrelated pixel-data block (see §3.2 for the split). All format codes
+(3, 4, 5, 6, 7, 8, 9) share the **same on-disk layout** — indexed8 + BGRA
+palette — so a single decode path works across all of them.
 
 ### 3.1 Header layout (at `loaderreference.datapointer`)
 
@@ -63,7 +82,7 @@ and an unrelated pixel-data block (see §3.2 for the split).
 +0x0C u32  unk_a        — 0
 +0x10 u32  unk_b        — 0
 +0x14 u32  unk_c        — 7 commonly; meaning unclear
-+0x18 u32  mipmap_count — 1 for format=8; garbage for others (see §3.3)
++0x18 u32  mipmap_count — 1 for format=8; garbage for others (see §10)
 +0x1C u32  metadata_off1
 +0x20 u32  unk_e        — 1
 +0x24 u32  metadata_off2
@@ -85,7 +104,17 @@ are in a **separate chunk**, reached via the `pixel_internal_offset` field
 
 So decode = read palette from header block @ +0x40, follow
 `pixel_internal_offset` for `width × height` 1-byte indices, then
-`bgra[i] = palette[index]`.
+`bgra[i] = palette[index]`. The 4th palette byte is **not** a per-entry
+alpha — across the palettes we sampled (Dice, gigacoaster, …) it sits at 0
+or small values for the whole 256-entry table, so we emit alpha = 255
+unconditionally and let the caller paint transparency from the material
+shader (see §3.5).
+
+An earlier version of the extractor hard-coded `index 0 → alpha = 0`
+(chroma-key heuristic). It worked for textures with a keyed-out background
+(Carcass, foliage cutouts) but broke any model where index 0 is a real
+color used in the mesh interior — most notably the Dice cube, where index
+0 paints the dot/edge fill of an `SIOpaque` material.
 
 ### 3.3 The `format_code` is a size class, NOT a pixel format
 
@@ -116,16 +145,25 @@ and an early version of this extractor decoded as RGB → produced an image
 where a brown carcass (R=139, G=69, B=19) rendered as bright blue
 (B=19, G=69, R=139). Always copy palette bytes straight to TGA's BGRA.
 
-### 3.5 The "false positive" with A8
+### 3.5 Alpha is a material property, not a texture property
 
-During reverse engineering we briefly believed non-format-8 textures
-were A8 (grayscale alpha masks). They looked coherent as grayscale
-because RCT3 palettes are frequently near-monotonic and the indices
-themselves form recognizable shapes. The real format is palette
-indexed8 — using the palette yields full color. (BambooSign should be
-green, not grey.)
+Whether a pixel should be transparent is decided by the **txs shader** bound
+to the sub-mesh that samples the texture, not by the texture data. Sub-meshes
+with `SIAlphaMask*` / `SIAlphaBlend*` txs need transparent areas; sub-meshes
+with `SIOpaque*` don't. Since one texture can be sampled by multiple
+sub-meshes (with different txs), baking alpha into the `.tga` would corrupt
+the opaque cases. Restoring alpha specifically for the alpha-masked subset
+is a follow-up that needs `txs` semantic decode (open item, §11).
 
-### 3.6 The 5 stubs
+### 3.6 The "false positive" with A8
+
+During reverse engineering we briefly believed non-format-8 textures were
+A8 (grayscale alpha masks). They looked coherent as grayscale because
+RCT3 palettes are frequently near-monotonic and the indices themselves
+form recognizable shapes. The real format is palette indexed8 — using the
+palette yields full color. (BambooSign should be green, not grey.)
+
+### 3.7 The 5 stubs
 
 In the 1594 ftx entries found in the full game, **5 fail to decode** —
 all with a wildly invalid `pixel_internal_offset` (e.g. `1065353216` =
@@ -136,9 +174,9 @@ a bug, just empty slots.
 
 ## 4. TEX wrapper format (partially RE'd, NOT decoded)
 
-`tex` loaders are 76-byte wrappers used for atlases — every gsi in
-the game references a `tex` texture, never a plain ftx. The wrapper's
-binary structure is :
+`tex` loaders are 76-byte wrappers used for atlases — every `gsi` in
+the game references a `tex` texture, never a plain `ftx`. The wrapper's
+binary structure is:
 
 ```
 +0x00 to +0x1C : 8 × u32, all 0x00070007 — likely (h_log2=7, w_log2=7)
@@ -173,15 +211,21 @@ OVLExtractor-2 does not decode `tex` either — its handler is a stub
 that emits a `<tex format='18'>` XML element referencing a `.png`
 that's never written. Cobra-tools has no RCT3 `tex` support.
 
-**Blocker for atlas splitting :** 3679 gsi entries in the game, 783
-tex textures. All atlases use tex, so until tex is cracked, atlas
-splitting produces zero visual output.
+**Blocker for atlas splitting:** 3679 gsi entries in the game, 783
+`tex` textures. All atlases use `tex`, so until `tex` is cracked, atlas
+splitting (via `AtlasExtractor`) only succeeds for the rare GSI whose
+parent texture is stored as plain `ftx` instead of `tex` — most atlases
+yield zero visual output.
+
+**NOT a blocker for static meshes:** zero `shs` files in the random-sample
+survey reference a `:tex`. Cracking `tex` is unnecessary for textured
+3D models (see §8.5).
 
 
-## 5. GSI — atlas region descriptor (fully understood)
+## 5. GSI — atlas region descriptor
 
 Each `gsi` linkedfile is 16 bytes describing one rectangular region
-within a tex texture :
+within a `tex` (or sometimes `ftx`) texture:
 
 ```
 +0  u32  texture_ref_slot_a — bytes are 0 on disk (relocation slot)
@@ -190,7 +234,7 @@ within a tex texture :
 +12 u32  padding (0)
 ```
 
-At `coord_block_offset` :
+At `coord_block_offset`:
 ```
 +0  u32  left    — pixel-space
 +4  u32  top
@@ -198,40 +242,60 @@ At `coord_block_offset` :
 +12 u32  bottom
 ```
 
-The texture reference is **not stored in the gsi data block** —
-both slots (+0, +4) are zeroed and get filled by relocations at game
-load. To recover the link offline, look up `SymbolResolve.pointer == gsi_off + 4`
-in the symbol-resolves table; its `stringpointer` field is the texture
-symbol (e.g. `"Extras:tex"`).
+The texture reference is **not stored in the gsi data block** — both
+slots (+0, +4) are zeroed and get filled by relocations at game load.
+To recover the link offline, look up `SymbolResolve.pointer == gsi_off + 4`
+(or `+ 0` as a fallback) in the symbol-resolves table; its `stringpointer`
+field is the texture symbol (e.g. `"Extras:tex"`).
 
 The legacy `OVLReader::ReturnDatablocknameFromOffset((startoffset+4),true)`
 in `OVLExtractor-2` was looking up a linkedfile whose `datapointer`
 matched `gsi+4` — which only worked for textures stored as separate
-linkedfiles. For tex-backed atlases that's the wrong table; you need
+linkedfiles. For `tex`-backed atlases that's the wrong table; you need
 `symbolresolves` instead.
 
 
-## 6. Quirks worth remembering
+## 6. SND — sound (fully decoded)
 
-- **`mipmap_count` is garbage for non-format-8 ftx headers.** Header
-  field at offset 0x18 reads values like 511821, 263360, etc. Either
-  the layout differs for non-format-8 or this field was repurposed.
-  We hardcode `1` for those.
-- **Animated textures (Dolphin, lavabubble, TVSeq…) used to fail extraction.**
-  Symptom: tiny `pixel_internal_offset` (6, 64). Root cause: previous
-  attempts read pixels from the wrong block; the palette-decode path
-  works fine because both palette and indices are reachable.
-- **No DXT compression in RCT3.** We spent hours trying DXT1/3/5 + RGB565
-  + BGRA8888 variants before discovering everything is indexed8 palette.
-  RCT3 ships pre-2004, hardware DXT was an option but Frontier opted
-  for palette textures across the board.
-- **Dice texture appears "stretched vertically"** in the extracted TGA.
-  Reading dimensions from offset 4 + 8 gives 128 × 128 (matches what's
-  in `format_repeat` block at +0x2C). Not investigated further; likely
-  a non-square aspect applied at render time.
+Each `snd` linkedfile points at an 80-byte header followed by raw PCM
+payload(s) at the offsets named by the header. The layout matches the
+legacy `SidSound` struct (cf. `core/include/ovl/SFStructs.hpp`):
+
+### 6.1 Header layout (80 bytes at `loaderreference.datapointer`)
+
+```
++0x00 u16  fmt_tag         — 1 = WAVE_FORMAT_PCM (the only value we've seen)
++0x02 u16  numchannels     — 1 (mono) or 2 (stereo)
++0x04 u32  samplerate      — Hz
++0x08 u32  byterate        — samplerate × blockalign
++0x0C u16  blockalign      — numchannels × (bitspersample / 8)
++0x0E u16  bitspersample   — 8 or 16
++0x10 ...  44 bytes of unknown metadata (volumes, mix params, …)
++0x3C i32  loop            — 0 = one-shot, 1 = loop entire sample
++0x40 u32  channel1        — internal offset to channel 1 PCM
++0x44 i32  channel1_size   — bytes
++0x48 u32  channel2        — internal offset to channel 2 PCM (0 if mono)
++0x4C i32  channel2_size   — bytes
+```
+
+### 6.2 Stereo storage
+
+Stereo sounds are stored as two **separate** channel blobs, not interleaved.
+Extraction must interleave them to `LRLRLR…` when emitting a standard
+stereo WAV. Per-sample bytes = `bitspersample / 8`.
+
+### 6.3 The `loop` boolean
+
+Empirically verified on `Sounds.{common,unique}.ovl`: **276 entries
+loop=0, 58 entries loop=1**. All `loop=1` entries are ambient/continuous
+SFX (water, hums, lava, gears, hydraulics, …) — one-shots (footsteps,
+clicks, voice lines) are uniformly `loop=0`. When the flag is set, the
+WAV writer appends a standard `smpl` chunk with a single forward loop
+spanning the entire sample, so Audacity / SoundForge / DAWs round-trip
+it automatically.
 
 
-## 7. MMS — 3D mesh (partially RE'd, positions BROKEN)
+## 7. MMS — morphable mesh (positions BROKEN)
 
 The `mms` loader holds morphable meshes for animals, characters, and ride
 cars. Indices and UVs decode correctly; **vertex positions do not**.
@@ -278,49 +342,62 @@ UVs work — they extract cleanly and match expected ranges.
 +52  12 bytes unknown
 ```
 
-Morph 0 of any mesh is typically the "base" or "rest" animation — what we'd
-want for a static OBJ export. Each morph holds `times_count` keyframes.
+Morph 0 of any mesh is typically the "base" or "rest" animation — what
+we'd want for a static OBJ export. Each morph holds `times_count` keyframes.
 
 ### 7.4 Why positions don't work
 
 The `MorhpMeshVertex` struct in `OVLExtractor-2/SFStructs.h:37` declares
-3 × uint8 per vertex (so 3 bytes per vertex per keyframe). We tried:
+3 × uint8 per vertex (so 3 bytes per vertex per keyframe). `ModelExtractor`
+currently tries **17 different decoder candidates** on each MMS, writing
+one diagnostic OBJ per candidate next to the default (`<name>.<decoder>.obj`):
 
-- int8 / 127 (assuming signed normalized) → values in [-1, 1] but geometry
-  is incoherent (random-looking polygons in Preview)
-- uint8 / 255 (unsigned normalized) → same result
-- 4-byte stride (3 position + 1 padding) → also incoherent
-- 4-byte stride with shared-prefix observation (adjacent verts identical) →
-  still incoherent
+| Decoder name       | Width | Interpretation                                |
+|--------------------|-------|-----------------------------------------------|
+| `int8_127_s3`      | 3 B   | signed int8 / 127 (default output)            |
+| `uint8_255_s3`     | 3 B   | unsigned int8 / 255 − 0.5                     |
+| `int8_127_s4`      | 4 B   | int8/127, 4-byte stride (1 padding)           |
+| `int16_s6`         | 6 B   | int16 / 32767                                 |
+| `float16_s6`       | 6 B   | IEEE 754 half-precision                       |
+| `float32_s12`      | 12 B  | full float32                                  |
+| `packed10_snorm`   | 4 B   | 3 × 10-bit SNORM in a u32                     |
+| `sm8_s3`           | 3 B   | sign-magnitude int8                           |
+| `sm8_s4`           | 4 B   | sign-magnitude int8 + 1 padding               |
+| `bias128_s3`       | 3 B   | `(u - 128) / 127`                             |
+| `bias128_s4`       | 4 B   | bias128 + 1 padding                           |
+| `int8_xzy`         | 3 B   | int8 with axis swap XZY (Z-up → Y-up)         |
+| `int8_flipy`       | 3 B   | int8 with Y axis negated                      |
+| `delta_int8`       | 3 B   | running sum of int8/127 deltas                |
+| `base_int8_a4`     | 12 B  | first 3 bytes of UV record as int8/127        |
+| `base_int16_xy`    | 12 B  | first 4 bytes of UV record as int16 XY        |
 
-Adjacent vertices DO share leading bytes on disk, consistent with a smooth
-mesh having close-together vertices. But the indices then produce
-triangles whose actual 3D positions are scrambled.
-
-Possible explanations we did not get to test:
-- **Packed 10-bit per component** in u32 (DEC10/SNORM10, common in
-  GPU vertex compression) — would fit 3× 10-bit + 2-bit padding in 4 bytes
-- **Per-keyframe scale/bias header** before the positions — the
-  "Algorithm Unknown 1" / "Algorithm Unknown 2" header fields might
-  contain a scale factor
-- **Z-order swizzled** indices into a separate position table
-- **Compressed delta from a base pose** stored elsewhere (per-loader or
-  in a parent SID/SVD block)
+None produce coherent geometry across the sample set. Adjacent vertices DO
+share leading bytes on disk (consistent with a smooth mesh having close
+vertices), but the resulting triangles look scrambled in 3D viewers.
 
 The legacy OVLExtractor-2 explicitly left position decoding commented out
 (`Form1.h:2222-2235`) — they couldn't figure it out either. Cobra-tools
 has no RCT3 mesh support.
 
-### 7.5 What ModelExtractor currently outputs
+Untested hypotheses:
+- **Per-keyframe scale/bias header** before the positions — the
+  `Algorithm Unknown 1/2` header fields might contain a scale factor
+- **Z-order swizzled** indices into a separate position table
+- **Compressed delta from a base pose** stored elsewhere (per-loader or
+  in a parent SID/SVD block)
+
+### 7.5 What ModelExtractor outputs for MMS
 
 - Valid OBJ structure
 - Correct topology (faces reference correct vertex indices)
 - Correct UVs (`vt` lines match in-game UV mapping)
 - **Incorrect vertex positions** (cosmetically wrong, mesh appears shattered)
+- 17 sibling OBJs (one per decoder candidate) for A/B comparison
 
-To actually use the output, someone would need to crack the position
-encoding. Until then `ovlextract -t model` produces files that load but
-don't look like anything in particular.
+In bulk batch runs, `side_loop` in `ModelExtractor.cpp` skips MMS entirely
+to avoid flooding the output with noise variants — only `shs` is exported
+during full sweeps. To inspect a single MMS, call the extractor with the
+specific OVL or manually re-enable the `mms` branch.
 
 
 ## 8. SHS — Static Shape mesh (fully decoded)
@@ -388,14 +465,14 @@ buffer — they do **not** index into a global concatenated vertex array).
 +0x1C  uv.u, uv.v                (2× float32)
 ```
 
-The sentinel at `+0x18` is the strongest fingerprint of the format. UV `v` is
-flipped on output (OBJ `vt v` = `1 - input_v`) to match standard tooling
+The sentinel at `+0x18` is the strongest fingerprint of the format. UV `v`
+is flipped on output (OBJ `vt v` = `1 - input_v`) to match standard tooling
 conventions.
 
 ### 8.5 Material binding
 
-shs files do **not** embed texture references in the geometry blob. Each shs
-LoadReference owns a slice of `SymbolResolve` entries (filter by
+SHS files do **not** embed texture references in the geometry blob. Each
+SHS LoadReference owns a slice of `SymbolResolve` entries (filter by
 `SymbolResolve.loadpointer == lf.loaderreference.internal_offset`). Within
 the slice, resolves appear as consecutive `(ftx_symbol, txs_symbol)` pairs,
 **one pair per sub-mesh in order**:
@@ -406,7 +483,7 @@ slot 1  →  ('gigacoaster:ftx', 'SIAlphaMaskLow:txs')
 slot 2  →  ('chain:ftx',       'SIOpaque:txs')
 ```
 
-- `:ftx` = the texture (decoded by `TextureExtractor` if format 8)
+- `:ftx` = the texture (decoded by `TextureExtractor`)
 - `:txs` = the shader / blend mode (e.g. `SIOpaque`, `SIAlphaMaskLow`,
   `SIOpaqueSpecular50Reflection`). RE on `txs` is open — for now we ignore it.
 
@@ -417,27 +494,13 @@ Survey of 76 shs across a 40-OVL random sample:
   not by 3D meshes. Cracking `tex` is **not** required for textured models.
 - Sub-mesh count distribution: 29× single, 19× double, 20× triple, 7× quad
 
-### 8.6 What ModelExtractor outputs
-
-For each shs:
-
-- `<name>.obj` — one mesh with sub-meshes as `g` groups + `usemtl` directives.
-  Vertices/UVs are concatenated across sub-meshes; faces use a per-sub-mesh
-  base offset to keep the OBJ flat.
-- `<name>.mtl` — one `newmtl` per unique ftx symbol (sub-meshes sharing the
-  same ftx with different `txs` share the material). When the model
-  extractor is given `--texture-index` (see §9), each material gets a
-  `map_Kd <ftx>.tga` line pointing to the texture file by basename.
-
-Referenced textures **do not live in the same OVL** as the shs in the
-general case. e.g. `45medslopechain_data.unique.ovl` references
+The texture often does not live in the same OVL as the SHS — coaster pieces
+in `tracks/coasters/Track6/45medslopechain_data.unique.ovl` reference
 `gigacoaster:ftx` which lives in `tracks/coasters/Track6/Track6_Textures.common.ovl`.
-The global index resolves this cross-OVL reference; pass `--auto-textures`
-together with `--assets-root` to also extract each referenced texture into
-the model's output directory so the `.mtl` paths resolve immediately.
+The global symbol index (§9) resolves these cross-OVL references.
 
 
-## 9. Global symbol index (`--build-index`)
+## 9. Global symbol index
 
 `ovlextract --build-index <out.json> <Assets/>` recursively scans every
 `.common.ovl` under the given directory, parses each OVL pair, and writes a
@@ -477,43 +540,45 @@ Resolution test on a 40-OVL random sample (179 distinct `:ftx` references
 made by 76 shs files): **179/179 (100%)** resolve via the index when the
 lookup is lowercased.
 
-### 9.1 Consumer: `--texture-index` + `--auto-textures`
-
-`ovlextract --types model --texture-index <idx.json> [--auto-textures
---assets-root <Assets/>] <input.ovl>`
-
-- Without `--auto-textures`: model extraction writes `map_Kd <symbol>.tga`
-  in each per-shs `.mtl`. The user is expected to extract textures
-  separately and place the `.tga` files next to the `.obj`.
-- With `--auto-textures` (requires `--assets-root`): for each referenced
-  `:ftx` symbol, the index entry is resolved to the defining OVL,
-  `TextureExtractor::extract_symbol()` pulls just that one texture into the
-  model's output directory. `OvlParser` instances are cached across the
-  whole run so a single shared texture OVL (e.g. `Track6_Textures`) is
-  parsed only once even when dozens of shs reference it. Already-extracted
-  symbols are tracked to avoid duplicate work.
-
-Example: extracting one coaster piece end-to-end:
-
-```
-ovlextract --types model --texture-index idx.json --auto-textures \
-    --assets-root /path/to/Assets \
-    /path/to/Assets/tracks/coasters/Track6/45medslopechain_data.unique.ovl
-```
-
-Output directory contains `45medslopechain_HI.obj`, `…HI.mtl`, the same
-for `_ME`/`_LO`, plus `gigacoaster.tga`, `chain.tga`, `struts.tga`,
-`coaster_LO_textures02.tga` — all sourced from four different
-texture OVLs and stitched together via the index.
+End-to-end workflows (`--texture-index` + `--auto-textures`) are documented
+in [EXTRACTORS.md](EXTRACTORS.md).
 
 
-## 10. What's still open
+## 10. Quirks worth remembering
 
-- **`tex` texture format decode** — would unlock 3679 atlas sprites
-  (cosmetics / GUI). Not required for shs models (none reference tex).
-- **`mms` position decode** — would unlock readable 3D meshes for animated
-  objects (animals, characters, ride cars).
-- **`txs` shader semantics** — refine `.mtl` output to encode alpha mask,
-  reflection, specular per sub-mesh based on the `txs` symbol.
-- **The 5 stub textures** could be filtered out at extract time
-- **Dice vertical stretch** — minor cosmetic question, not investigated
+- **`mipmap_count` is garbage for non-format-8 ftx headers.** Header
+  field at offset 0x18 reads values like 511821, 263360, etc. Either
+  the layout differs for non-format-8 or this field was repurposed.
+  We hardcode `1` for those.
+- **Animated textures (Dolphin, lavabubble, TVSeq…) used to fail extraction.**
+  Symptom: tiny `pixel_internal_offset` (6, 64). Root cause: previous
+  attempts read pixels from the wrong block; the palette-decode path
+  works fine because both palette and indices are reachable.
+- **No DXT compression in RCT3.** We spent hours trying DXT1/3/5 + RGB565
+  + BGRA8888 variants before discovering everything is indexed8 palette.
+  RCT3 ships pre-2004, hardware DXT was an option but Frontier opted
+  for palette textures across the board.
+- **Dice texture appears "stretched vertically"** in the extracted TGA.
+  Reading dimensions from offset 4 + 8 gives 128 × 128 (matches what's
+  in `format_repeat` block at +0x2C). Not investigated further; likely
+  a non-square aspect applied at render time.
+- **Header version 6 is deferred.** Both this rewrite and the legacy
+  OVLExtractor-2 stop at v5; v6 OVLs are flagged as `parser.valid() == false`
+  with a warning but the parser doesn't throw.
+- **Hard-skip MMS in bulk batches.** Until position decode is solved, the
+  17 diagnostic OBJ variants per MMS file would drown the output of a
+  full-install sweep. `ModelExtractor::extract` only emits SHS in batch
+  mode; MMS variants are produced when its `process_mms` helper is invoked
+  from a code path that opts in.
+
+
+## 11. What's still open
+
+| Item | Impact when solved |
+|---|---|
+| `tex` texture format decode | Unlocks 3 679 atlas sprites (cosmetics / GUI). Not required for shs models — none reference tex. |
+| `mms` position decode | Unlocks readable 3D meshes for animated objects (animals, characters, ride cars). |
+| `txs` shader semantics | Refines `.mtl` output to encode alpha mask, reflection, specular per sub-mesh based on the `txs` symbol. |
+| OVL header v6 | Currently parser warns and continues; some Wild! / Soaked! OVLs may be affected. |
+| The 5 stub ftx textures | Cosmetic — could be filtered out at extract time. |
+| Dice vertical stretch | Minor cosmetic question, not investigated. |

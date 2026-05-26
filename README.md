@@ -5,8 +5,8 @@
 A clean-room C++17 rewrite of [OVLExtractor-2](https://github.com/gamemodderz/OVLExtractor-2)
 (C++/CLI .NET WinForms, Windows-only) targeting **Windows, Linux, and macOS** —
 and going further: not just dumping the OVL structure but actually
-**extracting resources** (sounds → `.wav`, textures → `.tga` + `.dds`)
-that can be opened in standard tools.
+**extracting resources** (sounds → `.wav`, textures → `.tga`, static meshes
+→ `.obj` + `.mtl` + `.tga`) that can be opened in standard tools.
 
 ## Why a v3?
 
@@ -23,7 +23,7 @@ This project addresses both:
 - 100% portable C++17 + CMake — builds on AppleClang, GCC 11+, Clang 14+, and
   MSVC 2022.
 - Real resource extraction with file formats anyone can open (`.wav`, `.tga`,
-  `.dds`, `.json` sidecars).
+  `.obj` + `.mtl`, `.json` sidecars).
 - Same parsing fidelity as the legacy reader, verified on **14 952 real OVL
   files** from a complete RCT3 installation (Main + all expansions).
 
@@ -31,19 +31,30 @@ This project addresses both:
 
 - ✅ **Parser core**: all OVL versions 1, 4, 5 handled (v6 deferred — format
   incomplete in the legacy reader too).
-- ✅ **CLI** (`ovlextract`): `--dump`, `--list-loaders`, `--types sound/texture`.
-- ✅ **Sound extractor** (`snd` loader → standard 16-bit PCM WAV).
-- ✅ **Texture extractor** (`ftx` FlexiTexture format-8 indexed8+palette → TGA).
-- 🚧 **Texture extractor** (`tex` Texture loader and other ftx format codes):
-  raw `.ovltex` dump only — format reverse-engineering pending.
-- 🚧 **Qt GUI** (Phase 2 — not started).
+- ✅ **CLI** (`ovlextract`): `--dump`, `--list-loaders`, `--types
+  sound/texture/atlas/model`, `--build-index`, `--texture-index`,
+  `--auto-textures`, recursive directory input.
+- ✅ **Sound extractor** (`snd` loader → standard PCM WAV, with a `smpl`
+  loop chunk for the 58 / 334 ambient-SFX entries that are looping).
+- ✅ **Texture extractor** (`ftx` FlexiTexture, all format codes 3–9):
+  indexed8 + BGRA palette → TGA, with raw `.ovltex` + `.json` sidecar.
+- 🚧 **Texture extractor** (`tex` atlas wrapper): raw `.ovltex` dump only —
+  pointer chain to actual pixel data still unsolved.
 - ✅ **Static mesh extractor** (`shs` → `.obj` + `.mtl` + `.tga`): full
-  multi-material sub-mesh decoding, 99% success on a 40-OVL random sample.
+  multi-material sub-mesh decoding, 99 % success on a 40-OVL random sample.
   Cross-OVL texture binding resolves via the global symbol index built by
   `--build-index`; `--auto-textures` pulls referenced `.tga` files into the
-  model's output directory in one pass (see `docs/RCT3_OVL_FORMAT.md` §8–9).
-- 🚧 **Animated mesh extractor** (`mms` → `.obj`/`.gltf`): topology + UVs
-  decode, vertex positions still broken.
+  model's output directory in one pass.
+- 🚧 **Animated mesh extractor** (`mms` → `.obj`): topology + UVs decode
+  correctly; vertex positions still broken across all 17 candidate decoders.
+- 🚧 **Atlas extractor** (`gsi` → cropped `.tga`): works for the rare
+  `ftx`-backed atlas; blocked on `tex` decode for the typical case.
+- 🚧 **Qt GUI** (Phase 2 — not started).
+
+For the full file-format reverse-engineering notes, see
+[docs/RCT3_OVL_FORMAT.md](docs/RCT3_OVL_FORMAT.md). For extractor
+implementations, CLI flags and the Blender import helper, see
+[docs/EXTRACTORS.md](docs/EXTRACTORS.md).
 
 ## Build
 
@@ -108,9 +119,10 @@ The `input` argument accepts:
 | Extractor | Files produced |
 |---|---|
 | `--dump` | `OverlayDump_<name>_common.txt` and `_unique.txt` |
-| `--types sound` | `<symbol>.wav` per `snd` loader (mono or stereo PCM 16-bit) |
-| `--types texture` | `<symbol>.ovltex` (raw block), `<symbol>.json` (metadata), and `<symbol>.tga` if `format_code == 8` |
-| `--types model`   | `<symbol>.obj` + `<symbol>.mtl` per `shs` static mesh, with sub-meshes as `g`/`usemtl` groups (MTL stub pending texture binding via `--build-index`) |
+| `--types sound` | `<symbol>.wav` per `snd` loader (mono or stereo PCM, plus `smpl` chunk if loop=1) |
+| `--types texture` | `<symbol>.ovltex` (raw block), `<symbol>.json` (metadata), and `<symbol>.tga` (decoded indexed8+palette — all format codes 3–9 supported) |
+| `--types atlas` | `<symbol>.tga` per `gsi`, cropped from parent texture (most parents are `tex` → blocked until `tex` decode lands) |
+| `--types model`   | `<symbol>.obj` + `<symbol>.mtl` per `shs` static mesh, sub-meshes as `g`/`usemtl` groups; with `--texture-index` the `.mtl` gets `map_Kd` lines, with `--auto-textures` the referenced `.tga` files are pulled in too |
 | `--build-index`   | A JSON file mapping every linked-file symbol (lowercased) to its defining OVL path, side, and loader tag — used for cross-OVL texture lookups |
 
 ### Batch example
@@ -153,13 +165,17 @@ OVLExtractor-3/
 │   │   ├── IResourceExtractor.hpp
 │   │   ├── DumpExtractor.hpp
 │   │   ├── SoundExtractor.hpp
-│   │   └── TextureExtractor.hpp
+│   │   ├── TextureExtractor.hpp
+│   │   ├── AtlasExtractor.hpp
+│   │   ├── ModelExtractor.hpp
+│   │   └── TextureIndex.hpp
 │   └── src/
 ├── cli/                        ovlextract — CLI11 single-header
+├── scripts/                    blender_import_objs.py (auxiliary tooling)
 ├── tests/                      Catch2 unit + smoke tests
 ├── third_party/CLI11/          vendored single-header
 ├── cmake/                      build configuration helpers
-└── docs/                       format notes
+└── docs/                       RCT3_OVL_FORMAT.md, EXTRACTORS.md
 ```
 
 The split is intentional: `core/` has **zero** UI / runtime dependencies and
@@ -181,41 +197,14 @@ can be embedded into other projects (Qt, command-line, web), while
 
 ## Format notes
 
-### Sound (`snd`)
+The reverse-engineered file format is documented in
+[docs/RCT3_OVL_FORMAT.md](docs/RCT3_OVL_FORMAT.md) — container structure,
+loader table, FTX / TEX / GSI / SND / MMS / SHS payload layouts, and the
+quirks/open items we hit along the way.
 
-At `loaderreference.datapointer` lies an 80-byte header containing:
-
-- `WAVE_FORMAT_PCM` (16 bytes): tag, channels, sample rate, byte rate,
-  block-align, bits per sample
-- 44 bytes of unknown metadata (volumes, mix params, …)
-- `loop` (4 bytes, i32 at offset 60): boolean — 0 = one-shot, 1 = loop
-- `channel1` / `channel1_size` / `channel2` / `channel2_size` — internal
-  offsets to the raw PCM payload(s)
-
-For stereo, the two channels are stored separately and we interleave them to
-`LRLRLR…` to produce a standard stereo WAV.
-
-When `loop == 1`, a standard `smpl` chunk is appended to the WAV with a
-single forward loop covering the entire sample. Audacity, SoundForge, and
-most DAWs read this automatically. Empirically 58/334 sounds in
-`Sounds.common.ovl` are looping (ambient SFX: water, hums, lava, gears).
-
-### FlexiTexture (`ftx`)
-
-The 76-byte header at `loaderreference.datapointer` contains:
-
-- offset 0: format code (`6`, `7`, `8`, …)
-- offset 4: width
-- offset 8: height
-- offset 60: pointer to pixel data (in a different chunk)
-- offset 64 onward (for `format == 8`): 256-entry RGBA palette (1024 bytes)
-
-For `format == 8` (indexed 8-bit), pixels are 1 byte per pixel pointing into
-the palette. Index 0 is treated as chroma-key transparent (common convention
-in early-2000s palette textures).
-
-Other format codes (7, 6, 5, 4, 3, 9) are written as raw `.ovltex` for further
-reverse-engineering.
+How the extractors turn that into `.wav` / `.tga` / `.obj` / `.mtl` (plus
+the cross-OVL texture pipeline and the Blender import helper) lives in
+[docs/EXTRACTORS.md](docs/EXTRACTORS.md).
 
 ## Testing
 
@@ -252,11 +241,17 @@ License: same as the upstream OVLExtractor-2 (see `LICENSE`).
 
 The biggest open work items, in priority order:
 
-1. Decode `tex` (Texture) loader — header layout differs from `ftx`.
-2. Decode `ftx` format codes other than 8 (DXT? RGB565? Indexed4?).
-3. `mms` (animated mesh) vertex position decode.
-4. Qt 6 GUI reproducing the legacy WinForms UX.
-5. CI matrix (GitHub Actions: Linux + macOS + Windows).
+1. Decode `tex` (Texture) loader — wrapper structure is known (see
+   [RCT3_OVL_FORMAT.md §4](docs/RCT3_OVL_FORMAT.md#4-tex-wrapper-format-partially-red-not-decoded))
+   but the pointer chain to the actual indexed pixel data is not yet
+   located. Unlocks ~3 600 atlas sprites.
+2. `mms` (animated mesh) vertex position decode — 17 candidate decoders
+   tried, none yield coherent geometry. See [§7.4](docs/RCT3_OVL_FORMAT.md#74-why-positions-dont-work).
+3. `txs` shader semantics — enrich `.mtl` output with alpha/spec/reflection
+   flags per sub-mesh.
+4. OVL header version 6 — currently parser warns and continues.
+5. Qt 6 GUI reproducing the legacy WinForms UX.
+6. CI matrix (GitHub Actions: Linux + macOS + Windows).
 
 PRs welcome. If you have format documentation from the RCT3 modding community,
-adding it to `docs/OVL_FORMAT.md` is a great way to help.
+adding it to [docs/RCT3_OVL_FORMAT.md](docs/RCT3_OVL_FORMAT.md) is a great way to help.
