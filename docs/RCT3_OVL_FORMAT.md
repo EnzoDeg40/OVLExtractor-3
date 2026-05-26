@@ -51,7 +51,7 @@ complete RCT3 installation (Main + all expansions) — zero parse errors.
 | Tag    | Meaning                          | Status                                  |
 |--------|----------------------------------|-----------------------------------------|
 | `ftx`  | FlexiTexture (palette indexed8)  | Fully decoded (§3)                      |
-| `tex`  | Texture (atlas wrapper)          | Partially RE'd, **not decoded** (§4)    |
+| `tex`  | Texture (DXT compressed)         | DXT1 single-tex decoded (§4); DXT3/5 + multi-tex v5 open |
 | `fts`  | TextureSet?                      | Treated as ftx (untested)               |
 | `ftt`  | TextureType?                     | Treated as ftx (untested)               |
 | `gsi`  | Graphic Sprite Info (atlas rect) | Fully understood (§5)                   |
@@ -172,40 +172,105 @@ placeholder entries that reference real textures stored elsewhere. Not
 a bug, just empty slots.
 
 
-## 4. TEX wrapper format (partially RE'd, NOT decoded)
+## 4. TEX texture format — DXT1 decode
 
-`tex` loaders are 76-byte wrappers used for atlases — every `gsi` in
-the game references a `tex` texture, never a plain `ftx`. The wrapper's
-binary structure is:
+`tex` is the second texture container in RCT3 (alongside `ftx`). Where
+`ftx` stores 8-bit indexed pixels in the same OVL block as its header,
+`tex` puts a small wrapper on one side of the OVL pair and the actual
+DXT-compressed pixel data in a **trailing section after all parsed OVL
+structures** on the other side.
+
+### 4.1 Where the pieces live
+
+For each tex linkedfile (always on the side with parsed loaders for it,
+typically `unique`), the OVL pair always contains, on the OPPOSITE side
+(typically `common`):
+
+- a `btbl` (BmpTbl) loader  — historic palette holder, unused for DXT data
+- a `flic` (Flic) loader    — the per-texture data anchor
+- raw DXT-compressed pixel data + mipmaps, sitting in the file AFTER
+  everything the OVL parser enumerates (chunks, relocations, strings,
+  symbol tables …). The file size is much larger than `dataend`.
+
+The 76-byte wrapper at `tex`'s `loaderreference.datapointer` (on unique)
+encodes mipmap LOD descriptors and pointers we never had to follow
+once we located the trailing section directly.
+
+### 4.2 Trailing-section header (48 bytes per texture)
 
 ```
-+0x00 to +0x1C : 8 × u32, all 0x00070007 — likely (h_log2=7, w_log2=7)
-                 repeated 8 times (mipmap LOD descriptor?)
-+0x20 u32 = 1       — count?
-+0x24 u32 = 8       — bits per pixel? (8 = indexed8)
-+0x28 u32 = 16      — ?
-+0x2C u32 = 0
-+0x30 u32 = 0x00020001
-+0x34 u32 → frame array offset (16-byte entries, self-referencing)
-+0x38 u32 → sibling tex meta block
-+0x3C u32 = 0
-+0x40 u32 = 0
-+0x44 u32 → self-pointer (this tex's own offset)
-+0x48 u32 → +4 into frame array
++0x00 .. +0x0F  u32×4   relocation offsets (echo of parsed table)
++0x10           u32     0x18 constant (block-3 size hint?)
++0x14 .. +0x1B  zero
++0x1C           u32     0x12 constant
++0x20           u32     width
++0x24           u32     height
++0x28           u32     mipmap_count
++0x2C           u32     total compressed pixel-data size in bytes
++0x30           bytes   first mip (largest), then each next level, all
+                        DXT-compressed back-to-back.
 ```
 
-Each "frame array" entry (at the +0x34 target) is 16 bytes:
-```
-+0  u32   pointer (= self_offset + 4 — purpose unclear)
-+4  u32   0
-+8  u32   1
-+12 float 1.0
-```
+Verified empirically: sum of per-level compressed sizes (DXT1 = 4 bpp,
+4×4 blocks padded to 8 bytes minimum) exactly matches the size field
+(e.g. 256×256 mip=9 → 32768 + 8192 + 2048 + 512 + 128 + 32 + 8 + 8 + 8
+= 43704 = `0xAAB8`, matching `+0x2C` byte-for-byte on every
+single-tex character/clothing texture sampled).
 
-We could not locate the actual pixel data through these pointers. The
-chunk holding the wrapper is too small for 16k bytes of indices. The
-real data is probably in a different chunk, reached by an offset we
-have not yet identified.
+### 4.3 Locating the header
+
+`dataend` (what `OvlParser` stops at) lies a variable margin before the
+trailing section — when an OVL side has no symbol resolves the parser
+exits earlier than when it does, by 20+ bytes. We therefore scan
+forward from `dataend` until the {`w`, `w`, `mip`, `size`} 16-byte
+signature matches, with `w == h`, both powers of two in `[16, 4096]`,
+`1 ≤ mip ≤ 16`, and `size` equal to either the DXT1-expected mipmap
+chain size or 2× of it (DXT3/5). False positives don't happen in
+practice — the constraint set is strict enough that mms vertex/index
+buffers and prt/snd/etc. payloads never accidentally trip it.
+
+### 4.4 Format detection
+
+The `+0x2C` size field doesn't carry a format ID. We infer:
+
+| `size` matches      | Format        | Status            |
+|---------------------|---------------|-------------------|
+| DXT1 mip-chain (4 bpp) | DXT1 (BC1) | **Decoded** → TGA |
+| 2× DXT1 (8 bpp)        | DXT3 or DXT5 | Logged, not decoded yet |
+
+For DXT1 we produce a 32-bit BGRA TGA at the largest mip level. Mip 0
+alpha is 255 unless `c0 ≤ c1` in a block — the "punch-through" 1-bit
+alpha mode of DXT1 — in which palette index 3 becomes fully
+transparent.
+
+### 4.5 Coverage today
+
+Across a complete RCT3 Complete Edition install (665 `tex` symbols
+across 170 OVL pairs):
+
+| Bucket                            | OVL pairs | tex symbols | extracted |
+|-----------------------------------|----------:|------------:|----------:|
+| **Single-tex, DXT1** (Bikini-like) | 121      | 121         | 110 (91%) |
+| Single-tex, DXT3/5 or unusual     | 0 (subset of 121) | 11 | 0 (open, §4.6) |
+| **Multi-tex on v4** OVLs          | ~few     | included in 49 multi | a few |
+| **Multi-tex on v5** OVLs (Main, lion_data, GUI …) | most of 49 | ~520 | 0 (open, §4.6) |
+| **Total**                         | 170      | 665         | ~110 (17%) |
+
+### 4.6 Open work on `tex`
+
+- **DXT3/DXT5 decode** — the trailing-section header layout is identical,
+  pixel size is `2× DXT1`. Adding a DXT5 decoder is ~30 lines; needed
+  for the icon atlases (EnclosureIcons, PathIcons, …) and a few
+  per-character maps (BabySpecMap, mackeral).
+- **Multi-tex layout** — OVLs that hold many `tex` linkedfiles (Main,
+  lion_data, Sky, Water, GUI scenario logos …) are OVL v5 and use the
+  `unknownafterfileblocks` table (parsed but not yet exposed) to locate
+  per-texture data. Each `flic` loader probably maps to one texture
+  via this table. Requires extending the parser to surface the table
+  and matching `flic` slot → trailing offset.
+- **Stable `gsi` atlas extraction** — once tex is fully decoded, the
+  3658 `gsi` sprites become extractable as cropped TGAs (`AtlasExtractor`
+  already has the slicing code).
 
 OVLExtractor-2 does not decode `tex` either — its handler is a stub
 that emits a `<tex format='18'>` XML element referencing a `.png`

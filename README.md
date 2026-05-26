@@ -38,8 +38,10 @@ This project addresses both:
   loop chunk for the 58 / 334 ambient-SFX entries that are looping).
 - ✅ **Texture extractor** (`ftx` FlexiTexture, all format codes 3–9):
   indexed8 + BGRA palette → TGA, with raw `.ovltex` + `.json` sidecar.
-- 🚧 **Texture extractor** (`tex` atlas wrapper): raw `.ovltex` dump only —
-  pointer chain to actual pixel data still unsolved.
+- 🚧 **Texture extractor** (`tex` DXT compressed): 110 / 121 single-tex
+  OVLs decode to TGA via the trailing-data DXT1 layout (≈ 17 % of all 665
+  `tex` symbols). DXT3/5 + multi-`tex` OVL v5 layouts still open
+  (see `docs/RCT3_OVL_FORMAT.md` §4).
 - ✅ **Static mesh extractor** (`shs` → `.obj` + `.mtl` + `.tga`): full
   multi-material sub-mesh decoding, 99 % success on a 40-OVL random sample.
   Cross-OVL texture binding resolves via the global symbol index built by
