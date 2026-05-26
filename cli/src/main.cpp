@@ -10,7 +10,9 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -144,6 +146,48 @@ struct Actions {
     bool verbose = false;
 };
 
+// Symbol index entry: where a given resource symbol (e.g. "gigacoaster:ftx")
+// is defined as a linked file. Stores the OVL pair's relative path stem (no
+// .common.ovl / .unique.ovl suffix), which side declared it, the loader tag,
+// and the original-case symbol (the JSON key is normalized to lowercase
+// because RCT3's symbol resolution is case-insensitive — e.g. references to
+// "StationLights:ftx" target the linked file declared as "stationLights:ftx").
+struct IndexEntry {
+    std::string symbol;  // original case from the linked-file table
+    std::string ovl;     // e.g. "tracks/coasters/Track6/Track6_Textures"
+    std::string side;    // "common" or "unique"
+    std::string tag;     // e.g. "ftx", "tex", "shs"
+};
+
+std::string to_lower(std::string s) {
+    for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+// Escape a string for JSON output (handles ", \, control chars; assumes UTF-8
+// passthrough for all other bytes — symbol names in RCT3 are ASCII anyway).
+void json_escape(std::ostream& o, const std::string& s) {
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"':  o << "\\\""; break;
+            case '\\': o << "\\\\"; break;
+            case '\b': o << "\\b"; break;
+            case '\f': o << "\\f"; break;
+            case '\n': o << "\\n"; break;
+            case '\r': o << "\\r"; break;
+            case '\t': o << "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    o << buf;
+                } else {
+                    o << static_cast<char>(c);
+                }
+        }
+    }
+}
+
 std::string strip_ovl_suffix(const std::string& name) {
     static const std::string suffixes[] = {".common.ovl", ".unique.ovl", ".ovl"};
     for (const auto& s : suffixes) {
@@ -192,6 +236,93 @@ int process_one(const std::filesystem::path& input,
         return do_dump(parser, out_dir, a.overwrite, a.verbose);
     }
     return rc;
+}
+
+// Walk every .common.ovl under `root`, parse the OVL pair, and add an entry
+// for each linked file (both common and unique sides) keyed by its full
+// symbol (e.g. "Dice:ftx"). Collisions are kept by first occurrence and
+// counted. Writes the resulting map to `out_path` as sorted JSON.
+int do_build_index(const std::filesystem::path& root,
+                   const std::filesystem::path& out_path,
+                   bool verbose) {
+    std::vector<std::filesystem::path> files;
+    for (auto& e : std::filesystem::recursive_directory_iterator(
+             root, std::filesystem::directory_options::skip_permission_denied)) {
+        if (!e.is_regular_file()) continue;
+        auto name = e.path().filename().string();
+        if (name.size() >= 11 &&
+            name.compare(name.size() - 11, 11, ".common.ovl") == 0) {
+            files.push_back(e.path());
+        }
+    }
+    std::sort(files.begin(), files.end());
+    std::cerr << "Indexing " << files.size() << " OVL pair(s) under "
+              << root.string() << "\n";
+
+    std::map<std::string, IndexEntry> index;
+    std::size_t parsed = 0, parse_errors = 0, dup_count = 0;
+    for (std::size_t fi = 0; fi < files.size(); ++fi) {
+        const auto& p = files[fi];
+        try {
+            ovl::OvlParser parser;
+            parser.parse(p.string());
+            auto rel_dir = std::filesystem::relative(p.parent_path(), root);
+            auto stem = strip_ovl_suffix(p.filename().string());
+            auto rel_stem = (rel_dir / stem).generic_string();
+
+            for (std::size_t s = 0; s < (parser.has_unique() ? 2u : 1u); ++s) {
+                auto side = static_cast<ovl::OvlSide>(s);
+                const auto& d = parser.side(side);
+                for (const auto& lf : d.linkedfiles) {
+                    std::string sym = parser.string_from_offset(
+                        lf.symbolresolve.stringpointer);
+                    if (sym.empty()) continue;
+                    ovl::Loader ldr = parser.loader_by_id(
+                        lf.loaderreference.loadernumber, side);
+                    IndexEntry e{sym, rel_stem, ovl::side_name(side), ldr.tag};
+                    auto [it, inserted] = index.try_emplace(
+                        to_lower(sym), std::move(e));
+                    if (!inserted) ++dup_count;
+                }
+            }
+            ++parsed;
+        } catch (const std::exception& e) {
+            ++parse_errors;
+            if (verbose) {
+                std::cerr << "  skip " << p.string() << ": " << e.what() << "\n";
+            }
+        }
+        if (verbose && (fi % 200) == 0) {
+            std::cerr << "  [" << (fi + 1) << "/" << files.size() << "] "
+                      << index.size() << " symbol(s)\n";
+        }
+    }
+
+    std::ofstream o(out_path);
+    if (!o) {
+        std::cerr << "error: cannot open " << out_path.string()
+                  << " for writing\n";
+        return 1;
+    }
+    o << "{\n";
+    bool first = true;
+    for (const auto& [lc_sym, e] : index) {
+        if (!first) o << ",\n";
+        first = false;
+        o << "  \""; json_escape(o, lc_sym); o << "\": {";
+        o << "\"symbol\":\""; json_escape(o, e.symbol); o << "\",";
+        o << "\"ovl\":\"";    json_escape(o, e.ovl);    o << "\",";
+        o << "\"side\":\"";   json_escape(o, e.side);   o << "\",";
+        o << "\"tag\":\"";    json_escape(o, e.tag);    o << "\"}";
+    }
+    o << "\n}\n";
+
+    std::cout << "Index: " << index.size() << " symbol(s) from "
+              << parsed << "/" << files.size() << " OVL pair(s); "
+              << dup_count << " duplicate(s), "
+              << parse_errors << " parse error(s) → " << out_path.string()
+              << "\n";
+    return parse_errors == 0 ? 0 : 2;
 }
 
 int run_recursive(const std::filesystem::path& root,
@@ -246,6 +377,7 @@ int main(int argc, char** argv) {
 
     std::string input;
     std::string output_dir;
+    std::string build_index_out;
     std::vector<std::string> types;
     Actions a;
     bool do_dump_flag = false;
@@ -257,6 +389,11 @@ int main(int argc, char** argv) {
         ->check(CLI::ExistingPath);
     app.add_flag("--dump", do_dump_flag, "Write a structural text dump");
     app.add_flag("--list-loaders", a.list, "List loaders + linked files to stdout");
+    app.add_option("--build-index", build_index_out,
+                   "Recursively scan the input directory and write a JSON "
+                   "index of every linked-file symbol to the given path. "
+                   "Used downstream to resolve cross-OVL texture references.")
+        ->type_name("FILE");
     app.add_option("-t,--types", types,
                    "Resource types to extract: sound, texture, atlas, model, dump, all (repeatable)")
         ->check(CLI::IsMember({"sound", "texture", "atlas", "model", "dump", "all"}));
@@ -280,6 +417,14 @@ int main(int argc, char** argv) {
 
     try {
         std::filesystem::path input_path(input);
+
+        if (!build_index_out.empty()) {
+            if (!std::filesystem::is_directory(input_path)) {
+                std::cerr << "error: --build-index requires a directory input\n";
+                return 1;
+            }
+            return do_build_index(input_path, build_index_out, a.verbose);
+        }
 
         if (std::filesystem::is_directory(input_path)) {
             std::filesystem::path out_root = output_dir.empty()

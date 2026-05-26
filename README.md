@@ -68,6 +68,11 @@ ctest --test-dir build --output-on-failure
 ## Usage
 
 ```bash
+# Build a global symbol → OVL path index over an install tree (one-shot, ~10s
+# for 7.5k pairs). Used to resolve cross-OVL texture references when
+# generating MTL files for shs models.
+./build/cli/ovlextract --build-index ovl_index.json /path/to/Assets
+
 # Inspect an OVL: list its loaders and linked files
 ./build/cli/ovlextract --list-loaders path/to/Main.common.ovl
 
@@ -97,6 +102,8 @@ The `input` argument accepts:
 | `--dump` | `OverlayDump_<name>_common.txt` and `_unique.txt` |
 | `--types sound` | `<symbol>.wav` per `snd` loader (mono or stereo PCM 16-bit) |
 | `--types texture` | `<symbol>.ovltex` (raw block), `<symbol>.json` (metadata), and `<symbol>.tga` if `format_code == 8` |
+| `--types model`   | `<symbol>.obj` + `<symbol>.mtl` per `shs` static mesh, with sub-meshes as `g`/`usemtl` groups (MTL stub pending texture binding via `--build-index`) |
+| `--build-index`   | A JSON file mapping every linked-file symbol (lowercased) to its defining OVL path, side, and loader tag — used for cross-OVL texture lookups |
 
 ### Batch example
 

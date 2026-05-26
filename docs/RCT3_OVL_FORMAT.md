@@ -436,13 +436,53 @@ A global index is therefore required to populate `map_Kd` from a single
 shs extraction.
 
 
-## 9. What's still open
+## 9. Global symbol index (`--build-index`)
 
-- **Global symbol → OVL index** — needed for `map_Kd` lookup so shs OBJ
-  exports can be fully textured. Build once by scanning the install tree
-  for every `:ftx` / `:tex` linked file and writing a JSON sidecar.
+`ovlextract --build-index <out.json> <Assets/>` recursively scans every
+`.common.ovl` under the given directory, parses each OVL pair, and writes a
+JSON map of every linked-file symbol → defining OVL. Used by downstream
+tools to resolve cross-OVL references (e.g. linking a shs sub-mesh material
+to its `:ftx` texture file when the texture lives in a different OVL).
+
+JSON layout:
+
+```json
+{
+  "gigacoaster:ftx": {
+    "symbol": "gigacoaster:ftx",
+    "ovl":    "tracks/coasters/Track6/Track6_Textures",
+    "side":   "common",
+    "tag":    "ftx"
+  }
+}
+```
+
+- **Keys are lowercased.** RCT3's symbol resolution is case-insensitive
+  (e.g. references to `StationLights:ftx` target the linked file declared
+  as `stationLights:ftx`). The original case is preserved in the `symbol`
+  field for display purposes.
+- **First match wins on collision.** Symbols that legitimately appear in
+  multiple OVLs (commonly used textures duplicated across content packs)
+  keep the first occurrence in sorted-path order. The duplicate count is
+  reported on stdout for diagnostics.
+- **`ovl` is the path stem relative to the scan root**, without the
+  `.common.ovl` / `.unique.ovl` suffix — directly consumable by `ovlextract`
+  as an `input` argument.
+
+Scale (full RCT3 Complete Edition install, macOS): ~7 500 OVL pairs →
+~53 000 indexed symbols, ~5.5 MB JSON, ~10 s cold-cache.
+
+Resolution test on a 40-OVL random sample (179 distinct `:ftx` references
+made by 76 shs files): **179/179 (100%)** resolve via the index when the
+lookup is lowercased.
+
+
+## 10. What's still open
+
 - **`tex` texture format decode** — would unlock 3679 atlas sprites
   (cosmetics / GUI). Not required for shs models (none reference tex).
+- **MTL `map_Kd` resolver** — consume the global symbol index in
+  `ModelExtractor` to populate `map_Kd` paths in the per-shs `.mtl` files.
 - **`mms` position decode** — would unlock readable 3D meshes for animated
   objects (animals, characters, ride cars).
 - **`txs` shader semantics** — refine `.mtl` output to encode alpha mask,
