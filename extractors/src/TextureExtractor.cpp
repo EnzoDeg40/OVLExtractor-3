@@ -5,6 +5,7 @@
 #include "ovl/OvlParser.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -267,6 +268,35 @@ ExtractResult TextureExtractor::extract(const OvlParser& parser, const ExtractCo
         }
     }
     return res;
+}
+
+bool TextureExtractor::extract_symbol(const OvlParser& parser,
+                                      const std::string& symbol_lc,
+                                      const ExtractContext& ctx) {
+    auto match = [&](const std::string& s) {
+        if (s.size() != symbol_lc.size()) return false;
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            char c = static_cast<char>(std::tolower(
+                static_cast<unsigned char>(s[i])));
+            if (c != symbol_lc[i]) return false;
+        }
+        return true;
+    };
+
+    for (std::size_t s = 0; s < (parser.has_unique() ? 2u : 1u); ++s) {
+        auto side = static_cast<OvlSide>(s);
+        const auto& d = parser.side(side);
+        for (std::size_t i = 0; i < d.linkedfiles.size(); ++i) {
+            const auto& lf = d.linkedfiles[i];
+            std::string sym = parser.string_from_offset(
+                lf.symbolresolve.stringpointer);
+            if (!match(sym)) continue;
+            std::filesystem::create_directories(ctx.output_dir);
+            return extract_one(parser, side, i, ctx.output_dir,
+                               ctx.overwrite, ctx);
+        }
+    }
+    return false;
 }
 
 }  // namespace ovl

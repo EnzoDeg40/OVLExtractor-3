@@ -16,6 +16,15 @@ class TextureExtractor : public IResourceExtractor {
 public:
     std::string_view name() const override { return "texture"; }
     ExtractResult extract(const OvlParser& parser, const ExtractContext& ctx) override;
+
+    // Extract only the linked file whose symbol (case-insensitive) matches
+    // `symbol_lc`. Returns true if a matching texture was processed (or was
+    // already extracted and `ctx.overwrite` was false). Used by
+    // ModelExtractor's auto-textures path to pull in cross-OVL textures
+    // referenced by a shs without dumping every texture in the source OVL.
+    static bool extract_symbol(const OvlParser& parser,
+                               const std::string& symbol_lc,
+                               const ExtractContext& ctx);
 };
 
 }  // namespace ovl

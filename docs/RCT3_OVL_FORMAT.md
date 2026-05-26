@@ -425,15 +425,16 @@ For each shs:
   Vertices/UVs are concatenated across sub-meshes; faces use a per-sub-mesh
   base offset to keep the OBJ flat.
 - `<name>.mtl` — one `newmtl` per unique ftx symbol (sub-meshes sharing the
-  same ftx with different `txs` share the material). Currently a stub
-  (`Kd 1 1 1`); `map_Kd` resolution is pending the global symbol → OVL index
-  (see §9).
+  same ftx with different `txs` share the material). When the model
+  extractor is given `--texture-index` (see §9), each material gets a
+  `map_Kd <ftx>.tga` line pointing to the texture file by basename.
 
 Referenced textures **do not live in the same OVL** as the shs in the
 general case. e.g. `45medslopechain_data.unique.ovl` references
 `gigacoaster:ftx` which lives in `tracks/coasters/Track6/Track6_Textures.common.ovl`.
-A global index is therefore required to populate `map_Kd` from a single
-shs extraction.
+The global index resolves this cross-OVL reference; pass `--auto-textures`
+together with `--assets-root` to also extract each referenced texture into
+the model's output directory so the `.mtl` paths resolve immediately.
 
 
 ## 9. Global symbol index (`--build-index`)
@@ -476,13 +477,40 @@ Resolution test on a 40-OVL random sample (179 distinct `:ftx` references
 made by 76 shs files): **179/179 (100%)** resolve via the index when the
 lookup is lowercased.
 
+### 9.1 Consumer: `--texture-index` + `--auto-textures`
+
+`ovlextract --types model --texture-index <idx.json> [--auto-textures
+--assets-root <Assets/>] <input.ovl>`
+
+- Without `--auto-textures`: model extraction writes `map_Kd <symbol>.tga`
+  in each per-shs `.mtl`. The user is expected to extract textures
+  separately and place the `.tga` files next to the `.obj`.
+- With `--auto-textures` (requires `--assets-root`): for each referenced
+  `:ftx` symbol, the index entry is resolved to the defining OVL,
+  `TextureExtractor::extract_symbol()` pulls just that one texture into the
+  model's output directory. `OvlParser` instances are cached across the
+  whole run so a single shared texture OVL (e.g. `Track6_Textures`) is
+  parsed only once even when dozens of shs reference it. Already-extracted
+  symbols are tracked to avoid duplicate work.
+
+Example: extracting one coaster piece end-to-end:
+
+```
+ovlextract --types model --texture-index idx.json --auto-textures \
+    --assets-root /path/to/Assets \
+    /path/to/Assets/tracks/coasters/Track6/45medslopechain_data.unique.ovl
+```
+
+Output directory contains `45medslopechain_HI.obj`, `…HI.mtl`, the same
+for `_ME`/`_LO`, plus `gigacoaster.tga`, `chain.tga`, `struts.tga`,
+`coaster_LO_textures02.tga` — all sourced from four different
+texture OVLs and stitched together via the index.
+
 
 ## 10. What's still open
 
 - **`tex` texture format decode** — would unlock 3679 atlas sprites
   (cosmetics / GUI). Not required for shs models (none reference tex).
-- **MTL `map_Kd` resolver** — consume the global symbol index in
-  `ModelExtractor` to populate `map_Kd` paths in the per-shs `.mtl` files.
 - **`mms` position decode** — would unlock readable 3D meshes for animated
   objects (animals, characters, ride cars).
 - **`txs` shader semantics** — refine `.mtl` output to encode alpha mask,

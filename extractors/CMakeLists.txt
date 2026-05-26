@@ -4,6 +4,7 @@ add_library(ovlextractors STATIC
     src/ModelExtractor.cpp
     src/SoundExtractor.cpp
     src/TextureExtractor.cpp
+    src/TextureIndex.cpp
 )
 
 target_include_directories(ovlextractors

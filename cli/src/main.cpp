@@ -5,6 +5,7 @@
 #include "ovl/extract/ModelExtractor.hpp"
 #include "ovl/extract/SoundExtractor.hpp"
 #include "ovl/extract/TextureExtractor.hpp"
+#include "ovl/extract/TextureIndex.hpp"
 
 #include "CLI11.hpp"
 
@@ -119,11 +120,15 @@ int do_extract_atlas(const ovl::OvlParser& p,
 int do_extract_model(const ovl::OvlParser& p,
                      const std::filesystem::path& out_dir,
                      bool overwrite,
-                     bool verbose) {
+                     bool verbose,
+                     const ovl::TextureIndex* texture_index,
+                     bool auto_extract_textures) {
     ovl::ModelExtractor m;
     ovl::ExtractContext ctx;
     ctx.output_dir = out_dir;
     ctx.overwrite = overwrite;
+    ctx.texture_index = texture_index;
+    ctx.auto_extract_textures = auto_extract_textures;
     if (verbose) {
         ctx.log = [](std::string_view m) { std::cerr << "[model] " << m << "\n"; };
     }
@@ -144,6 +149,8 @@ struct Actions {
     bool model = false;
     bool overwrite = false;
     bool verbose = false;
+    bool auto_textures = false;
+    const ovl::TextureIndex* texture_index = nullptr;
 };
 
 // Symbol index entry: where a given resource symbol (e.g. "gigacoaster:ftx")
@@ -229,7 +236,8 @@ int process_one(const std::filesystem::path& input,
         did_anything = true;
     }
     if (a.model) {
-        rc |= do_extract_model(parser, out_dir, a.overwrite, a.verbose);
+        rc |= do_extract_model(parser, out_dir, a.overwrite, a.verbose,
+                               a.texture_index, a.auto_textures);
         did_anything = true;
     }
     if (!did_anything) {
@@ -378,6 +386,8 @@ int main(int argc, char** argv) {
     std::string input;
     std::string output_dir;
     std::string build_index_out;
+    std::string texture_index_in;
+    std::string assets_root;
     std::vector<std::string> types;
     Actions a;
     bool do_dump_flag = false;
@@ -394,6 +404,21 @@ int main(int argc, char** argv) {
                    "index of every linked-file symbol to the given path. "
                    "Used downstream to resolve cross-OVL texture references.")
         ->type_name("FILE");
+    app.add_option("--texture-index", texture_index_in,
+                   "Load the JSON index from a previous --build-index run. "
+                   "ModelExtractor uses it to emit `map_Kd <name>.tga` for "
+                   "each shs material whose ftx symbol resolves.")
+        ->type_name("FILE")
+        ->check(CLI::ExistingFile);
+    app.add_option("--assets-root", assets_root,
+                   "Root directory the texture index was built against. "
+                   "Required with --auto-textures.")
+        ->type_name("DIR");
+    app.add_flag("--auto-textures", a.auto_textures,
+                 "When extracting models with --texture-index, also extract "
+                 "each referenced texture from its source OVL into the "
+                 "model's output directory so .mtl map_Kd paths resolve. "
+                 "Requires --assets-root.");
     app.add_option("-t,--types", types,
                    "Resource types to extract: sound, texture, atlas, model, dump, all (repeatable)")
         ->check(CLI::IsMember({"sound", "texture", "atlas", "model", "dump", "all"}));
@@ -424,6 +449,30 @@ int main(int argc, char** argv) {
                 return 1;
             }
             return do_build_index(input_path, build_index_out, a.verbose);
+        }
+
+        ovl::TextureIndex texture_index;
+        if (!texture_index_in.empty()) {
+            if (!texture_index.load(texture_index_in)) {
+                std::cerr << "error: failed to load texture index from "
+                          << texture_index_in << "\n";
+                return 1;
+            }
+            if (!assets_root.empty()) {
+                texture_index.set_assets_root(assets_root);
+            } else if (a.auto_textures) {
+                std::cerr << "error: --auto-textures requires --assets-root\n";
+                return 1;
+            }
+            a.texture_index = &texture_index;
+            if (a.verbose) {
+                std::cerr << "Loaded texture index: " << texture_index.size()
+                          << " symbol(s) from " << texture_index_in << "\n";
+            }
+        }
+        if (a.auto_textures && a.texture_index == nullptr) {
+            std::cerr << "error: --auto-textures requires --texture-index\n";
+            return 1;
         }
 
         if (std::filesystem::is_directory(input_path)) {

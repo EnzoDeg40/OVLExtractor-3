@@ -37,10 +37,11 @@ This project addresses both:
 - 🚧 **Texture extractor** (`tex` Texture loader and other ftx format codes):
   raw `.ovltex` dump only — format reverse-engineering pending.
 - 🚧 **Qt GUI** (Phase 2 — not started).
-- ✅ **Static mesh extractor** (`shs` → `.obj` + `.mtl`): full multi-material
-  sub-mesh decoding, 99% success on a 40-OVL random sample. `map_Kd`
-  resolution pending the global texture index (see `docs/RCT3_OVL_FORMAT.md`
-  §8–9).
+- ✅ **Static mesh extractor** (`shs` → `.obj` + `.mtl` + `.tga`): full
+  multi-material sub-mesh decoding, 99% success on a 40-OVL random sample.
+  Cross-OVL texture binding resolves via the global symbol index built by
+  `--build-index`; `--auto-textures` pulls referenced `.tga` files into the
+  model's output directory in one pass (see `docs/RCT3_OVL_FORMAT.md` §8–9).
 - 🚧 **Animated mesh extractor** (`mms` → `.obj`/`.gltf`): topology + UVs
   decode, vertex positions still broken.
 
@@ -72,6 +73,13 @@ ctest --test-dir build --output-on-failure
 # for 7.5k pairs). Used to resolve cross-OVL texture references when
 # generating MTL files for shs models.
 ./build/cli/ovlextract --build-index ovl_index.json /path/to/Assets
+
+# Extract a static mesh end-to-end (.obj + .mtl + sibling .tga files pulled
+# from whichever OVL declares each referenced texture)
+./build/cli/ovlextract --types model \
+    --texture-index ovl_index.json --auto-textures \
+    --assets-root /path/to/Assets \
+    /path/to/Assets/Scenery/Dice/Dice.unique.ovl
 
 # Inspect an OVL: list its loaders and linked files
 ./build/cli/ovlextract --list-loaders path/to/Main.common.ovl
@@ -244,12 +252,11 @@ License: same as the upstream OVLExtractor-2 (see `LICENSE`).
 
 The biggest open work items, in priority order:
 
-1. Global symbol → OVL index (so `shs` exports can resolve `map_Kd`).
-2. Decode `tex` (Texture) loader — header layout differs from `ftx`.
-3. Decode `ftx` format codes other than 8 (DXT? RGB565? Indexed4?).
-4. `mms` (animated mesh) vertex position decode.
-5. Qt 6 GUI reproducing the legacy WinForms UX.
-6. CI matrix (GitHub Actions: Linux + macOS + Windows).
+1. Decode `tex` (Texture) loader — header layout differs from `ftx`.
+2. Decode `ftx` format codes other than 8 (DXT? RGB565? Indexed4?).
+3. `mms` (animated mesh) vertex position decode.
+4. Qt 6 GUI reproducing the legacy WinForms UX.
+5. CI matrix (GitHub Actions: Linux + macOS + Windows).
 
 PRs welcome. If you have format documentation from the RCT3 modding community,
 adding it to `docs/OVL_FORMAT.md` is a great way to help.

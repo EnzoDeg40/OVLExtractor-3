@@ -3,12 +3,17 @@
 #include "ovl/BinaryReader.hpp"
 #include "ovl/Error.hpp"
 #include "ovl/OvlParser.hpp"
+#include "ovl/extract/TextureExtractor.hpp"
+#include "ovl/extract/TextureIndex.hpp"
 
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
@@ -628,6 +633,40 @@ std::string strip_tag(std::string s) {
     return s;
 }
 
+std::string to_lower(std::string s) {
+    for (auto& c : s)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+// Per-extract() shared state: caches OvlParser instances for cross-OVL texture
+// lookups (a single coaster shs may reference textures from 2–3 distinct
+// OVLs; many shs in a batch run share the same source texture OVL — caching
+// avoids repeated multi-millisecond re-parses) and tracks which texture
+// symbols have already been extracted to avoid duplicate disk writes.
+struct AutoTextureState {
+    std::map<std::string, std::unique_ptr<OvlParser>> parsers;
+    std::set<std::string>                             done_symbols_lc;
+
+    OvlParser* get_or_parse(const std::filesystem::path& path,
+                            const ExtractContext& ctx) {
+        std::string key = path.string();
+        auto it = parsers.find(key);
+        if (it != parsers.end()) return it->second.get();
+        try {
+            auto p = std::make_unique<OvlParser>();
+            p->parse(path.string());
+            auto* raw = p.get();
+            parsers.emplace(key, std::move(p));
+            return raw;
+        } catch (const std::exception& e) {
+            ctx.log("auto-textures: cannot parse " + key + ": " + e.what());
+            parsers.emplace(key, nullptr);
+            return nullptr;
+        }
+    }
+};
+
 // Survey-mode: dump CSV row of the 25 u32 header words + pointer-flags for
 // each, cross-referenced against the relocations set. Triggered by env var
 // OVL_SHS_SURVEY=1. Used for one-shot reverse-engineering of header variants.
@@ -723,7 +762,8 @@ bool process_shs(const OvlParser& parser,
                  std::size_t lf_index,
                  const std::filesystem::path& out_dir,
                  bool overwrite,
-                 const ExtractContext& ctx) {
+                 const ExtractContext& ctx,
+                 AutoTextureState& auto_tex) {
     const auto& d = parser.side(side);
     const auto& lf = d.linkedfiles[lf_index];
 
@@ -781,8 +821,9 @@ bool process_shs(const OvlParser& parser,
     struct SubMesh {
         std::vector<Vertex>         verts;
         std::vector<std::uint32_t>  idx;
-        std::string                 mtl_name;   // sanitized ftx symbol
-        std::string                 txs_name;   // raw txs symbol (for sidecar)
+        std::string                 mtl_name;    // sanitized ftx symbol
+        std::string                 ftx_symbol;  // full original-case symbol
+        std::string                 txs_name;    // raw txs symbol (for sidecar)
     };
     std::vector<SubMesh> meshes;
     meshes.reserve(submeshes.size());
@@ -823,8 +864,9 @@ bool process_shs(const OvlParser& parser,
         for (auto& x : m.idx) x = ri.read_u32();
         // Material binding (one (ftx, txs) pair per sub-mesh, in order)
         if (s < materials.size()) {
-            m.mtl_name = sanitize(strip_tag(materials[s].first));
-            m.txs_name = materials[s].second;
+            m.ftx_symbol = materials[s].first;
+            m.mtl_name   = sanitize(strip_tag(materials[s].first));
+            m.txs_name   = materials[s].second;
         } else {
             m.mtl_name = "default";
         }
@@ -833,26 +875,84 @@ bool process_shs(const OvlParser& parser,
 
     std::filesystem::create_directories(out_dir);
 
-    // Companion .mtl: one entry per unique sanitized ftx name. Real texture
-    // map_Kd resolution requires a global symbol → OVL index (step 3); for
-    // now we emit stubs that keep Blender from logging "missing material".
+    // For each unique ftx symbol referenced by this shs, look up where it
+    // lives via the global texture index (if provided). Resolution is
+    // case-insensitive — the index keys are pre-lowercased. We record one
+    // record per unique sanitized material name (the .mtl key) so a single
+    // ftx referenced by several sub-meshes (with different txs shaders) only
+    // produces one map_Kd line.
+    struct MtlSlot {
+        std::string ftx_symbol;       // original-case full symbol, may be empty
+        std::string tga_name;         // sanitized basename + ".tga", may be empty
+        bool        resolved = false; // true iff index hit
+    };
+    std::map<std::string, MtlSlot> mtl_slots;  // keyed by sanitized mtl name
+    std::vector<std::string> mtl_order;
+    for (const auto& m : meshes) {
+        if (mtl_slots.count(m.mtl_name)) continue;
+        MtlSlot slot;
+        slot.ftx_symbol = m.ftx_symbol;
+        if (ctx.texture_index && !m.ftx_symbol.empty()) {
+            auto lc = to_lower(m.ftx_symbol);
+            if (const auto* e = ctx.texture_index->lookup(lc)) {
+                slot.resolved = true;
+                slot.tga_name = sanitize(strip_tag(e->symbol)) + ".tga";
+            }
+        }
+        mtl_slots.emplace(m.mtl_name, std::move(slot));
+        mtl_order.push_back(m.mtl_name);
+    }
+
+    // Auto-extract textures for resolved slots (one extraction per unique
+    // symbol across the whole batch). The index entry tells us which OVL +
+    // side hosts the texture; parsers are cached in `auto_tex` so the same
+    // shared texture OVL (e.g. Track6_Textures) is only parsed once.
+    if (ctx.auto_extract_textures && ctx.texture_index) {
+        for (auto& [mtl_name, slot] : mtl_slots) {
+            if (!slot.resolved) continue;
+            auto lc = to_lower(slot.ftx_symbol);
+            if (!auto_tex.done_symbols_lc.insert(lc).second) continue;
+            const auto* e = ctx.texture_index->lookup(lc);
+            if (!e) continue;
+            auto src_path = ctx.texture_index->resolve_ovl_path(*e);
+            OvlParser* sp = auto_tex.get_or_parse(src_path, ctx);
+            if (!sp) continue;
+            ExtractContext sub_ctx;
+            sub_ctx.output_dir = out_dir;
+            sub_ctx.overwrite  = ctx.overwrite;
+            sub_ctx.log        = ctx.log;
+            if (!TextureExtractor::extract_symbol(*sp, lc, sub_ctx)) {
+                ctx.log("auto-textures: " + slot.ftx_symbol +
+                        " declared in " + e->ovl + " (" + e->side +
+                        ") but no matching linkedfile found");
+            }
+        }
+    }
+
+    // Companion .mtl. One newmtl per sanitized ftx name; map_Kd is emitted
+    // only when the symbol resolves via the index, otherwise we leave a
+    // comment so the file is still valid for Blender.
     auto mtl_path = out_dir / (base + ".mtl");
     std::ofstream mtl(mtl_path);
-    std::vector<std::string> mtl_order;
-    {
-        std::set<std::string> seen;
-        for (const auto& m : meshes) {
-            if (seen.insert(m.mtl_name).second) mtl_order.push_back(m.mtl_name);
+    mtl << "# RCT3 OVL extract — " << symbol << "\n";
+    for (const auto& name : mtl_order) {
+        const auto& slot = mtl_slots.at(name);
+        mtl << "newmtl " << name << "\n";
+        if (slot.resolved) {
+            mtl << "# source: " << slot.ftx_symbol << "\n";
+        } else if (!slot.ftx_symbol.empty()) {
+            mtl << "# unresolved: " << slot.ftx_symbol
+                << " (no entry in texture index)\n";
         }
-        mtl << "# RCT3 OVL extract — " << symbol << "\n";
-        for (const auto& name : mtl_order) {
-            mtl << "newmtl " << name << "\n"
-                << "Kd 1.0 1.0 1.0\n"
-                << "Ka 0.0 0.0 0.0\n"
-                << "Ks 0.0 0.0 0.0\n"
-                << "d 1.0\n"
-                << "illum 1\n\n";
+        mtl << "Kd 1.0 1.0 1.0\n"
+            << "Ka 0.0 0.0 0.0\n"
+            << "Ks 0.0 0.0 0.0\n"
+            << "d 1.0\n"
+            << "illum 1\n";
+        if (slot.resolved) {
+            mtl << "map_Kd " << slot.tga_name << "\n";
         }
+        mtl << "\n";
     }
 
     // OBJ: all verts/UVs first (sub-meshes concatenated), then per-sub-mesh
@@ -899,7 +999,8 @@ bool process_shs(const OvlParser& parser,
 bool side_loop(const OvlParser& parser,
                OvlSide side,
                const ExtractContext& ctx,
-               ExtractResult& res) {
+               ExtractResult& res,
+               AutoTextureState& auto_tex) {
     const auto& d = parser.side(side);
     bool any = false;
     for (std::size_t i = 0; i < d.linkedfiles.size(); ++i) {
@@ -913,7 +1014,7 @@ bool side_loop(const OvlParser& parser,
             // per animated mesh. shs (StaticShape) is fully decoded.
             if (ldr.tag == "shs") {
                 ok = process_shs(parser, side, i, ctx.output_dir,
-                                 ctx.overwrite, ctx);
+                                 ctx.overwrite, ctx, auto_tex);
             } else {
                 continue;
             }
@@ -932,8 +1033,9 @@ bool side_loop(const OvlParser& parser,
 ExtractResult ModelExtractor::extract(const OvlParser& parser,
                                       const ExtractContext& ctx) {
     ExtractResult res{};
-    side_loop(parser, OvlSide::Common, ctx, res);
-    if (parser.has_unique()) side_loop(parser, OvlSide::Unique, ctx, res);
+    AutoTextureState auto_tex;
+    side_loop(parser, OvlSide::Common, ctx, res, auto_tex);
+    if (parser.has_unique()) side_loop(parser, OvlSide::Unique, ctx, res, auto_tex);
     return res;
 }
 
