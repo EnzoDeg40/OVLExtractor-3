@@ -44,7 +44,8 @@ Each side has:
 | `snd`  | Sound (.wav)                     | Extracted via `SoundExtractor`  |
 | `sid`  | Sound sub-record inside `svd`/`phd` | Pre-resolved only, not a top-level loader |
 | `mdl`  | Model (3D geometry)              | Not yet attempted               |
-| `mms`  | Morphable Mesh                   | Not yet attempted               |
+| `mms`  | Morphable Mesh                   | Topology + UVs OK, positions broken |
+| `shs`  | Static Shape (rigid mesh)        | Fully decoded (this doc, §8)    |
 | `svd`, `was`, `asd`, `vwg`, `ent` | Various game data | Listed by parser, not extracted |
 
 
@@ -322,11 +323,129 @@ encoding. Until then `ovlextract -t model` produces files that load but
 don't look like anything in particular.
 
 
-## 8. What's still open
+## 8. SHS — Static Shape mesh (fully decoded)
 
-- **tex texture format decode** — would unlock 3679 atlas sprites
-- **mms position decode** — would unlock readable 3D meshes
-- **Texture/material linking** for mms — once positions work, link to ftx
-  via parent svd/phd loaders for textured OBJ exports
+`shs` is the rigid-mesh format used by scenery, vehicles, and props (everything
+that doesn't morph or animate skeletally). Survey across 76 shs from a 40-OVL
+random sample: 75/76 (98.7%) extract cleanly into multi-material OBJ. The one
+failure is an empty placeholder (`vc=ic=0`).
+
+### 8.1 Header (100 bytes at `loaderreference.datapointer`)
+
+```
++0x00 .. +0x17  bbox: float min[3], float max[3]
++0x18           u32 vertex_count   (sum across all sub-meshes)
++0x1C           u32 index_count    (sum across all sub-meshes)
++0x20           u32 num_submeshes  (duplicated at +0x24)
++0x28           u32 → sub-mesh table          ← THE pointer we follow
++0x2C .. +0x63  scalar + pointer fields, content varies by mesh family
+                (transform basis, name string, per-resolve metadata) — none
+                of these are required for geometry extraction.
+```
+
+The sub-mesh table at `+0x28` is the universal entry point: every variant we
+tested (Dice / Litter / 45medslopechain / track pieces / coaster cars) uses
+it, regardless of the value of other header fields. The earlier
+heuristic-based approach (scanning from `+0x30` for a vertex-shaped record)
+worked for single-sub-mesh files but produced truncated meshes for
+multi-material shs.
+
+### 8.2 Sub-mesh table
+
+A simple list of pointers to sub-mesh descriptors, terminated by
+`0xFFFFFFFF`:
+
+```
+ptr_0 (u32) ptr_1 (u32) ... ptr_N-1 (u32) 0xFFFFFFFF
+```
+
+The number of sub-meshes equals the number of `(ftx, txs)` pairs in this
+shs's SymbolResolve slice (verified on multi-material samples — see §8.5).
+
+### 8.3 Sub-mesh descriptor (≥ 40 bytes per entry)
+
+Fields we use (everything else is `0` or per-variant metadata we ignore):
+
+```
++0x00 .. +0x17  unknown / flag bytes (mostly 0, first u32 = 0xFFFFFFFF)
++0x18           u32 vertex_count    (this sub-mesh)
++0x1C           u32 index_count     (this sub-mesh, count of u32 indices)
++0x20           u32 vertex_offset   (virtual offset to this sub-mesh's verts)
++0x24           u32 index_offset    (virtual offset to this sub-mesh's indices)
+```
+
+Verification: sum of per-sub-mesh `vc`/`ic` exactly matches the header totals
+(e.g. for `45medslopechain_HI`: 210 + 224 + 24 = 458 ✓ ; 468 + 336 + 36 = 840 ✓).
+Indices are sub-mesh-local (`0 .. vc-1` within the sub-mesh's own vertex
+buffer — they do **not** index into a global concatenated vertex array).
+
+### 8.4 Per-vertex layout (stride 36 B)
+
+```
++0x00  pos.x, pos.y, pos.z       (3× float32)
++0x0C  norm.x, norm.y, norm.z    (3× float32)
++0x18  0xFFFFFFFF                (sentinel, fixed across all SHS we've seen)
++0x1C  uv.u, uv.v                (2× float32)
+```
+
+The sentinel at `+0x18` is the strongest fingerprint of the format. UV `v` is
+flipped on output (OBJ `vt v` = `1 - input_v`) to match standard tooling
+conventions.
+
+### 8.5 Material binding
+
+shs files do **not** embed texture references in the geometry blob. Each shs
+LoadReference owns a slice of `SymbolResolve` entries (filter by
+`SymbolResolve.loadpointer == lf.loaderreference.internal_offset`). Within
+the slice, resolves appear as consecutive `(ftx_symbol, txs_symbol)` pairs,
+**one pair per sub-mesh in order**:
+
+```
+slot 0  →  ('gigacoaster:ftx', 'SIOpaqueSpecular50Reflection:txs')
+slot 1  →  ('gigacoaster:ftx', 'SIAlphaMaskLow:txs')
+slot 2  →  ('chain:ftx',       'SIOpaque:txs')
+```
+
+- `:ftx` = the texture (decoded by `TextureExtractor` if format 8)
+- `:txs` = the shader / blend mode (e.g. `SIOpaque`, `SIAlphaMaskLow`,
+  `SIOpaqueSpecular50Reflection`). RE on `txs` is open — for now we ignore it.
+
+Survey of 76 shs across a 40-OVL random sample:
+
+- **75/76 (99%)** reference at least one `:ftx`
+- **Zero** reference a `:tex` — atlas wrapper textures are only used by `gsi`,
+  not by 3D meshes. Cracking `tex` is **not** required for textured models.
+- Sub-mesh count distribution: 29× single, 19× double, 20× triple, 7× quad
+
+### 8.6 What ModelExtractor outputs
+
+For each shs:
+
+- `<name>.obj` — one mesh with sub-meshes as `g` groups + `usemtl` directives.
+  Vertices/UVs are concatenated across sub-meshes; faces use a per-sub-mesh
+  base offset to keep the OBJ flat.
+- `<name>.mtl` — one `newmtl` per unique ftx symbol (sub-meshes sharing the
+  same ftx with different `txs` share the material). Currently a stub
+  (`Kd 1 1 1`); `map_Kd` resolution is pending the global symbol → OVL index
+  (see §9).
+
+Referenced textures **do not live in the same OVL** as the shs in the
+general case. e.g. `45medslopechain_data.unique.ovl` references
+`gigacoaster:ftx` which lives in `tracks/coasters/Track6/Track6_Textures.common.ovl`.
+A global index is therefore required to populate `map_Kd` from a single
+shs extraction.
+
+
+## 9. What's still open
+
+- **Global symbol → OVL index** — needed for `map_Kd` lookup so shs OBJ
+  exports can be fully textured. Build once by scanning the install tree
+  for every `:ftx` / `:tex` linked file and writing a JSON sidecar.
+- **`tex` texture format decode** — would unlock 3679 atlas sprites
+  (cosmetics / GUI). Not required for shs models (none reference tex).
+- **`mms` position decode** — would unlock readable 3D meshes for animated
+  objects (animals, characters, ride cars).
+- **`txs` shader semantics** — refine `.mtl` output to encode alpha mask,
+  reflection, specular per sub-mesh based on the `txs` symbol.
 - **The 5 stub textures** could be filtered out at extract time
 - **Dice vertical stretch** — minor cosmetic question, not investigated

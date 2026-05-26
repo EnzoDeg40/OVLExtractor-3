@@ -37,7 +37,12 @@ This project addresses both:
 - 🚧 **Texture extractor** (`tex` Texture loader and other ftx format codes):
   raw `.ovltex` dump only — format reverse-engineering pending.
 - 🚧 **Qt GUI** (Phase 2 — not started).
-- 🚧 **Model extractor** (`svd`/`mdl`/`mms` → `.obj`/`.gltf`): not started.
+- ✅ **Static mesh extractor** (`shs` → `.obj` + `.mtl`): full multi-material
+  sub-mesh decoding, 99% success on a 40-OVL random sample. `map_Kd`
+  resolution pending the global texture index (see `docs/RCT3_OVL_FORMAT.md`
+  §8–9).
+- 🚧 **Animated mesh extractor** (`mms` → `.obj`/`.gltf`): topology + UVs
+  decode, vertex positions still broken.
 
 ## Build
 
@@ -232,11 +237,12 @@ License: same as the upstream OVLExtractor-2 (see `LICENSE`).
 
 The biggest open work items, in priority order:
 
-1. Decode `tex` (Texture) loader — header layout differs from `ftx`.
-2. Decode `ftx` format codes other than 8 (DXT? RGB565? Indexed4?).
-3. Model extractor (`svd`, `mdl`, `mms`) → `.obj` or `.gltf`.
-4. Qt 6 GUI reproducing the legacy WinForms UX.
-5. CI matrix (GitHub Actions: Linux + macOS + Windows).
+1. Global symbol → OVL index (so `shs` exports can resolve `map_Kd`).
+2. Decode `tex` (Texture) loader — header layout differs from `ftx`.
+3. Decode `ftx` format codes other than 8 (DXT? RGB565? Indexed4?).
+4. `mms` (animated mesh) vertex position decode.
+5. Qt 6 GUI reproducing the legacy WinForms UX.
+6. CI matrix (GitHub Actions: Linux + macOS + Windows).
 
 PRs welcome. If you have format documentation from the RCT3 modding community,
 adding it to `docs/OVL_FORMAT.md` is a great way to help.

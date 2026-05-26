@@ -9,7 +9,9 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ovl {
@@ -525,149 +527,105 @@ bool process_mms(const OvlParser& parser,
 //
 // The 100-byte header has a fixed prelude:
 //   +0x00 .. +0x17  bbox: float min[3], float max[3]
-//   +0x18           u32 vertex_count
-//   +0x1C           u32 index_count
+//   +0x18           u32 vertex_count    (sum across all sub-meshes)
+//   +0x1C           u32 index_count     (sum across all sub-meshes)
+//   +0x20           u32 num_submeshes (duplicated at +0x24)
+//   +0x28           u32 → sub-mesh table  ← the ONE pointer we follow
 //
-// The rest of the header (+0x20 .. +0x63) is a list of u32 fields. Some are
-// scalars, some are pointers (resolved via the OVL relocations table). The
-// LAYOUT VARIES across mesh families (we identified 15+ distinct
-// pointer-signature clusters across ~22k shs in the game). Instead of
-// hard-coding each variant, we detect data location by probing pointer
-// targets — every variant shares the same vertex/index format:
+// The sub-mesh table is a list of pointers terminated by 0xFFFFFFFF. Each
+// pointer targets a 40-byte sub-mesh descriptor (see SubMeshDesc below).
+// Each sub-mesh owns its own vertex buffer (stride 36, sentinel 0xFFFFFFFF
+// at +24) and its own u32-triangle-list index buffer (indices local to its
+// own vertex space, 0..vc-1). Material binding is by ORDER: sub-mesh i uses
+// the i-th (ftx, txs) pair from this shs's SymbolResolve slice.
 //
-//   stride 36B per vertex:
-//     +0x00  pos.x, pos.y, pos.z     (3 floats)
-//     +0x0C  norm.x, norm.y, norm.z  (3 floats)
-//     +0x18  0xFFFFFFFF              (sentinel — unique fingerprint of format)
-//     +0x1C  uv.u, uv.v              (2 floats)
-//   indices: u32 triangle list, count = index_count
-//
-// The sentinel 0xFFFFFFFF at vertex-byte+24 is what we lock onto: very
-// unlikely to appear at the same offset in any other data type, so any
-// pointer whose target peeks as "looks like a vertex" (pos finite,
-// normal magnitude near 1, sentinel matches) is the vertex pointer.
-//
-// Known cluster signatures (top 4 cover 60% of meshes):
-//   - Dice-style:   +0x30 ptr → [64B constant prefix][verts][idx][16B name footer]
-//   - Litter-style: +0x5C ptr → verts (no preamble),  +0x60 ptr → idx
-//   - ACAMHull-style: +0x60 ptr → verts (no preamble), idx elsewhere (TODO)
-// Other variants (multi-material / sub-mesh formats) currently fail
-// detection — handled as no-op (logged for future work).
+// Per-vertex layout (stride 36 B):
+//   +0x00  pos.x, pos.y, pos.z       (3× f32)
+//   +0x0C  norm.x, norm.y, norm.z    (3× f32)
+//   +0x18  0xFFFFFFFF                (sentinel, fixed)
+//   +0x1C  uv.u, uv.v                (2× f32)
 
-struct ShsLayout {
-    std::uint32_t verts_off;   // virtual offset of first vertex
-    std::uint32_t idx_off;     // virtual offset of first index
-    bool valid = false;
+// Sub-mesh descriptor — the unit of "one material slot" inside a shs.
+//
+// Each shs header at +0x28 holds a pointer to a sub-mesh table: an array of
+// u32 sub-mesh descriptor pointers terminated by 0xFFFFFFFF. Each pointed-to
+// descriptor is ≥ 40 bytes; the fields we care about are at fixed offsets:
+//
+//   +0x18  u32  vertex_count   (this sub-mesh's verts)
+//   +0x1C  u32  index_count    (this sub-mesh's indices)
+//   +0x20  u32  vertex_offset  (virtual offset, own buffer per sub-mesh)
+//   +0x24  u32  index_offset   (virtual offset, own buffer per sub-mesh)
+//
+// Verified: sum of sub-mesh vc/ic == header vc/ic for HI/ME/LO samples of
+// 45medslopechain. Each sub-mesh has its own contiguous vertex buffer
+// (stride 36, sentinel-at-+24 layout) and own index buffer (u32 triangle
+// list), indexed locally (0..vc-1 within the sub-mesh).
+struct SubMeshDesc {
+    std::uint32_t vc;
+    std::uint32_t ic;
+    std::uint32_t verts_off;
+    std::uint32_t idx_off;
 };
 
-// Read 28 bytes at virtual offset and check if they look like a stride-36
-// vertex (sentinel 0xFFFFFFFF at +24 is the strongest signal).
-bool looks_like_vertex(const OvlParser& parser, std::uint32_t off) {
-    if (off == 0) return false;
-    auto pr = parser.offset_to_position(off);
-    if (!pr.found) return false;
-    try {
-        BinaryReader r(parser.side(pr.currentOVL).ovlname);
-        r.seek(pr.position);
-        float px = r.read_f32(), py = r.read_f32(), pz = r.read_f32();
-        float nx = r.read_f32(), ny = r.read_f32(), nz = r.read_f32();
-        std::uint32_t sentinel = r.read_u32();
-        if (sentinel != 0xFFFFFFFFu) return false;
-        // pos must be finite and not absurd
-        auto finite_small = [](float v) {
-            return std::isfinite(v) && std::abs(v) < 1e6f;
-        };
-        if (!finite_small(px) || !finite_small(py) || !finite_small(pz))
-            return false;
-        // normal magnitude should be near 1 (allow some slack for compressed
-        // normals or post-skin residuals)
-        float nmag2 = nx*nx + ny*ny + nz*nz;
-        if (!(nmag2 > 0.25f && nmag2 < 2.25f)) return false;
-        return true;
-    } catch (...) { return false; }
-}
-
-// Check if 4 u32 at offset all fit as valid vertex indices (< vc).
-bool looks_like_indices(const OvlParser& parser, std::uint32_t off,
-                       std::uint32_t vc) {
-    if (off == 0 || vc == 0) return false;
-    auto pr = parser.offset_to_position(off);
-    if (!pr.found) return false;
-    try {
-        BinaryReader r(parser.side(pr.currentOVL).ovlname);
-        r.seek(pr.position);
-        for (int i = 0; i < 4; ++i) {
-            if (r.read_u32() >= vc) return false;
-        }
-        return true;
-    } catch (...) { return false; }
-}
-
-// Scan from `base` in 4-byte steps up to `max_scan` bytes, looking for the
-// first offset whose target reads as a vertex (sentinel at +24 = 0xFFFFFFFF).
-// Returns 0 if not found.
-std::uint32_t scan_for_vertex_start(const OvlParser& parser,
-                                    std::uint32_t base,
-                                    std::uint32_t max_scan = 512) {
-    if (base == 0) return 0;
-    for (std::uint32_t off = 0; off <= max_scan; off += 4) {
-        if (looks_like_vertex(parser, base + off)) return base + off;
-    }
-    return 0;
-}
-
-// Probe header fields to locate vertex and index buffers.
-//
-// shs variants differ in:
-//   - which header field holds the data pointer (+0x30 vs +0x5C)
-//   - how many transform matrices (64B blocks) sit before vertex data at +0x30
-//     (Dice: 1 matrix, DragBoatLink-style: 2 matrices, etc.)
-//
-// Strategy: pick a base pointer (+0x30 preferred, then +0x5C), scan forward
-// in 4-byte steps for a vertex-shaped record (sentinel at +24), then locate
-// indices contiguously after verts or at +0x60.
-ShsLayout detect_shs_layout(const OvlParser& parser, const LinkedFiles& lf,
-                            std::uint32_t vc) {
-    ShsLayout out;
+std::vector<SubMeshDesc> read_submesh_table(const OvlParser& parser,
+                                            const LinkedFiles& lf) {
+    std::vector<SubMeshDesc> out;
     auto pr = parser.offset_to_position(lf.loaderreference.datapointer);
     if (!pr.found) return out;
-    BinaryReader r(parser.side(pr.currentOVL).ovlname);
-    r.seek(pr.position + 0x30);
-    std::uint32_t p30 = r.read_u32();
-    r.seek(pr.position + 0x5C);
-    std::uint32_t p5C = r.read_u32();
-    std::uint32_t p60 = r.read_u32();
-
-    // Try +0x30 first (Dice/DragBoatLink-style chain). Scan for vertex start
-    // past any leading transform matrices.
-    if (p30 != 0) {
-        std::uint32_t v = scan_for_vertex_start(parser, p30);
-        if (v != 0) {
-            std::uint32_t i = v + vc * 36;
-            if (looks_like_indices(parser, i, vc)) {
-                out.verts_off = v;
-                out.idx_off   = i;
-                out.valid = true;
-                return out;
-            }
-            // Fall back: maybe indices are at +0x60 for this variant
-            if (p60 != 0 && looks_like_indices(parser, p60, vc)) {
-                out.verts_off = v;
-                out.idx_off   = p60;
-                out.valid = true;
-                return out;
-            }
-        }
+    BinaryReader rh(parser.side(pr.currentOVL).ovlname);
+    rh.seek(pr.position + 0x28);
+    std::uint32_t table_ptr = rh.read_u32();
+    if (table_ptr == 0) return out;
+    auto tp = parser.offset_to_position(table_ptr);
+    if (!tp.found) return out;
+    BinaryReader rt(parser.side(tp.currentOVL).ovlname);
+    rt.seek(tp.position);
+    std::vector<std::uint32_t> sm_ptrs;
+    for (int i = 0; i < 64; ++i) {  // safety bound
+        std::uint32_t p = rt.read_u32();
+        if (p == 0xFFFFFFFFu || p == 0) break;
+        sm_ptrs.push_back(p);
     }
-    // Litter-style: verts directly at +0x5C, indices at +0x60
-    if (p5C != 0 && looks_like_vertex(parser, p5C) &&
-        p60 != 0 && looks_like_indices(parser, p60, vc)) {
-        out.verts_off = p5C;
-        out.idx_off   = p60;
-        out.valid = true;
-        return out;
+    for (auto p : sm_ptrs) {
+        auto sp = parser.offset_to_position(p);
+        if (!sp.found) { out.clear(); return out; }
+        BinaryReader rs(parser.side(sp.currentOVL).ovlname);
+        rs.seek(sp.position + 0x18);
+        SubMeshDesc d{};
+        d.vc        = rs.read_u32();
+        d.ic        = rs.read_u32();
+        d.verts_off = rs.read_u32();
+        d.idx_off   = rs.read_u32();
+        out.push_back(d);
     }
     return out;
+}
+
+// Materials referenced by a shs come from its SymbolResolve slice (the
+// resolves whose loadpointer matches this LoaderReference's internal_offset).
+// Each (ftx, txs) consecutive pair = one material slot, in the same order
+// as the sub-mesh table. Returns pairs of (ftx_symbol, txs_symbol).
+std::vector<std::pair<std::string, std::string>>
+collect_materials(const OvlParser& parser, OvlSide side,
+                  const LinkedFiles& lf) {
+    std::vector<std::pair<std::string, std::string>> out;
+    const auto& d = parser.side(side);
+    std::vector<std::string> seq;
+    for (const auto& sr : d.symbolresolves) {
+        if (sr.loadpointer != lf.loaderreference.internal_offset) continue;
+        seq.push_back(parser.string_from_offset(sr.stringpointer));
+    }
+    for (std::size_t i = 0; i + 1 < seq.size(); i += 2) {
+        out.emplace_back(seq[i], seq[i + 1]);
+    }
+    return out;
+}
+
+// Strip the trailing ":ftx" / ":txs" tag from a symbol; returns "" if empty.
+std::string strip_tag(std::string s) {
+    auto cut = s.rfind(':');
+    if (cut != std::string::npos) s.resize(cut);
+    return s;
 }
 
 // Survey-mode: dump CSV row of the 25 u32 header words + pointer-flags for
@@ -724,6 +682,40 @@ void dump_shs_survey(const OvlParser& parser, OvlSide side,
                       << (unsigned)rr.read_u8() << std::dec;
     }
     std::cout << "\n";
+
+    // Sub-mesh table walk: pointer at +0x28 (w10) → list of sub-mesh
+    // descriptor pointers terminated by 0xFFFFFFFF. Each descriptor is ~40
+    // bytes. We dump up to 8 descriptors, 48 bytes each, for layout RE.
+    if (is_ptr[10] && w[10] != 0) {
+        auto pt = parser.offset_to_position(w[10]);
+        if (pt.found) {
+            BinaryReader rt(parser.side(pt.currentOVL).ovlname);
+            rt.seek(pt.position);
+            std::vector<std::uint32_t> sm_ptrs;
+            for (int i = 0; i < 16; ++i) {
+                std::uint32_t p = rt.read_u32();
+                if (p == 0xFFFFFFFFu) break;
+                sm_ptrs.push_back(p);
+            }
+            std::cout << "SMTABLE " << symbol << " count=" << sm_ptrs.size();
+            for (auto p : sm_ptrs)
+                std::cout << " " << std::hex << p << std::dec;
+            std::cout << "\n";
+            for (std::size_t i = 0; i < sm_ptrs.size(); ++i) {
+                auto sp = parser.offset_to_position(sm_ptrs[i]);
+                if (!sp.found) continue;
+                BinaryReader rs(parser.side(sp.currentOVL).ovlname);
+                rs.seek(sp.position);
+                std::cout << "SMDESC " << symbol << "[" << i << "]@"
+                          << std::hex << sm_ptrs[i] << std::dec << ":";
+                for (int b = 0; b < 48; ++b)
+                    std::cout << " " << std::hex << std::setw(2)
+                              << std::setfill('0') << (unsigned)rs.read_u8()
+                              << std::dec;
+                std::cout << "\n";
+            }
+        }
+    }
 }
 
 bool process_shs(const OvlParser& parser,
@@ -768,75 +760,139 @@ bool process_shs(const OvlParser& parser,
         return false;
     }
 
-    ShsLayout layout = detect_shs_layout(parser, lf, vc);
-    if (!layout.valid) {
-        ctx.log("shs: layout detection failed (unsupported variant)");
+    auto submeshes = read_submesh_table(parser, lf);
+    if (submeshes.empty()) {
+        ctx.log("shs: no sub-mesh table at +0x28");
         return false;
     }
 
-    // Read vertex array (stride 36). Some shs variants (Litter-style multi-
-    // sub-mesh) declare vc as the sum across sub-meshes but only the first
-    // contiguous block sits at our detected pointer — the rest is scattered.
-    // We validate per-vertex sentinel during the read and truncate when we
-    // leave the valid run, then remap indices to discard out-of-range ones.
-    auto pv = parser.offset_to_position(layout.verts_off);
-    if (!pv.found) return false;
-    BinaryReader rv(parser.side(pv.currentOVL).ovlname);
-    rv.seek(pv.position);
-    std::vector<Vertex> verts;
-    verts.reserve(vc);
-    for (std::uint32_t i = 0; i < vc; ++i) {
-        Vertex v;
-        v.x = rv.read_f32();
-        v.y = rv.read_f32();
-        v.z = rv.read_f32();
-        (void)rv.read_f32(); (void)rv.read_f32(); (void)rv.read_f32();
-        std::uint32_t sentinel = rv.read_u32();
-        v.u = rv.read_f32();
-        v.v = rv.read_f32();
-        if (sentinel != 0xFFFFFFFFu) break;
-        verts.push_back(v);
-    }
-    if (verts.empty()) {
-        ctx.log("shs: no valid vertices at detected pointer");
+    // Sanity: sub-mesh counts should sum to header totals.
+    std::uint32_t sum_vc = 0, sum_ic = 0;
+    for (const auto& s : submeshes) { sum_vc += s.vc; sum_ic += s.ic; }
+    if (sum_vc != vc || sum_ic != ic) {
+        ctx.log("shs: sub-mesh sum mismatch (header v=" + std::to_string(vc) +
+                "/i=" + std::to_string(ic) + " vs sum v=" +
+                std::to_string(sum_vc) + "/i=" + std::to_string(sum_ic) + ")");
         return false;
     }
-    std::uint32_t actual_vc = static_cast<std::uint32_t>(verts.size());
-    if (actual_vc < vc) {
-        ctx.log("shs: truncated " + std::to_string(vc) + "→" +
-                std::to_string(actual_vc) +
-                " verts (multi-sub-mesh, only first decoded)");
-    }
 
-    // Read indices (u32). Drop triangles that reference out-of-range verts.
-    auto pi = parser.offset_to_position(layout.idx_off);
-    if (!pi.found) return false;
-    BinaryReader ri(parser.side(pi.currentOVL).ovlname);
-    ri.seek(pi.position);
-    std::vector<std::uint32_t> idx(ic);
-    for (auto& x : idx) x = ri.read_u32();
+    auto materials = collect_materials(parser, side, lf);
+
+    struct SubMesh {
+        std::vector<Vertex>         verts;
+        std::vector<std::uint32_t>  idx;
+        std::string                 mtl_name;   // sanitized ftx symbol
+        std::string                 txs_name;   // raw txs symbol (for sidecar)
+    };
+    std::vector<SubMesh> meshes;
+    meshes.reserve(submeshes.size());
+    for (std::size_t s = 0; s < submeshes.size(); ++s) {
+        const auto& sd = submeshes[s];
+        SubMesh m;
+        // Vertices (stride 36, sentinel at +24)
+        auto pv = parser.offset_to_position(sd.verts_off);
+        if (!pv.found) {
+            ctx.log("shs: sub-mesh " + std::to_string(s) +
+                    " vertex pointer unresolved");
+            return false;
+        }
+        BinaryReader rv(parser.side(pv.currentOVL).ovlname);
+        rv.seek(pv.position);
+        m.verts.reserve(sd.vc);
+        for (std::uint32_t i = 0; i < sd.vc; ++i) {
+            Vertex v;
+            v.x = rv.read_f32();
+            v.y = rv.read_f32();
+            v.z = rv.read_f32();
+            (void)rv.read_f32(); (void)rv.read_f32(); (void)rv.read_f32();
+            (void)rv.read_u32();   // sentinel (validated empirically)
+            v.u = rv.read_f32();
+            v.v = rv.read_f32();
+            m.verts.push_back(v);
+        }
+        // Indices (u32 triangle list, sub-mesh-local)
+        auto pi = parser.offset_to_position(sd.idx_off);
+        if (!pi.found) {
+            ctx.log("shs: sub-mesh " + std::to_string(s) +
+                    " index pointer unresolved");
+            return false;
+        }
+        BinaryReader ri(parser.side(pi.currentOVL).ovlname);
+        ri.seek(pi.position);
+        m.idx.resize(sd.ic);
+        for (auto& x : m.idx) x = ri.read_u32();
+        // Material binding (one (ftx, txs) pair per sub-mesh, in order)
+        if (s < materials.size()) {
+            m.mtl_name = sanitize(strip_tag(materials[s].first));
+            m.txs_name = materials[s].second;
+        } else {
+            m.mtl_name = "default";
+        }
+        meshes.push_back(std::move(m));
+    }
 
     std::filesystem::create_directories(out_dir);
+
+    // Companion .mtl: one entry per unique sanitized ftx name. Real texture
+    // map_Kd resolution requires a global symbol → OVL index (step 3); for
+    // now we emit stubs that keep Blender from logging "missing material".
+    auto mtl_path = out_dir / (base + ".mtl");
+    std::ofstream mtl(mtl_path);
+    std::vector<std::string> mtl_order;
+    {
+        std::set<std::string> seen;
+        for (const auto& m : meshes) {
+            if (seen.insert(m.mtl_name).second) mtl_order.push_back(m.mtl_name);
+        }
+        mtl << "# RCT3 OVL extract — " << symbol << "\n";
+        for (const auto& name : mtl_order) {
+            mtl << "newmtl " << name << "\n"
+                << "Kd 1.0 1.0 1.0\n"
+                << "Ka 0.0 0.0 0.0\n"
+                << "Ks 0.0 0.0 0.0\n"
+                << "d 1.0\n"
+                << "illum 1\n\n";
+        }
+    }
+
+    // OBJ: all verts/UVs first (sub-meshes concatenated), then per-sub-mesh
+    // group with usemtl directive and local-to-global index remap.
     std::ofstream o(out_path);
     if (!o) return false;
     o << "# RCT3 OVL extract (shs) — " << symbol << "\n";
-    o << "# verts=" << actual_vc << "/" << vc << " indices=" << ic << "\n";
+    o << "# verts=" << vc << " indices=" << ic
+      << " submeshes=" << meshes.size() << "\n";
+    o << "mtllib " << base << ".mtl\n";
     o << "o " << base << "\n";
-    for (const auto& vt : verts) o << "v " << vt.x << " " << vt.y << " " << vt.z << "\n";
-    for (const auto& vt : verts) o << "vt " << vt.u << " " << (1.0f - vt.v) << "\n";
-    std::uint32_t tris_total = ic / 3, tris_kept = 0;
-    for (std::uint32_t t = 0; t < tris_total; ++t) {
-        std::uint32_t a = idx[t*3 + 0], b = idx[t*3 + 1], c = idx[t*3 + 2];
-        if (a >= actual_vc || b >= actual_vc || c >= actual_vc) continue;
-        ++a; ++b; ++c;  // OBJ is 1-indexed
-        o << "f " << a << "/" << a << " " << b << "/" << b
-          << " " << c << "/" << c << "\n";
-        ++tris_kept;
+    for (const auto& m : meshes) {
+        for (const auto& v : m.verts)
+            o << "v " << v.x << " " << v.y << " " << v.z << "\n";
+    }
+    for (const auto& m : meshes) {
+        for (const auto& v : m.verts)
+            o << "vt " << v.u << " " << (1.0f - v.v) << "\n";
+    }
+    std::uint32_t vbase = 0;
+    std::uint32_t tris_total = 0;
+    for (std::size_t s = 0; s < meshes.size(); ++s) {
+        const auto& m = meshes[s];
+        o << "g " << base << "_sub" << s << "\n";
+        o << "usemtl " << m.mtl_name << "\n";
+        std::uint32_t tris = static_cast<std::uint32_t>(m.idx.size()) / 3;
+        for (std::uint32_t t = 0; t < tris; ++t) {
+            std::uint32_t a = m.idx[t*3 + 0] + vbase + 1;
+            std::uint32_t b = m.idx[t*3 + 1] + vbase + 1;
+            std::uint32_t c = m.idx[t*3 + 2] + vbase + 1;
+            o << "f " << a << "/" << a << " " << b << "/" << b
+              << " " << c << "/" << c << "\n";
+        }
+        tris_total += tris;
+        vbase += static_cast<std::uint32_t>(m.verts.size());
     }
 
-    ctx.log("wrote " + base + " (" + std::to_string(actual_vc) +
-            "v, " + std::to_string(tris_kept) + "/" +
-            std::to_string(tris_total) + "t)");
+    ctx.log("wrote " + base + " (" + std::to_string(vc) + "v, " +
+            std::to_string(tris_total) + "t, " +
+            std::to_string(meshes.size()) + " submesh(es))");
     return true;
 }
 
