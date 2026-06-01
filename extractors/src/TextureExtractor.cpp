@@ -173,18 +173,21 @@ bool sane_dimensions(std::uint32_t w, std::uint32_t h) {
 //   +0x00 .. +0x0F  u32×4   relocation offsets (copy of parsed relocations)
 //   +0x10           u32     0x18 (constant — block 3 size in bytes?)
 //   +0x14 .. +0x1B  zero
-//   +0x1C           u32     0x12 (constant)
+//   +0x1C           u32     format_code  (D3D format: 0x12 DXT1, 0x13 DXT3,
+//                           0x14 DXT5 — see docs §4.4). +0x1C..+0x28 is exactly
+//                           rct3dump's FlicHeader {Format,Width,Height,Mipcount}.
 //   +0x20           u32     width
 //   +0x24           u32     height
 //   +0x28           u32     mipmap_count
 //   +0x2C           u32     total_pixel_data_size (DXT-compressed)
 //   +0x30           bytes   first mip level (largest), then each successive
-//                           level concatenated, all DXT1-compressed.
+//                           level concatenated, DXT1/DXT3/DXT5-compressed.
 //
-// Mipmap layout uses the standard rule: each level is half the width and
-// half the height of the previous, with each 4×4 block padded to 8 bytes
-// (DXT1) even when the level is smaller than 4×4.
+// Mipmap layout uses the standard rule: each level is half the width and half
+// the height of the previous, with each 4×4 block padded to one full block
+// (8 B DXT1, 16 B DXT3/5) even when the level is smaller than 4×4.
 struct TexTrailingHeader {
+    std::uint32_t format_code;
     std::uint32_t width;
     std::uint32_t height;
     std::uint32_t mipmap_count;
@@ -192,16 +195,47 @@ struct TexTrailingHeader {
     std::uint64_t pixel_data_pos;  // absolute file offset
 };
 
-// Total bytes a DXT1 (4 bpp) compressed mipmap chain occupies. Each 4×4
-// block is 8 bytes; levels smaller than 4×4 still occupy one full block.
-std::uint64_t expected_dxt1_size(std::uint32_t w, std::uint32_t h,
-                                 std::uint32_t mips) {
+// RCT3 reuses Direct3D format codes; these are the BC/DXT ones that occur in
+// tex trailing sections (docs §4.4). The field lives at header +0x1C.
+enum : std::uint32_t { kFmtDXT1 = 0x12, kFmtDXT3 = 0x13, kFmtDXT5 = 0x14 };
+
+// Bytes per 4×4 block for a format code: 8 for DXT1 (BC1, 4 bpp), 16 for
+// DXT3/DXT5 (BC2/BC3, 8 bpp), 0 if it isn't a DXT format we decode.
+std::uint32_t dxt_block_bytes(std::uint32_t format_code) {
+    switch (format_code) {
+        case kFmtDXT1: return 8;
+        case kFmtDXT3:
+        case kFmtDXT5: return 16;
+        default:       return 0;
+    }
+}
+
+const char* dxt_name(std::uint32_t format_code) {
+    switch (format_code) {
+        case kFmtDXT1: return "DXT1";
+        case kFmtDXT3: return "DXT3";
+        case kFmtDXT5: return "DXT5";
+        default:       return "fmt?";
+    }
+}
+
+std::string hex_u32(std::uint32_t v) {
+    std::ostringstream os;
+    os << "0x" << std::hex << v;
+    return os.str();
+}
+
+// Total bytes a DXT/BC compressed mipmap chain occupies. `block_bytes` is 8 for
+// DXT1 (4 bpp) and 16 for DXT3/DXT5 (8 bpp). Levels smaller than 4×4 still
+// occupy one full block.
+std::uint64_t expected_dxt_size(std::uint32_t w, std::uint32_t h,
+                                std::uint32_t mips, std::uint32_t block_bytes) {
     std::uint64_t total = 0;
     for (std::uint32_t i = 0; i < mips; ++i) {
         std::uint32_t lw = std::max(1u, w >> i);
         std::uint32_t lh = std::max(1u, h >> i);
         std::uint64_t blocks = ((lw + 3) / 4) * ((lh + 3) / 4);
-        total += blocks * 8;
+        total += blocks * block_bytes;
     }
     return total;
 }
@@ -209,13 +243,13 @@ std::uint64_t expected_dxt1_size(std::uint32_t w, std::uint32_t h,
 bool read_tex_trailing_header(const OvlData& side_data, TexTrailingHeader& h) {
     // `dataend` lands before the trailing section by a variable margin
     // depending on which sub-parsers touched the file pointer last, so we
-    // can't seek straight to it. Instead, scan forward from `dataend` for
-    // the {w, w, mip, size_matches_DXT1_or_DXT5_chain} 16-byte signature.
-    // The header is rigid in shape — `w == h`, both powers of two in
-    // [16, 4096], reasonable mip count, and pixel_size matches one of the
-    // two compressed mipmap-chain sizes we know — so false positives are
-    // negligible. Buffering the whole side into memory avoids per-u32
-    // file seeks; OVLs are at most a few MB and this runs once per pair.
+    // can't seek straight to it. Instead, scan forward from `dataend` for the
+    // {format, width, height, mip, size} signature at +0x1C..+0x2F. The header
+    // is rigid in shape — a recognised DXT format_code, both dims powers of two
+    // in [16, 4096], a sane mip count, and pixel_size matching that format's
+    // mipmap-chain size exactly — so false positives are negligible. Buffering
+    // the whole side into memory avoids per-u32 file seeks; OVLs are at most a
+    // few MB and this runs once per pair.
     std::uint64_t file_size = 0;
     std::vector<std::uint8_t> buf;
     {
@@ -237,21 +271,26 @@ bool read_tex_trailing_header(const OvlData& side_data, TexTrailingHeader& h) {
     const std::uint64_t lo = side_data.dataend > 0 ? side_data.dataend : 0x100;
     if (file_size < lo + 0x30) return false;
     for (std::uint64_t off = lo; off + 0x30 < file_size; ++off) {
+        std::uint32_t fmt = u32(static_cast<std::size_t>(off + 0x1c));
+        std::uint32_t block_bytes = dxt_block_bytes(fmt);
+        if (block_bytes == 0) continue;  // not a DXT format we recognise
         std::uint32_t w   = u32(static_cast<std::size_t>(off + 0x20));
         std::uint32_t hh  = u32(static_cast<std::size_t>(off + 0x24));
         std::uint32_t mip = u32(static_cast<std::size_t>(off + 0x28));
         std::uint32_t sz  = u32(static_cast<std::size_t>(off + 0x2c));
-        if (w != hh) continue;
-        if (w < 16 || w > 4096) continue;
-        if ((w & (w - 1)) != 0) continue;  // not power of 2
+        // Both dims power-of-two in [16, 4096]; rectangular is allowed now that
+        // the format code carries the discrimination (was: w == h only).
+        if (w < 16 || w > 4096 || hh < 16 || hh > 4096) continue;
+        if ((w & (w - 1)) != 0 || (hh & (hh - 1)) != 0) continue;
         if (mip == 0 || mip > 16) continue;
         if (sz == 0 || off + 0x30 + sz > file_size) continue;
-        std::uint64_t expected = expected_dxt1_size(w, hh, mip);
-        // Exact DXT1 match (4 bpp) or 2× (DXT3/DXT5 — 8 bpp, alpha-aware).
-        // The signature is strict enough that bytes inside random mms /
-        // prt / vertex buffers don't accidentally trip it (we ran on the
-        // full RCT3 install and the only positives were real tex headers).
-        if (sz != expected && sz != expected * 2) continue;
+        // Exact match against the mip-chain size for THIS format. A recognised
+        // format code (3 valid values) + exact size + two pow2 dims make false
+        // positives negligible — verified across a full RCT3 install that the
+        // only positives inside random mms / prt / snd payloads are real tex
+        // headers.
+        if (sz != expected_dxt_size(w, hh, mip, block_bytes)) continue;
+        h.format_code    = fmt;
         h.width          = w;
         h.height         = hh;
         h.mipmap_count   = mip;
@@ -262,61 +301,108 @@ bool read_tex_trailing_header(const OvlData& side_data, TexTrailingHeader& h) {
     return false;
 }
 
-// Decode `blocks` (a DXT1 mipmap level for an image of `w` × `h`) into BGRA
-// pixels at `out` (which must be sized w * h * 4).
-void decode_dxt1_level(const std::uint8_t* blocks, std::uint32_t w,
-                       std::uint32_t h, std::uint8_t* out) {
-    auto unpack_565 = [](std::uint16_t v, std::uint8_t out_rgb[3]) {
+// Build the 4-entry BGRA colour palette (alpha 255) from a DXT colour
+// sub-block's two RGB565 endpoints. For DXT1, endpoint order selects the block
+// mode: when c0 <= c1 the 4th entry is transparent black ("punch-through"
+// 1-bit alpha). DXT3/DXT5 always use the 4-colour interpolation regardless of
+// endpoint order, so pass punch_through=false for them.
+void build_color_palette(std::uint16_t c0, std::uint16_t c1,
+                         std::uint8_t pal[4][4], bool punch_through) {
+    auto unpack_565 = [](std::uint16_t v, std::uint8_t rgb[3]) {
         std::uint8_t r = (v >> 11) & 0x1F;
         std::uint8_t g = (v >> 5)  & 0x3F;
         std::uint8_t b =  v        & 0x1F;
-        out_rgb[0] = static_cast<std::uint8_t>((r << 3) | (r >> 2));
-        out_rgb[1] = static_cast<std::uint8_t>((g << 2) | (g >> 4));
-        out_rgb[2] = static_cast<std::uint8_t>((b << 3) | (b >> 2));
+        rgb[0] = static_cast<std::uint8_t>((r << 3) | (r >> 2));
+        rgb[1] = static_cast<std::uint8_t>((g << 2) | (g >> 4));
+        rgb[2] = static_cast<std::uint8_t>((b << 3) | (b >> 2));
     };
-    const std::uint8_t* blk = blocks;
+    std::uint8_t rgb0[3], rgb1[3];
+    unpack_565(c0, rgb0);
+    unpack_565(c1, rgb1);
+    // pal is BGRA; rgb is RGB, so channel k of pal maps to rgb[2 - k].
+    pal[0][0] = rgb0[2]; pal[0][1] = rgb0[1]; pal[0][2] = rgb0[0]; pal[0][3] = 255;
+    pal[1][0] = rgb1[2]; pal[1][1] = rgb1[1]; pal[1][2] = rgb1[0]; pal[1][3] = 255;
+    if (!punch_through || c0 > c1) {
+        for (int k = 0; k < 3; ++k) {
+            pal[2][k] = static_cast<std::uint8_t>((2 * rgb0[2 - k] + rgb1[2 - k]) / 3);
+            pal[3][k] = static_cast<std::uint8_t>((rgb0[2 - k] + 2 * rgb1[2 - k]) / 3);
+        }
+        pal[2][3] = 255;
+        pal[3][3] = 255;
+    } else {
+        for (int k = 0; k < 3; ++k)
+            pal[2][k] = static_cast<std::uint8_t>((rgb0[2 - k] + rgb1[2 - k]) / 2);
+        pal[2][3] = 255;
+        pal[3][0] = 0; pal[3][1] = 0; pal[3][2] = 0; pal[3][3] = 0;
+    }
+}
+
+// Decode one DXT/BC mipmap level (image `w` × `h`) into BGRA pixels at `out`
+// (sized w * h * 4). format_code: 0x12 = DXT1 (BC1), 0x13 = DXT3 (BC2),
+// 0x14 = DXT5 (BC3). DXT3/DXT5 blocks are 16 bytes — 8 bytes of alpha then an
+// 8-byte colour block; DXT1 blocks are 8 bytes of colour only.
+void decode_dxt_level(const std::uint8_t* data, std::uint32_t w, std::uint32_t h,
+                      std::uint32_t format_code, std::uint8_t* out) {
+    const bool has_alpha_block = (format_code != kFmtDXT1);
+    const std::uint32_t block_bytes = has_alpha_block ? 16u : 8u;
+    const std::uint8_t* blk = data;
     for (std::uint32_t by = 0; by < h; by += 4) {
         for (std::uint32_t bx = 0; bx < w; bx += 4) {
-            std::uint16_t c0 = static_cast<std::uint16_t>(blk[0] | (blk[1] << 8));
-            std::uint16_t c1 = static_cast<std::uint16_t>(blk[2] | (blk[3] << 8));
-            std::uint32_t idx = static_cast<std::uint32_t>(blk[4]) |
-                                (static_cast<std::uint32_t>(blk[5]) << 8) |
-                                (static_cast<std::uint32_t>(blk[6]) << 16) |
-                                (static_cast<std::uint32_t>(blk[7]) << 24);
+            const std::uint8_t* alpha = has_alpha_block ? blk : nullptr;
+            const std::uint8_t* color = has_alpha_block ? blk + 8 : blk;
+
+            std::uint16_t c0 = static_cast<std::uint16_t>(color[0] | (color[1] << 8));
+            std::uint16_t c1 = static_cast<std::uint16_t>(color[2] | (color[3] << 8));
+            std::uint32_t idx = static_cast<std::uint32_t>(color[4]) |
+                                (static_cast<std::uint32_t>(color[5]) << 8) |
+                                (static_cast<std::uint32_t>(color[6]) << 16) |
+                                (static_cast<std::uint32_t>(color[7]) << 24);
+
             std::uint8_t pal[4][4];  // [palette_idx][BGRA]
-            std::uint8_t rgb0[3], rgb1[3];
-            unpack_565(c0, rgb0);
-            unpack_565(c1, rgb1);
-            pal[0][0] = rgb0[2]; pal[0][1] = rgb0[1]; pal[0][2] = rgb0[0]; pal[0][3] = 255;
-            pal[1][0] = rgb1[2]; pal[1][1] = rgb1[1]; pal[1][2] = rgb1[0]; pal[1][3] = 255;
-            if (c0 > c1) {
-                pal[2][0] = static_cast<std::uint8_t>((2*rgb0[2] + rgb1[2]) / 3);
-                pal[2][1] = static_cast<std::uint8_t>((2*rgb0[1] + rgb1[1]) / 3);
-                pal[2][2] = static_cast<std::uint8_t>((2*rgb0[0] + rgb1[0]) / 3);
-                pal[2][3] = 255;
-                pal[3][0] = static_cast<std::uint8_t>((rgb0[2] + 2*rgb1[2]) / 3);
-                pal[3][1] = static_cast<std::uint8_t>((rgb0[1] + 2*rgb1[1]) / 3);
-                pal[3][2] = static_cast<std::uint8_t>((rgb0[0] + 2*rgb1[0]) / 3);
-                pal[3][3] = 255;
-            } else {
-                pal[2][0] = static_cast<std::uint8_t>((rgb0[2] + rgb1[2]) / 2);
-                pal[2][1] = static_cast<std::uint8_t>((rgb0[1] + rgb1[1]) / 2);
-                pal[2][2] = static_cast<std::uint8_t>((rgb0[0] + rgb1[0]) / 2);
-                pal[2][3] = 255;
-                pal[3][0] = 0; pal[3][1] = 0; pal[3][2] = 0; pal[3][3] = 0;
+            build_color_palette(c0, c1, pal, /*punch_through=*/format_code == kFmtDXT1);
+
+            // DXT5: 8-entry interpolated alpha ramp + 48 bits of 3-bit indices.
+            std::uint8_t a8[8] = {0};
+            std::uint64_t abits = 0;
+            if (format_code == kFmtDXT5) {
+                a8[0] = alpha[0];
+                a8[1] = alpha[1];
+                if (a8[0] > a8[1]) {
+                    for (int i = 1; i <= 6; ++i)
+                        a8[1 + i] = static_cast<std::uint8_t>(
+                            ((7 - i) * a8[0] + i * a8[1]) / 7);
+                } else {
+                    for (int i = 1; i <= 4; ++i)
+                        a8[1 + i] = static_cast<std::uint8_t>(
+                            ((5 - i) * a8[0] + i * a8[1]) / 5);
+                    a8[6] = 0;
+                    a8[7] = 255;
+                }
+                for (int i = 0; i < 6; ++i)
+                    abits |= static_cast<std::uint64_t>(alpha[2 + i]) << (8 * i);
             }
+
             for (int i = 0; i < 16; ++i) {
                 std::uint32_t px = bx + (i % 4);
                 std::uint32_t py = by + (i / 4);
                 if (px >= w || py >= h) continue;
                 std::uint8_t which = static_cast<std::uint8_t>((idx >> (2 * i)) & 0x3);
-                std::size_t o = (py * w + px) * 4;
+                std::size_t o = (static_cast<std::size_t>(py) * w + px) * 4;
                 out[o + 0] = pal[which][0];
                 out[o + 1] = pal[which][1];
                 out[o + 2] = pal[which][2];
-                out[o + 3] = pal[which][3];
+                std::uint8_t a = pal[which][3];  // DXT1: 255, or 0 (punch-through)
+                if (format_code == kFmtDXT3) {
+                    std::uint8_t byte = alpha[i / 2];
+                    std::uint8_t nib = (i & 1) ? static_cast<std::uint8_t>(byte >> 4)
+                                               : static_cast<std::uint8_t>(byte & 0x0F);
+                    a = static_cast<std::uint8_t>(nib * 17);  // 0..15 → 0..255
+                } else if (format_code == kFmtDXT5) {
+                    a = a8[(abits >> (3 * i)) & 0x7];
+                }
+                out[o + 3] = a;
             }
-            blk += 8;
+            blk += block_bytes;
         }
     }
 }
@@ -328,6 +414,24 @@ std::vector<std::uint8_t> read_n(BinaryReader& r, std::size_t n) {
     return out;
 }
 
+// Count `tex` linkedfiles across both sides. The trailing-section scan is
+// symbol-blind — it always returns the FIRST header it finds — so on a
+// multi-tex OVL it would emit one (near-)duplicate file per tex symbol. Until
+// the btbl/flic chain is wired up (docs §4.1.1) we only decode genuine
+// single-tex OVLs and defer the rest rather than ship duplicates.
+std::size_t count_tex_loaders(const OvlParser& parser) {
+    std::size_t n = 0;
+    for (std::size_t s = 0; s < (parser.has_unique() ? 2u : 1u); ++s) {
+        auto side = static_cast<OvlSide>(s);
+        const auto& d = parser.side(side);
+        for (const auto& lf : d.linkedfiles) {
+            Loader ldr = parser.loader_by_id(lf.loaderreference.loadernumber, side);
+            if (ldr.tag == "tex") ++n;
+        }
+    }
+    return n;
+}
+
 // Handle a `tex` linkedfile. Returns true if a .tga was produced.
 // `tex_lf_side` is the side that DECLARES the linked file (typically unique);
 // the actual DXT pixel data lives on the OTHER side's trailing section.
@@ -336,6 +440,13 @@ bool extract_tex(const OvlParser& parser,
                  const std::string& symbol,
                  const std::filesystem::path& out_path,
                  const ExtractContext& ctx) {
+    if (count_tex_loaders(parser) > 1) {
+        ctx.log("tex: " + symbol + " is in a multi-tex OVL — deferred (the "
+                "trailing scan can't tell textures apart; needs the btbl/flic "
+                "chain, docs §4.1.1)");
+        return false;
+    }
+
     // Pick the side whose trailing data section is non-empty. In every sample
     // we've seen, that's the OPPOSITE side from the tex linkedfile declaration
     // (the linkedfile sits on unique, the data on common). Fall back to the
@@ -359,13 +470,19 @@ bool extract_tex(const OvlParser& parser,
         return false;
     }
 
-    std::uint64_t expected = expected_dxt1_size(h.width, h.height, h.mipmap_count);
-    if (h.data_size != expected) {
-        // The format is probably DXT3 or DXT5 (2x DXT1 size) or something
-        // else we don't decode yet. Skip but log.
-        ctx.log("tex: " + symbol + " " + std::to_string(h.width) + "x" +
-                std::to_string(h.height) + " size=" + std::to_string(h.data_size) +
-                " ≠ DXT1 expected " + std::to_string(expected) + " (non-DXT1)");
+    std::uint32_t block_bytes = dxt_block_bytes(h.format_code);
+    if (block_bytes == 0) {
+        ctx.log("tex: " + symbol + " unsupported format_code " +
+                hex_u32(h.format_code));
+        return false;
+    }
+    // The trailing-section scan already enforced this, but re-assert so the
+    // decoder never reads past `blocks` if extract_tex is ever called with a
+    // header from another path.
+    if (h.data_size != expected_dxt_size(h.width, h.height, h.mipmap_count, block_bytes)) {
+        ctx.log("tex: " + symbol + " size " + std::to_string(h.data_size) +
+                " ≠ " + dxt_name(h.format_code) + " chain expected for " +
+                std::to_string(h.width) + "x" + std::to_string(h.height));
         return false;
     }
 
@@ -375,15 +492,13 @@ bool extract_tex(const OvlParser& parser,
 
     // Decode only mip level 0 (the full-resolution image) to TGA. Subsequent
     // mips exist in the stream but consumers can regenerate them on the fly.
-    std::uint64_t lvl0_size = expected_dxt1_size(h.width, h.height, 1);
     std::vector<std::uint8_t> bgra(static_cast<std::size_t>(h.width) * h.height * 4);
-    decode_dxt1_level(blocks.data(),
-                      h.width, h.height, bgra.data());
-    (void)lvl0_size;  // sub-mip data simply ignored
+    decode_dxt_level(blocks.data(), h.width, h.height, h.format_code, bgra.data());
     write_tga(out_path, h.width, h.height, bgra);
     ctx.log("wrote " + out_path.filename().string() + " (" +
             std::to_string(h.width) + "x" + std::to_string(h.height) +
-            ", DXT1, " + std::to_string(h.mipmap_count) + " mips)");
+            ", " + dxt_name(h.format_code) + ", " +
+            std::to_string(h.mipmap_count) + " mips)");
     return true;
 }
 

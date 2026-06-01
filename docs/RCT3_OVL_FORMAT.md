@@ -9,6 +9,13 @@ Reference sources we cross-checked:
 - `OVLExtractor-2` (legacy .NET reader by Belgabor et al., partial)
 - `cobra-tools-master` (Frontier games — JWE, Planet Zoo, Planet Coaster;
   has **no** RCT3 support for `ftx`/`tex`/`gsi`)
+- `rct3dump` (Jonathan Wilson's *RCT3 File Dumper*, 2005, GPL) — the original
+  Direct3D-based reference reader (`rct3tex.cpp`). It loads OVLs into memory and
+  hands the raw blocks to D3D9/D3DX for decoding, so it doesn't contain a
+  hand-written DXT decoder, but it **is** authoritative on: the D3D format-code
+  table (§4.4), the `FlicHeader`/`FlicMipHeader` texture layout (§4.1), the 40
+  named `txs` shader styles (§12), and the mesh / bone / animation / scenery
+  structs (§13). Cross-checked field-by-field against our empirical findings.
 - Empirical hex inspection of `.common.ovl` files from the Steam release
 - Cross-checks against ~14 952 OVLs from a full RCT3 Complete Edition install
 
@@ -51,16 +58,22 @@ complete RCT3 installation (Main + all expansions) — zero parse errors.
 | Tag    | Meaning                          | Status                                  |
 |--------|----------------------------------|-----------------------------------------|
 | `ftx`  | FlexiTexture (palette indexed8)  | Fully decoded (§3)                      |
-| `tex`  | Texture (DXT compressed)         | DXT1 single-tex decoded (§4); DXT3/5 + multi-tex v5 open |
+| `tex`  | Texture (DXT-compressed)         | DXT1 + DXT3 + DXT5 single-tex decoded (§4); multi-tex v5 open |
+| `btbl` | BmpTbl — array of `FlicHeader` + texture data | Structure known via rct3dump (§4.1); multi-tex anchor |
+| `flic` | Flic — inline texture, or an index into a `btbl` | Structure known via rct3dump (§4.1) |
+| `txs`  | Texture shader / blend style     | 40 named styles known (§12); not yet applied to output |
 | `fts`  | TextureSet?                      | Treated as ftx (untested)               |
 | `ftt`  | TextureType?                     | Treated as ftx (untested)               |
 | `gsi`  | Graphic Sprite Info (atlas rect) | Fully understood (§5)                   |
 | `psi`  | Particle Sprite Info             | Pre-resolved only, not extracted        |
 | `snd`  | Sound (.wav)                     | Fully decoded (§6)                      |
-| `sid`  | Sound sub-record inside `svd`/`phd` | Pre-resolved only, not a top-level loader |
+| `sid`  | SceneryItemData (placement/size/flags) | Struct known via rct3dump (§13); not extracted |
 | `mms`  | Morphable Mesh                   | Topology + UVs OK, positions broken (§7)|
 | `shs`  | Static Shape (rigid mesh)        | Fully decoded (§8)                      |
-| `svd`, `was`, `asd`, `vwg`, `ent`, `mdl` | Various game data | Listed by parser, not extracted |
+| `bsh`  | Bone Shape (skinned mesh)        | Struct known via rct3dump (§13); not extracted |
+| `ban`  | Bone Animation (keyframes)       | Struct known via rct3dump (§13); not extracted |
+| `svd`  | SceneryItemVisual (LOD + mesh refs) | Struct known via rct3dump (§13); not extracted |
+| `was`, `asd`, `vwg`, `ent`, `mdl`, `ptd`, `qtd`, `ter`, `sta`, `trr` | Various game data | Structs partly known via rct3dump (§13); not extracted |
 
 What "fully decoded" buys you, per loader, is documented in
 [EXTRACTORS.md](EXTRACTORS.md).
@@ -155,6 +168,18 @@ sub-meshes (with different txs), baking alpha into the `.tga` would corrupt
 the opaque cases. Restoring alpha specifically for the alpha-masked subset
 is a follow-up that needs `txs` semantic decode (open item, §11).
 
+**Lead from rct3dump (unconfirmed on disk):** the reference's in-memory
+`FlexiTextureStruct` carries *three* separate data pointers —
+`palette`, `texture` (the 1-byte indices), and a distinct **`alpha`** plane —
+and its decode is literally `dest[i] = palette[texture[i]] | (alpha[i] << 24)`
+*when `alpha != 0`*. That suggests some ftx entries store a real per-pixel
+alpha plane next to the index plane, rather than relying solely on the txs
+material. We have **not** yet located such a plane in the 76-byte on-disk
+header (the reference struct is the post-load in-RAM form, where pointers are
+fixed up; on disk they're internal offsets), but the `metadata_off1/2/3`
+fields at +0x1C/+0x24/+0x3C are unexplained candidates worth probing on an
+ftx known to need alpha (chain, foliage). See §11.
+
 ### 3.6 The "false positive" with A8
 
 During reverse engineering we briefly believed non-format-8 textures were
@@ -186,7 +211,7 @@ For each tex linkedfile (always on the side with parsed loaders for it,
 typically `unique`), the OVL pair always contains, on the OPPOSITE side
 (typically `common`):
 
-- a `btbl` (BmpTbl) loader  — historic palette holder, unused for DXT data
+- a `btbl` (BmpTbl) loader  — a count + an array of `FlicHeader`s (see §4.1.1)
 - a `flic` (Flic) loader    — the per-texture data anchor
 - raw DXT-compressed pixel data + mipmaps, sitting in the file AFTER
   everything the OVL parser enumerates (chunks, relocations, strings,
@@ -196,13 +221,47 @@ The 76-byte wrapper at `tex`'s `loaderreference.datapointer` (on unique)
 encodes mipmap LOD descriptors and pointers we never had to follow
 once we located the trailing section directly.
 
+#### 4.1.1 The `tex → flic → btbl` chain (from rct3dump)
+
+rct3dump makes the multi-texture relationship explicit, and it's the key to
+the still-open multi-tex v5 case:
+
+- **`tex`** (`TextureStruct`) is a thin wrapper that points at a `flic`.
+- **`flic`** (`FlicStruct`) either decodes its own inline pixel data, **or**
+  (loader version ≠ 2) holds an **index into a `btbl` array** — i.e. several
+  `flic`/`tex` symbols all source their pixels from one shared bitmap table.
+- **`btbl`** (`BmpTbl = {u32 unk, u32 count}`) is followed by `count`
+  `FlicHeader`s and then `count` texture payloads read back-to-back. **This is
+  the per-texture table** that our parser currently sees as
+  `unknownafterfileblocks`; matching each `flic` slot to its `btbl` index is
+  what multi-tex extraction needs (§4.6).
+
+So a single-tex OVL is just the degenerate `count == 1` case, which is why the
+trailing-section scan (§4.3) works for it without modelling the chain.
+
+#### 4.1.2 Two on-disk pixel layouts
+
+rct3dump reads texture pixels through **two different code paths** depending on
+the loader, and RCT3 OVLs use both:
+
+1. **Contiguous mips** (`ReadTextures`, used after a `btbl`): a `FlicHeader`
+   then every mip level concatenated, each level sized purely from
+   `format`/`width`/`height` (no per-level header). This is the layout our
+   single-tex DXT1/3/5 decoder handles (§4.2).
+2. **Per-mip headers** (`ReadTexture`, used by `flic` loader version 2): each
+   level is preceded by a `FlicMipHeader { u32 MWidth, MHeight, Pitch, Blocks }`
+   and copied **pitch-aware** (`size = Pitch × Blocks`, row stride = `Pitch`).
+   The level loop stops when `MWidth/MHeight/Pitch/Blocks` hit zero. We do not
+   yet emit this layout; it likely explains any tex OVL whose trailing payload
+   doesn't size-match a plain contiguous DXT chain.
+
 ### 4.2 Trailing-section header (48 bytes per texture)
 
 ```
 +0x00 .. +0x0F  u32×4   relocation offsets (echo of parsed table)
 +0x10           u32     0x18 constant (block-3 size hint?)
 +0x14 .. +0x1B  zero
-+0x1C           u32     0x12 constant
++0x1C           u32     format_code   ← D3D format (NOT a constant!) — see §4.4
 +0x20           u32     width
 +0x24           u32     height
 +0x28           u32     mipmap_count
@@ -210,6 +269,13 @@ once we located the trailing section directly.
 +0x30           bytes   first mip (largest), then each next level, all
                         DXT-compressed back-to-back.
 ```
+
+**Correction (rct3dump):** the `0x12` at `+0x1C` is **not** a constant — it's
+the texture's D3D format code, and `+0x1C .. +0x28` is exactly rct3dump's
+`FlicHeader { u32 Format, Width, Height, Mipcount }`. We only ever saw `0x12`
+because those were all DXT1; DXT3 textures carry `0x13` and DXT5 `0x14` in the
+same slot (§4.4). Reading this field turns format detection from a size
+heuristic into a direct lookup, and is what unlocked DXT3/DXT5 decode.
 
 Verified empirically: sum of per-level compressed sizes (DXT1 = 4 bpp,
 4×4 blocks padded to 8 bytes minimum) exactly matches the size field
@@ -222,53 +288,117 @@ single-tex character/clothing texture sampled).
 `dataend` (what `OvlParser` stops at) lies a variable margin before the
 trailing section — when an OVL side has no symbol resolves the parser
 exits earlier than when it does, by 20+ bytes. We therefore scan
-forward from `dataend` until the {`w`, `w`, `mip`, `size`} 16-byte
-signature matches, with `w == h`, both powers of two in `[16, 4096]`,
-`1 ≤ mip ≤ 16`, and `size` equal to either the DXT1-expected mipmap
-chain size or 2× of it (DXT3/5). False positives don't happen in
-practice — the constraint set is strict enough that mms vertex/index
-buffers and prt/snd/etc. payloads never accidentally trip it.
+forward from `dataend` for the `{format, width, height, mip, size}`
+signature at `+0x1C .. +0x2F`, requiring:
+
+- `format_code ∈ {0x12, 0x13, 0x14}` (DXT1/DXT3/DXT5),
+- `width` and `height` both powers of two in `[16, 4096]` (rectangular
+  allowed — we no longer require `w == h`),
+- `1 ≤ mip ≤ 16`, and
+- `size` **exactly** equal to the mip-chain size computed from the format's
+  block size (8 B for DXT1, 16 B for DXT3/5).
+
+The format-code constraint (3 valid values out of 2³²) combined with the exact
+size match makes the signature far stricter than the old size-only heuristic —
+mms vertex/index buffers and prt/snd payloads don't trip it.
 
 ### 4.4 Format detection
 
-The `+0x2C` size field doesn't carry a format ID. We infer:
+The format is read **directly** from `format_code` at `+0x1C` (§4.2). RCT3
+reuses the Direct3D format enumeration; rct3dump's `RCT3DFormatToD3DFormat`
+gives the full table (only the DXT codes occur in `tex` trailing sections in
+practice, but the rest is documented here for completeness):
 
-| `size` matches      | Format        | Status            |
-|---------------------|---------------|-------------------|
-| DXT1 mip-chain (4 bpp) | DXT1 (BC1) | **Decoded** → TGA |
-| 2× DXT1 (8 bpp)        | DXT3 or DXT5 | Logged, not decoded yet |
+| code   | D3D format     | code   | D3D format    | code   | D3D format |
+|--------|----------------|--------|---------------|--------|------------|
+| `0x01` | R8G8B8         | `0x09` | X4R4G4B4      | `0x12` | **DXT1 (BC1)** |
+| `0x02` | A8R8G8B8       | `0x0A` | A4R4G4B4      | `0x13` | **DXT3 (BC2)** |
+| `0x03` | X8R8G8B8       | `0x0B` | L8            | `0x14` | **DXT5 (BC3)** |
+| `0x04` | R5G6B5         | `0x0C` | A8L8          | `0x15` | R3G3B2     |
+| `0x05` | X1R5G5B5       | `0x0E` | V8U8          | `0x16` | A8         |
+| `0x07` | P8 (palette)   | `0x10` | UYVY          | `0x100`–`0x103` | depth (D16/D32/D15S1/D24S8) |
+| `0x08` | A1R5G5B5       | `0x11` | YUY2          |        |            |
 
-For DXT1 we produce a 32-bit BGRA TGA at the largest mip level. Mip 0
-alpha is 255 unless `c0 ≤ c1` in a block — the "punch-through" 1-bit
-alpha mode of DXT1 — in which palette index 3 becomes fully
-transparent.
+What we decode today:
+
+| `format_code` | Format     | bytes / 4×4 block | Status            |
+|---------------|------------|-------------------|-------------------|
+| `0x12`        | DXT1 (BC1) | 8  (4 bpp)        | **Decoded → TGA** |
+| `0x13`        | DXT3 (BC2) | 16 (8 bpp)        | **Decoded → TGA** (explicit 4-bit alpha) |
+| `0x14`        | DXT5 (BC3) | 16 (8 bpp)        | **Decoded → TGA** (interpolated alpha) |
+
+All three decode to a 32-bit BGRA TGA at the largest mip level. Per-format
+alpha handling:
+
+- **DXT1** — opaque (`A = 255`) unless a block uses the `c0 ≤ c1`
+  "punch-through" mode, where colour index 3 is fully transparent.
+- **DXT3** — the leading 8 bytes of each 16-byte block hold 16 explicit 4-bit
+  alpha values (scaled ×17 to 0–255); the trailing 8 bytes are a DXT1-style
+  colour block but **always** in 4-colour mode (no punch-through).
+- **DXT5** — the leading 8 bytes hold two 8-bit alpha endpoints + sixteen 3-bit
+  indices into an 8-entry interpolated alpha ramp; colour block as DXT3.
+
+The `+0x2C` size field is now used only as a **cross-check**: `data_size` must
+equal the mip-chain size computed from `format_code` + `width` + `height` +
+`mipmap_count`, which also keeps the trailing-section scan (§4.3) from
+false-positiving.
+
+**Prevalence in stock RCT3** (raw signature census across all 14 952 `.ovl`
+files, both sides): **110 DXT1** headers, **10 DXT3** headers (8 files), and
+**zero DXT5** anywhere in the shipping game. So the BC3/DXT5 path is implemented
+to spec for completeness and custom content, but never fires on stock assets
+(untested on real data). DXT3 is rare; its single-tex instances (e.g.
+`Mackeral` — a 32×32 cutout, verified: 642 transparent + 382 opaque texels)
+extract correctly, while most DXT3 sits inside multi-tex icon atlases that are
+still gated (§4.6).
 
 ### 4.5 Coverage today
 
-Across a complete RCT3 Complete Edition install (665 `tex` symbols
-across 170 OVL pairs):
+Raw signature census across the complete RCT3 Complete Edition install (every
+`.ovl`, both sides) finds **120 distinct DXT texture headers**: 110 DXT1,
+10 DXT3, 0 DXT5. The gated extractor (single-tex only, §4.6) decodes:
 
-| Bucket                            | OVL pairs | tex symbols | extracted |
-|-----------------------------------|----------:|------------:|----------:|
-| **Single-tex, DXT1** (Bikini-like) | 121      | 121         | 110 (91%) |
-| Single-tex, DXT3/5 or unusual     | 0 (subset of 121) | 11 | 0 (open, §4.6) |
-| **Multi-tex on v4** OVLs          | ~few     | included in 49 multi | a few |
-| **Multi-tex on v5** OVLs (Main, lion_data, GUI …) | most of 49 | ~520 | 0 (open, §4.6) |
-| **Total**                         | 170      | 665         | ~110 (17%) |
+| Format | Headers | Decoded (single-tex) | Deferred (multi-tex) |
+|--------|--------:|---------------------:|----------------------|
+| DXT1   | 110     | 110                  | — |
+| DXT3   | 10 (8 files) | 6 | Main (84 tex), chimp_data (2 tex) |
+| DXT5   | 0       | —                    | — |
+
+The 6 newly-decoded DXT3 textures are `Mackeral` (32², the validation case) plus
+five 256²/512² atlases — `PathIcons`, `ShopsIcons`, `EnclosureIcons`,
+`PoolIcons`, and `WildAnimals`. The four icon atlases are single big DXT3 images
+sliced by `gsi` rects, so decoding them is what makes `gsi` atlas-sprite
+extraction (§5) viable for those packs. Multi-texture OVLs (Main + ~48 others on
+v5, plus chimp_data) hold the bulk of remaining `tex` data and stay deferred
+until the `btbl`/`flic` chain is wired up (§4.1.1, §4.6).
 
 ### 4.6 Open work on `tex`
 
-- **DXT3/DXT5 decode** — the trailing-section header layout is identical,
-  pixel size is `2× DXT1`. Adding a DXT5 decoder is ~30 lines; needed
-  for the icon atlases (EnclosureIcons, PathIcons, …) and a few
-  per-character maps (BabySpecMap, mackeral).
+- **DXT3/DXT5 decode** — ✅ **done.** `format_code` at `+0x1C` selects the
+  decoder (§4.4). **DXT3** (explicit 4-bit alpha) is verified on real assets —
+  6 single-tex textures now decode, including the `EnclosureIcons` / `PathIcons`
+  / `ShopsIcons` / `PoolIcons` atlases and `Mackeral`. **DXT5** (interpolated
+  alpha) is implemented to the BC3 spec but **does not occur anywhere in stock
+  RCT3** (0 of 14 952 files), so it's unverified on real data — it's there for
+  custom content.
 - **Multi-tex layout** — OVLs that hold many `tex` linkedfiles (Main,
   lion_data, Sky, Water, GUI scenario logos …) are OVL v5 and use the
   `unknownafterfileblocks` table (parsed but not yet exposed) to locate
-  per-texture data. Each `flic` loader probably maps to one texture
-  via this table. Requires extending the parser to surface the table
-  and matching `flic` slot → trailing offset.
-- **Stable `gsi` atlas extraction** — once tex is fully decoded, the
+  per-texture data. rct3dump shows this is the **`btbl` array** and that each
+  `flic` slot indexes into it (§4.1.1): a `btbl` is `{u32 unk, u32 count}`
+  followed by `count` `FlicHeader`s and `count` payloads. Wiring this up =
+  surface the table from the parser, then for each `flic` read its `btbl`
+  index and slice the matching payload (contiguous-mip layout, already decoded).
+  Until then, the extractor **gates the trailing-section path to OVLs with
+  exactly one `tex` linkedfile**: the scan is symbol-blind and always returns
+  the first header, so multi-tex OVLs are cleanly *deferred* rather than
+  emitting N near-duplicates of texture #0. (Before this gate, `Main.common.ovl`
+  produced 88 `.tga` files with only 4 distinct contents; now it yields its 4
+  real `ftx` textures and defers all 84 `tex` symbols with a log line each.)
+- **Per-mip `FlicMipHeader` layout** (§4.1.2) — needed if any `flic` v2 texture
+  turns out not to size-match a contiguous chain. Not yet observed in failing
+  cases, but documented so it isn't re-discovered from scratch.
+- **Stable `gsi` atlas extraction** — once multi-tex is wired up, the
   3658 `gsi` sprites become extractable as cropped TGAs (`AtlasExtractor`
   already has the slicing code).
 
@@ -619,10 +749,13 @@ in [EXTRACTORS.md](EXTRACTORS.md).
   Symptom: tiny `pixel_internal_offset` (6, 64). Root cause: previous
   attempts read pixels from the wrong block; the palette-decode path
   works fine because both palette and indices are reachable.
-- **No DXT compression in RCT3.** We spent hours trying DXT1/3/5 + RGB565
-  + BGRA8888 variants before discovering everything is indexed8 palette.
-  RCT3 ships pre-2004, hardware DXT was an option but Frontier opted
-  for palette textures across the board.
+- **`ftx` uses no DXT — but `tex` does.** ⚠️ *Superseded note:* we originally
+  concluded "no DXT compression in RCT3" after hours of failed DXT1/3/5 +
+  RGB565 + BGRA8888 attempts on **ftx**, which really is indexed8 palette. That
+  conclusion is correct for `ftx` and **wrong for `tex`**: the `tex` container
+  is genuinely DXT-compressed (BC1/BC2/BC3), as the `format_code` at `+0x1C`
+  (§4.4) and rct3dump's format table confirm. The two containers simply use
+  different encodings — palette for `ftx`, hardware DXT for `tex`.
 - **Dice texture appears "stretched vertically"** in the extracted TGA.
   Reading dimensions from offset 4 + 8 gives 128 × 128 (matches what's
   in `format_repeat` block at +0x2C). Not investigated further; likely
@@ -641,9 +774,169 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 
 | Item | Impact when solved |
 |---|---|
-| `tex` texture format decode | Unlocks 3 679 atlas sprites (cosmetics / GUI). Not required for shs models — none reference tex. |
+| `tex` multi-tex (`btbl`/`flic`) layout | Unlocks 3 679 atlas sprites (cosmetics / GUI). Single-tex DXT1/3/5 is now decoded (§4); multi-tex via the `btbl` array (§4.1.1) is the remaining piece. Not required for shs models — none reference tex. |
 | `mms` position decode | Unlocks readable 3D meshes for animated objects (animals, characters, ride cars). |
-| `txs` shader semantics | Refines `.mtl` output to encode alpha mask, reflection, specular per sub-mesh based on the `txs` symbol. |
+| `txs` shader semantics | Refines `.mtl` output to encode alpha mask, reflection, specular per sub-mesh based on the `txs` symbol. The 40 styles + their D3D blend/alpha-test/alpha-ref values are now tabulated in §12 — enough to drive both `.mtl` flags and ftx alpha re-masking. |
+| `ftx` per-pixel alpha plane | rct3dump's `FlexiTextureStruct` has a separate `alpha` plane (§3.5). If present on disk it would let opaque + alpha-masked sub-meshes share one ftx correctly without txs guesswork. |
+| `bsh` / `ban` skinned meshes + animation | Structs fully laid out in §13 (vertex has a bone index; `ban` holds translate/rotate keyframes). Would unlock animated character / animal export. |
 | OVL header v6 | Currently parser warns and continues; some Wild! / Soaked! OVLs may be affected. |
 | The 5 stub ftx textures | Cosmetic — could be filtered out at extract time. |
 | Dice vertical stretch | Minor cosmetic question, not investigated. |
+
+
+## 12. `txs` shader styles (from rct3dump)
+
+A `txs` symbol (e.g. `SIOpaque:txs`, `SIAlphaMaskLow:txs`) names a render style,
+not data — rct3dump resolves it against a hard-coded table of 40 styles
+(`rct3tex.cpp:110-354`) and applies it with D3D render states:
+
+```
+SetRenderState(D3DRS_SRCBLEND,        style.SrcBlend)
+SetRenderState(D3DRS_DESTBLEND,       style.DestBlend)
+SetRenderState(D3DRS_ALPHATESTENABLE, style.AlphaTestEnable)
+SetRenderState(D3DRS_ALPHAFUNC,       D3DCMP_GREATER)
+SetRenderState(D3DRS_ALPHAREF,        style.AlphaRef)   // keep texel if alpha > ref
+```
+
+**The actionable rule** (for `.mtl` flags and for ftx alpha re-masking, §3.5):
+
+- **`AlphaTestEnable == true`** → the texture is a **cutout**: texels with
+  `alpha ≤ AlphaRef` are discarded. A sub-mesh with such a `txs` *wants*
+  texture transparency. This is every `SiAlpha*` / `SiAlphaMask*` style, plus
+  `BillboardStandard` and `GUIIcon`.
+- **`AlphaTestEnable == false`** → **opaque**; ignore any texture alpha. This is
+  every `SIOpaque*` style, plus `SIFillZ`, `SIGlass`, and the opaque `*Chrome`
+  variants.
+
+`AlphaBlendEnable` is `true` for all 40. `SrcBlend`/`DestBlend` is
+`SRCALPHA`/`INVSRCALPHA` (standard alpha blend) for all but four specials:
+
+| Style              | SrcBlend | DestBlend     | AlphaTest | AlphaRef | Note |
+|--------------------|----------|---------------|-----------|----------|------|
+| `SIOpaque`         | SRCALPHA | INVSRCALPHA   | no        | 0x00     | the default opaque material |
+| `SiAlpha`          | SRCALPHA | INVSRCALPHA   | yes       | 0x08     | standard cutout |
+| `SiAlphaMask`      | SRCALPHA | INVSRCALPHA   | yes       | 0x08     | mask cutout |
+| `SiAlphaMaskLow`   | SRCALPHA | INVSRCALPHA   | yes       | 0x64     | higher threshold (100) |
+| `SiAlphaText`      | SRCALPHA | INVSRCALPHA   | yes       | 0x32     | text (threshold 50) |
+| `BillboardStandard`| SRCALPHA | INVSRCALPHA   | yes       | 0x80     | billboards (threshold 128) |
+| `SiAlphaMaskChrome`| ONE      | ZERO          | yes       | 0xD0     | opaque replace + high cutout |
+| `GUIIcon`          | ONE      | ZERO          | yes       | 0xD0     | GUI sprites |
+| `SIFillZ`          | ZERO     | ONE           | no        | 0x00     | depth-only (writes no colour) |
+| `SIGlass`          | ONE      | INVSRCALPHA   | no        | 0x08     | additive glass |
+
+`AlphaRef` values seen: `0x08`(8), `0x32`(50), `0x64`(100), `0x80`(128),
+`0xD0`(208). The full 40-row table (all the `*Specular*` / `*Reflection*` /
+`*Chrome*` / `*Unlit*` permutations) is in `rct3tex.cpp:110-354`; they only
+differ from the representatives above in name and `AlphaRef`, never in a way
+that changes the opaque-vs-cutout decision.
+
+
+## 13. Other structures recovered from rct3dump (for future work)
+
+`rct3tex.cpp` is primarily a **mesh viewer**; textures are a means to an end.
+Its struct definitions are the most complete public description of RCT3's
+geometry / scenery formats, so they're transcribed here for when the model
+side (`shs`/`bsh`/`mms`) is extended. All structs are the **in-RAM** form
+(pointers fixed up by relocations); on disk those pointers are internal
+offsets resolved via `offset_to_position()`.
+
+### 13.1 Vertex layouts — confirms §8.4
+
+```
+VERTEX  (static, shs — 36 B)          VERTEX2 (skinned, bsh — 44 B)
++0x00  float position[3]               +0x00  float position[3]
++0x0C  float normal[3]                 +0x0C  float normal[3]
++0x18  u32   color  (D3DCOLOR)         +0x18  u32   Bone     ← bone index
++0x1C  float u, v                      +0x1C  u32   unk
+                                       +0x20  u32   color (D3DCOLOR)
+                                       +0x24  float u, v
+```
+
+**Cross-check:** the "`0xFFFFFFFF` sentinel at +0x18" we identified empirically
+in §8.4 is actually the **vertex `color`** field (D3DCOLOR), which is
+`0xFFFFFFFF` = opaque white on virtually all scenery. So it's a real field, not
+padding — worth emitting as OBJ/glTF vertex colour rather than discarding.
+
+### 13.2 Static mesh (`shs`) — confirms §8.1–8.3
+
+```
+StaticShape1 (header)                  StaticShape2 (sub-mesh)
+  D3DVECTOR BoundingBox1, 2              u32       unk1 (0xFFFFFFFF)
+  u32 TotalVertexCount, TotalIndexCount  ptr       fts  (FlexiTextureInfo, 0 on disk)
+  u32 MeshCount2, MeshCount              ptr       TextureData (0 on disk)
+  StaticShape2** sh   ← sub-mesh ptrs    u32       PlaceTexturing, textureflags, unk4
+  u32 EffectCount                        u32       VertexCount, IndexCount
+  D3DMATRIX* EffectPosition              VERTEX*   Vertexes
+  char**     EffectName                  u32*      Triangles  (32-bit indices)
+```
+
+`EffectName[]` (e.g. attachment / light points) is a bonus the current extractor
+doesn't surface. Note `shs` triangles are **u32**; `bsh` triangles are **u16**.
+
+### 13.3 Skinned mesh (`bsh`) + animation (`ban`)
+
+```
+BoneShape1                             BoneStruct
+  D3DVECTOR BoundingBox1, 2              char* BoneName
+  u32 TotalVertexCount, TotalIndexCount  u32   BoneNumber
+  u32 MeshCount2, MeshCount
+  BoneShape2** sh                       BoneShape2: like StaticShape2 but
+  u32 BoneCount                           Vertexes are VERTEX2, Triangles u16
+  BoneStruct* Bones
+  D3DMATRIX* BonePositions1  ← bind pose (per bone)
+  D3DMATRIX* BonePositions2  (≈ identical to 1 in practice)
+
+BoneAnim (ban)         BoneAnimBone               txyz (keyframe)
+  u32 BoneCount          char* Name                 float Time
+  BoneAnimBone* Bones    u32 TranslateCount         float X, Y, Z
+  float TotalTime        txyz* Translate
+                         u32 RotateCount
+                         txyz* Rotate
+```
+
+Skinning recipe (from `DoShapes`): each vertex's position/normal is multiplied
+by `BonePositions1[vertex.Bone]`. Animation adds, per keyframe, the bone's
+`Translate` to the matrix's `_41/_42/_43`, and converts the `Rotate` keyframe
+(an axis-angle **rotation vector**, magnitude = angle) to a rotation matrix via
+Rodrigues' formula (`rotmath`, `rct3tex.cpp:2807`). `Bones[i].BoneNumber ==
+0xFFFFFFFF` marks an unused bone.
+
+### 13.4 Scenery visual (`svd`) and item (`sid`)
+
+```
+SceneryItemVisual (svd)                SceneryItemVisualLOD
+  u32 unk1, unk2                         u32   MeshType  (0 = StaticShape, 3 = BoneShape)
+  float unk3, unk4                       char* LODName
+  u32 unk5                               StaticShape1* StaticShape (0 on disk)
+  u32 LODCount                           BoneShape1*   BoneShape   (0 on disk)
+  SceneryItemVisualLOD** LODMeshes       float distance  (LOD switch distance)
+  u32 unk6..unk11                        u32   AnimationCount
+                                         BoneAnim*** AnimationArray
+```
+
+`sid` (`SceneryItem`) is large (~50 fields): 64 placement flags, `size` class,
+`xsquares`/`ysquares`, world `xpos/ypos/zpos` + `xsize/ysize/zsize`, `cost`,
+`refund`, `type` (see the 47 `TypeNames`: tree, fence, ride track, stall …),
+`svdcount` + `svd**` (its visuals), a `gsi` icon, `OvlName`, and a wide-char
+`Name`. rct3dump dumps a trimmed `SIDData` record per item
+(`rct3tex.cpp:2162`). Full layout: `rct3tex.cpp:954-1041`.
+
+### 13.5 GUI icon rect (`gsi`) — confirms §5
+
+```
+GUISkinItem            GUISkinItemPos
+  u32 unk1               u32 left, top, right, bottom
+  TextureStruct* tex     (rct3dump carries a "swapped left/top" caveat — its
+  GUISkinItemPos* pos     author flipped them vs. the on-disk order, so trust
+  u32 unk2                §5's empirically-verified left/top/right/bottom)
+```
+
+### 13.6 Container parsing reference
+
+`ReadOvl` (`rct3tex.cpp:1602`) + `DoReloc` (`:1500`) are a complete, if terse,
+implementation of the v3/v4/**v5** OVL container: header variants, the 9
+file-type blocks, the relocation/pointer-fixup pass, and symbol resolution
+(`FindSymbol`, `:2723`, which also handles the `:txs` style lookup). Useful as
+a second opinion if a v5 edge case ever disagrees with our parser. Loader
+dispatch by tag is the big `if (stricmp(LoaderNames…))` ladder at `:1891`
+onward — a ready-made catalog of every loader tag and the struct it maps to.

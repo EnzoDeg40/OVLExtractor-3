@@ -4,14 +4,15 @@
 
 namespace ovl {
 
-// Best-effort extractor for FlexiTexture (ftx) and Texture (tex) loaders.
-// The RCT3 texture format is not publicly documented, so this extractor:
-//   1. Reads the texture header (format code, width, height, mipmap pointers)
-//   2. Locates the actual pixel data block via offset resolution
-//   3. Writes the raw pixel payload to <name>.ovltex
-//   4. Writes a sidecar <name>.json with parsed header metadata
-//   5. If the format looks like a known DXT variant, also writes a .dds
-//      attempt (may need format tweaking by the user)
+// Extractor for FlexiTexture (ftx) and Texture (tex) loaders. Both decode to a
+// 32-bit BGRA .tga at the largest mip level (see docs §3 and §4):
+//   - ftx: 8-bit palette-indexed pixels (palette in the header block, indices
+//     in a separate chunk reached via an internal offset). Also writes the raw
+//     header block to <name>.ovltex and a <name>.json metadata sidecar.
+//   - tex: DXT-compressed pixel data in a trailing section after the parsed
+//     OVL structures. The format code at header +0x1C selects the decoder —
+//     DXT1 (BC1), DXT3 (BC2, explicit alpha) and DXT5 (BC3, interpolated alpha)
+//     are all supported. Multi-texture (btbl/flic) OVLs are not yet handled.
 class TextureExtractor : public IResourceExtractor {
 public:
     std::string_view name() const override { return "texture"; }
