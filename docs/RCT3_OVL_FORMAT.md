@@ -70,7 +70,7 @@ complete RCT3 installation (Main + all expansions) — zero parse errors.
 | `sid`  | SceneryItemData (placement/size/flags) | Struct known via rct3dump (§13); not extracted |
 | `mms`  | Morphable Mesh                   | Topology + UVs OK, positions broken (§7)|
 | `shs`  | Static Shape (rigid mesh)        | Fully decoded (§8)                      |
-| `bsh`  | Bone Shape (skinned mesh)        | Struct known via rct3dump (§13); not extracted |
+| `bsh`  | Bone Shape (skinned mesh)        | Rest-pose mesh decoded (§8.6); skeletal animation open |
 | `ban`  | Bone Animation (keyframes)       | Struct known via rct3dump (§13); not extracted |
 | `svd`  | SceneryItemVisual (LOD + mesh refs) | Struct known via rct3dump (§13); not extracted |
 | `was`, `asd`, `vwg`, `ent`, `mdl`, `ptd`, `qtd`, `ter`, `sta`, `trr` | Various game data | Structs partly known via rct3dump (§13); not extracted |
@@ -708,6 +708,43 @@ in `tracks/coasters/Track6/45medslopechain_data.unique.ovl` reference
 The global symbol index (§9) resolves these cross-OVL references.
 
 
+### 8.6 BoneShape (`bsh`) — rest-pose decode
+
+`bsh` is the skinned-mesh format (animated scenery, vehicles, animals). It
+shares `shs`'s entire structure — the header prelude (vc@+0x18, ic@+0x1C,
+sub-mesh table ptr @+0x28), the `0xFFFFFFFF`-terminated sub-mesh table, the
+per-sub-mesh local vertex/index buffers, and order-based `(ftx, txs)` material
+binding — and differs in exactly two ways:
+
+- **Vertex stride 44, not 36** (`VERTEX2`, §13.1): `pos(12) normal(12)
+  bone(u32) unk(u32) color(u32) uv(8)`. The extra `bone`/`unk`/`color` u32s sit
+  between normal and UV; `shs`'s `VERTEX` has a single u32 there.
+- **u16 indices, not u32.**
+
+Crucially, the on-disk vertex **positions are already model-space**: rct3dump's
+viewer multiplies each vertex by its bone's bind-pose matrix
+(`BonePositions1[vertex.bone]`) only on the *animated* render path, and even
+there writes the raw position for the static view (`DoShapes`). So a rest-pose
+export uses the raw positions directly — `process_mesh(bone=true)` is `process_shs`
+with the stride/index tweaks above, and the per-vertex bone index is read and
+discarded.
+
+Verified on `WildAnimals/Helicopter` (4 LODs: h/m/l + DartCamMode) and
+`WildAnimals/Crates` (40 bsh): **44/44 decode cleanly**, sub-mesh vc/ic sums
+match the header, positions land in a plausible model-space box (Helicopter
+±8.6 m), and UVs sit in [0, 1] (7552 UVs, 0.2 % outside — consistent with
+texture tiling, not a decode error). The clean UV range is the strongest
+fingerprint that the 44-byte stride is right (UV is the last 8 bytes of the
+vertex; a wrong stride scrambles it).
+
+Skeletal **animation** (`ban`) is a separate problem: OBJ can't carry a
+skeleton + keyframes, so it needs either a glTF exporter (skin + animation
+channels) or baked per-frame OBJs. The data is all there — `VERTEX2.bone`,
+`BoneShape1.BonePositions1` (bind pose), `BoneShape1.Bones[]` (names), and the
+`ban` keyframes (translate + axis-angle rotate, §13.3) — but it's deferred
+(§11).
+
+
 ## 9. Global symbol index
 
 `ovlextract --build-index <out.json> <Assets/>` recursively scans every
@@ -791,7 +828,7 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 | `mms` position decode | Unlocks readable 3D meshes for animated objects (animals, characters, ride cars). |
 | `txs` shader semantics | Refines `.mtl` output to encode alpha mask, reflection, specular per sub-mesh based on the `txs` symbol. The 40 styles + their D3D blend/alpha-test/alpha-ref values are now tabulated in §12 — enough to drive both `.mtl` flags and ftx alpha re-masking. |
 | `ftx` per-pixel alpha plane | rct3dump's `FlexiTextureStruct` has a separate `alpha` plane (§3.5). If present on disk it would let opaque + alpha-masked sub-meshes share one ftx correctly without txs guesswork. |
-| `bsh` / `ban` skinned meshes + animation | Structs fully laid out in §13 (vertex has a bone index; `ban` holds translate/rotate keyframes). Would unlock animated character / animal export. |
+| `ban` skeletal animation (bsh meshes) | `bsh` rest-pose meshes now export (§8.6); the remaining piece is skeletal animation — needs a glTF exporter (skin + animation channels) or baked per-frame OBJs, plus the bone hierarchy + `ban` keyframe decode. Would animate characters / animals / vehicles. |
 | OVL header v6 | Currently parser warns and continues; some Wild! / Soaked! OVLs may be affected. |
 | The 5 stub ftx textures | Cosmetic — could be filtered out at extract time. |
 | Dice vertical stretch | Minor cosmetic question, not investigated. |

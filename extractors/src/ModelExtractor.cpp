@@ -757,13 +757,26 @@ void dump_shs_survey(const OvlParser& parser, OvlSide side,
     }
 }
 
-bool process_shs(const OvlParser& parser,
-                 OvlSide side,
-                 std::size_t lf_index,
-                 const std::filesystem::path& out_dir,
-                 bool overwrite,
-                 const ExtractContext& ctx,
-                 AutoTextureState& auto_tex) {
+// Shared mesh extractor for shs (StaticShape, rigid) and bsh (BoneShape,
+// skinned). They share the same header prelude (vc@+0x18, ic@+0x1C, sub-mesh
+// table ptr @+0x28), sub-mesh descriptor layout, material binding, and OBJ/MTL
+// emission. They differ only in the per-vertex stride and index width:
+//   shs: VERTEX  (36 B) = pos(12) normal(12) sentinel/color(4) uv(8); u32 idx
+//   bsh: VERTEX2 (44 B) = pos(12) normal(12) bone(4) unk(4) color(4) uv(8); u16 idx
+// bsh vertex positions are already model-space (rct3dump's viewer computes a
+// per-bone bind-pose transform but writes the raw positions for the static
+// view — see DoShapes), so a rest-pose export is identical to shs apart from
+// the stride and index width. The bone index per vertex is read and discarded
+// here; skeletal animation (ban) is a separate concern (OBJ can't carry it).
+bool process_mesh(const OvlParser& parser,
+                  OvlSide side,
+                  std::size_t lf_index,
+                  const std::filesystem::path& out_dir,
+                  bool overwrite,
+                  const ExtractContext& ctx,
+                  AutoTextureState& auto_tex,
+                  bool bone) {
+    const char* kind = bone ? "bsh" : "shs";
     const auto& d = parser.side(side);
     const auto& lf = d.linkedfiles[lf_index];
 
@@ -772,7 +785,7 @@ bool process_shs(const OvlParser& parser,
     if (cut != std::string::npos) symbol = symbol.substr(0, cut);
     std::string base = sanitize(symbol);
 
-    if (g_shs_survey()) {
+    if (!bone && g_shs_survey()) {
         dump_shs_survey(parser, side, lf, symbol);
         return true;
     }
@@ -793,16 +806,16 @@ bool process_shs(const OvlParser& parser,
         vc = r.read_u32();
         ic = r.read_u32();
     }
-    ctx.log("shs " + symbol + ": v=" + std::to_string(vc) +
+    ctx.log(std::string(kind) + " " + symbol + ": v=" + std::to_string(vc) +
             " i=" + std::to_string(ic));
     if (vc == 0 || ic == 0 || vc > 200000 || ic > 600000) {
-        ctx.log("shs: implausible counts, skipping");
+        ctx.log(std::string(kind) + ": implausible counts, skipping");
         return false;
     }
 
     auto submeshes = read_submesh_table(parser, lf);
     if (submeshes.empty()) {
-        ctx.log("shs: no sub-mesh table at +0x28");
+        ctx.log(std::string(kind) + ": no sub-mesh table at +0x28");
         return false;
     }
 
@@ -810,7 +823,7 @@ bool process_shs(const OvlParser& parser,
     std::uint32_t sum_vc = 0, sum_ic = 0;
     for (const auto& s : submeshes) { sum_vc += s.vc; sum_ic += s.ic; }
     if (sum_vc != vc || sum_ic != ic) {
-        ctx.log("shs: sub-mesh sum mismatch (header v=" + std::to_string(vc) +
+        ctx.log(std::string(kind) + ": sub-mesh sum mismatch (header v=" + std::to_string(vc) +
                 "/i=" + std::to_string(ic) + " vs sum v=" +
                 std::to_string(sum_vc) + "/i=" + std::to_string(sum_ic) + ")");
         return false;
@@ -833,7 +846,7 @@ bool process_shs(const OvlParser& parser,
         // Vertices (stride 36, sentinel at +24)
         auto pv = parser.offset_to_position(sd.verts_off);
         if (!pv.found) {
-            ctx.log("shs: sub-mesh " + std::to_string(s) +
+            ctx.log(std::string(kind) + ": sub-mesh " + std::to_string(s) +
                     " vertex pointer unresolved");
             return false;
         }
@@ -846,22 +859,29 @@ bool process_shs(const OvlParser& parser,
             v.y = rv.read_f32();
             v.z = rv.read_f32();
             (void)rv.read_f32(); (void)rv.read_f32(); (void)rv.read_f32();
-            (void)rv.read_u32();   // sentinel (validated empirically)
+            if (bone) {
+                (void)rv.read_u32();  // bone index (skinning; unused for rest pose)
+                (void)rv.read_u32();  // unk
+                (void)rv.read_u32();  // color (D3DCOLOR)
+            } else {
+                (void)rv.read_u32();  // sentinel/color (validated empirically)
+            }
             v.u = rv.read_f32();
             v.v = rv.read_f32();
             m.verts.push_back(v);
         }
-        // Indices (u32 triangle list, sub-mesh-local)
+        // Indices: sub-mesh-local triangle list. bsh = u16, shs = u32.
         auto pi = parser.offset_to_position(sd.idx_off);
         if (!pi.found) {
-            ctx.log("shs: sub-mesh " + std::to_string(s) +
+            ctx.log(std::string(kind) + ": sub-mesh " + std::to_string(s) +
                     " index pointer unresolved");
             return false;
         }
         BinaryReader ri(parser.side(pi.currentOVL).ovlname);
         ri.seek(pi.position);
         m.idx.resize(sd.ic);
-        for (auto& x : m.idx) x = ri.read_u32();
+        if (bone) { for (auto& x : m.idx) x = ri.read_u16(); }
+        else      { for (auto& x : m.idx) x = ri.read_u32(); }
         // Material binding (one (ftx, txs) pair per sub-mesh, in order)
         if (s < materials.size()) {
             m.ftx_symbol = materials[s].first;
@@ -959,7 +979,7 @@ bool process_shs(const OvlParser& parser,
     // group with usemtl directive and local-to-global index remap.
     std::ofstream o(out_path);
     if (!o) return false;
-    o << "# RCT3 OVL extract (shs) — " << symbol << "\n";
+    o << "# RCT3 OVL extract (" << kind << ") — " << symbol << "\n";
     o << "# verts=" << vc << " indices=" << ic
       << " submeshes=" << meshes.size() << "\n";
     o << "mtllib " << base << ".mtl\n";
@@ -1011,10 +1031,14 @@ bool side_loop(const OvlParser& parser,
             // mms (MorphMesh) position decoding is still unresolved (see
             // candidate decoder dump in process_mms). Until it is, skip it in
             // bulk runs so we don't flood the output with 15 noise variants
-            // per animated mesh. shs (StaticShape) is fully decoded.
+            // per animated mesh. shs (StaticShape) and bsh (BoneShape, rest
+            // pose) are fully decoded.
             if (ldr.tag == "shs") {
-                ok = process_shs(parser, side, i, ctx.output_dir,
-                                 ctx.overwrite, ctx, auto_tex);
+                ok = process_mesh(parser, side, i, ctx.output_dir,
+                                  ctx.overwrite, ctx, auto_tex, /*bone=*/false);
+            } else if (ldr.tag == "bsh") {
+                ok = process_mesh(parser, side, i, ctx.output_dir,
+                                  ctx.overwrite, ctx, auto_tex, /*bone=*/true);
             } else {
                 continue;
             }
