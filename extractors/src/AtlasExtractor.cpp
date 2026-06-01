@@ -3,6 +3,7 @@
 #include "ovl/BinaryReader.hpp"
 #include "ovl/Error.hpp"
 #include "ovl/OvlParser.hpp"
+#include "ovl/extract/TextureExtractor.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -131,11 +132,13 @@ bool decode_texture(const OvlParser& parser,
     if (!pr.found) return false;
 
     if (tag == "tex") {
-        // tex loader format is not yet reverse-engineered (76-byte wrapper
-        // with internal pointers to a frame-array structure that doesn't
-        // resemble FTX). Skip for now — atlas splitting still works for
-        // OVLs whose atlas texture is stored as ftx.
-        return false;
+        // Single-tex atlas packs (PathIcons, ShopsIcons, EnclosureIcons …) are
+        // one DXT page sliced by gsi rects — decode the page via the shared
+        // tex decoder. Multi-tex OVLs (Main) return false: their symbol→page
+        // mapping isn't resolved yet (the on-disk tex→flic→btbl chain is
+        // pointer-linked, not byte-scannable — docs §4.6).
+        return TextureExtractor::decode_tex_bgra(parser, side, out.width,
+                                                 out.height, out.bgra);
     }
     return decode_ftx_at(parser, pr.currentOVL, pr.position,
                          lf.loaderreference.datapointer, out);

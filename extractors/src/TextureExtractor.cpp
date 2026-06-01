@@ -739,4 +739,36 @@ bool TextureExtractor::extract_symbol(const OvlParser& parser,
     return false;
 }
 
+bool TextureExtractor::decode_tex_bgra(const OvlParser& parser,
+                                       OvlSide declaring_side,
+                                       std::uint32_t& width,
+                                       std::uint32_t& height,
+                                       std::vector<std::uint8_t>& bgra) {
+    // Multi-tex OVLs (only Main in stock RCT3) need a symbol→page mapping the
+    // symbol-blind trailing scan can't provide; bail so the caller skips them.
+    if (count_tex_loaders(parser) > 1) return false;
+
+    OvlSide data_side = (declaring_side == OvlSide::Unique)
+                      ? OvlSide::Common : OvlSide::Unique;
+    if (!parser.has_unique() && data_side == OvlSide::Unique)
+        data_side = OvlSide::Common;
+
+    TexTrailingHeader h{};
+    if (!read_tex_trailing_header(parser.side(data_side), h)) return false;
+    std::uint32_t block_bytes = dxt_block_bytes(h.format_code);
+    if (block_bytes == 0) return false;
+    if (h.data_size !=
+        expected_dxt_size(h.width, h.height, h.mipmap_count, block_bytes))
+        return false;
+
+    BinaryReader r(parser.side(data_side).ovlname);
+    r.seek(h.pixel_data_pos);
+    auto blocks = read_n(r, h.data_size);
+    bgra.assign(static_cast<std::size_t>(h.width) * h.height * 4, 0);
+    decode_dxt_level(blocks.data(), h.width, h.height, h.format_code, bgra.data());
+    width  = h.width;
+    height = h.height;
+    return true;
+}
+
 }  // namespace ovl

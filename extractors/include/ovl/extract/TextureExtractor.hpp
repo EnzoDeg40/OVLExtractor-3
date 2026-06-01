@@ -1,6 +1,10 @@
 #pragma once
 
 #include "ovl/extract/IResourceExtractor.hpp"
+#include "ovl/OvlTypes.hpp"
+
+#include <cstdint>
+#include <vector>
 
 namespace ovl {
 
@@ -26,6 +30,16 @@ public:
     static bool extract_symbol(const OvlParser& parser,
                                const std::string& symbol_lc,
                                const ExtractContext& ctx);
+
+    // Decode a single-tex `tex` linkedfile (declared on `declaring_side`) to
+    // mip-0 BGRA pixels (row-major, top-down, 4 B/px). Picks the data side
+    // (opposite the declaration) and the trailing DXT page automatically.
+    // Returns false for multi-tex OVLs — the trailing scan is symbol-blind so
+    // it can't tell pages apart (docs §4.6) — and for non-DXT/unreadable data.
+    // Used by AtlasExtractor to slice gsi sprites from tex-backed atlases.
+    static bool decode_tex_bgra(const OvlParser& parser, OvlSide declaring_side,
+                                std::uint32_t& width, std::uint32_t& height,
+                                std::vector<std::uint8_t>& bgra);
 };
 
 }  // namespace ovl

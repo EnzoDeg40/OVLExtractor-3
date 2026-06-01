@@ -247,9 +247,14 @@ exactly one header**, and the *only* file with more than one is
 single-style trailing headers (§4.2) scattered across the file, not a
 contiguous table. So rct3dump's `btbl` array is its **in-RAM** view (assembled
 by the loader at runtime), not the on-disk layout. Practically, "multi-tex"
-across the whole game = Main alone, so the extractor just emits Main's distinct
-headers directly (§4.6) rather than modelling the chain. The only unresolved
-part is the **symbol → atlas-page** mapping needed to drive `gsi` slicing.
+across the whole game = Main alone. Main's `gsi` reference **31 distinct GUI
+texture symbols** (`GUI2Main`, `GUI2LargeIcons1-4`, `GUI2UniformIcons`,
+`StaffIcons`, `TerrainIcons`, …), but the contiguous-header scan finds only the
+**3 DXT3** ones; the other ~28 are reached through the relocated
+`tex → flic → btbl` pointer chain (not byte-scannable) and are **not yet
+located**. The extractor emits the 3 it can find (§4.6); fully cracking Main's
+GUI needs the parser to surface that pointer chain so each `tex` symbol maps to
+its page.
 
 #### 4.1.2 Two on-disk pixel layouts
 
@@ -380,10 +385,13 @@ The 6 single-tex DXT3 textures are `Mackeral` (32², the validation case) plus
 five 256²/512² atlases — `PathIcons`, `ShopsIcons`, `EnclosureIcons`,
 `PoolIcons`, and `WildAnimals` — each a single big DXT3 image sliced by `gsi`
 rects, so decoding them makes `gsi` atlas-sprite extraction (§5) viable for
-those packs. The only multi-header OVL is `Main` (3 DXT3 GUI atlases), now
-emitted as index-named atlas pages (§4.6); its per-`gsi`→page routing stays
-open. The lone holdout is `chimp_data` (2 `tex` symbols but only one findable
-header), deferred as an edge case.
+those packs — and `AtlasExtractor` now wires this decode, so their `gsi` sprites
+crop today (verified: PathIcons → 10, ShopsIcons → 59, EnclosureIcons → 9
+sprites). The only multi-header OVL is `Main`: its `gsi` reference 31 distinct
+GUI texture symbols, of which the contiguous scan finds 3 (emitted as
+index-named atlas pages, §4.6); the other ~28 are pointer-linked and unlocated,
+so Main's `gsi` are skipped for now (§4.1.1). The lone other holdout is
+`chimp_data` (2 `tex` symbols, one findable header), deferred as an edge case.
 
 ### 4.6 Open work on `tex`
 
@@ -402,28 +410,32 @@ header), deferred as an edge case.
   decodes the **distinct** trailing headers once and writes
   `<stem>__atlas<N>_<W>x<H>.tga`. Result: Main yields its 4 `ftx` textures + 3
   atlas pages (before, it produced 88 `.tga`, only 4 distinct). What remains is
-  the **symbol → atlas-page mapping**: rct3dump builds it via the in-RAM
-  `tex → flic → btbl` chain, but that linkage isn't surfaced by our parser, so
-  we can't yet say which `gsi` rect belongs to which page.
+  bigger than a mapping: Main's `gsi` reference **31** GUI texture symbols and
+  only the **3** contiguous DXT3 pages are found here — the other ~28 sit behind
+  the relocated `tex → flic → btbl` pointer chain (not byte-scannable), so they
+  must first be *located* (parser walks the chain) before any `tex` symbol can
+  be tied to its page for `gsi` slicing.
 - **Per-mip `FlicMipHeader` layout** (§4.1.2) — needed if any `flic` v2 texture
   turns out not to size-match a contiguous chain. Not yet observed in failing
   cases, but documented so it isn't re-discovered from scratch.
-- **`gsi` atlas extraction** — for single-tex atlas packs (`PathIcons`,
-  `ShopsIcons`, `EnclosureIcons`, `PoolIcons` …) the parent texture now decodes,
-  so their `gsi` rects are croppable today (`AtlasExtractor` already has the
-  slicing code). The big shared `Main` sheet (~1900 `gsi`) needs the
-  symbol → atlas-page mapping above before its sprites can be routed correctly.
+- **`gsi` atlas extraction** — ✅ **wired for single-tex.** `AtlasExtractor`'s
+  `tex` path now calls `TextureExtractor::decode_tex_bgra` (was a stub), so
+  single-tex atlas packs split into named sprite TGAs today — verified
+  PathIcons → 10, ShopsIcons → 59, EnclosureIcons → 9. `Main`'s ~1900 `gsi`
+  still skip: 28 of its 31 GUI textures are pointer-linked and unlocated (above).
 
 OVLExtractor-2 does not decode `tex` either — its handler is a stub
 that emits a `<tex format='18'>` XML element referencing a `.png`
 that's never written. Cobra-tools has no RCT3 `tex` support.
 
-**Atlas splitting status:** `tex` is now decoded, so the per-pack atlases
-(`PathIcons`, `ShopsIcons`, `EnclosureIcons`, `PoolIcons`, … — each a single
-`tex` image) decode and their `gsi` rects can be cropped. The only atlas that
-still can't be split is `Main`'s shared GUI sheet set (3 pages, ~1900 `gsi`),
-because routing a `gsi` rect to the correct page needs the symbol → atlas-page
-mapping that isn't surfaced yet (§4.6). `ftx`-backed GSI worked all along.
+**Atlas splitting status:** single-`tex` atlas packs (`PathIcons`, `ShopsIcons`,
+`EnclosureIcons`, `PoolIcons`, … — each one `tex` image) now decode **and**
+`AtlasExtractor` crops their `gsi` rects into named sprites (wired + verified).
+`ftx`-backed GSI worked all along. The one atlas that still can't be split is
+`Main`: it holds ~31 GUI textures sliced by ~1900 `gsi`, but only 3 are findable
+by the contiguous scan — the other ~28 sit behind the relocated
+`tex → flic → btbl` pointer chain (§4.1.1), unlocated, so Main's `gsi` are
+skipped (cleanly, no crash).
 
 **NOT a blocker for static meshes:** zero `shs` files in the random-sample
 survey reference a `:tex`. Cracking `tex` is unnecessary for textured
@@ -855,7 +867,7 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 
 | Item | Impact when solved |
 |---|---|
-| `tex` symbol→atlas-page mapping | Single-tex DXT1/3/5 is decoded and `Main`'s 3 atlas pages now extract index-named (§4.6); the remaining piece is routing each `gsi` rect to the right `Main` page, which needs the in-RAM `tex → flic → btbl` linkage surfaced by the parser. Affects only `Main`'s ~1900 GUI sprites; single-tex atlas packs already slice. Not required for shs models — none reference tex. |
+| `Main` GUI textures (`tex → flic → btbl`) | Single-tex DXT1/3/5 is decoded and `AtlasExtractor` slices single-tex packs' `gsi` today. `Main` is the holdout: ~31 GUI textures sliced by ~1900 `gsi`, but only 3 are byte-scannable; the other ~28 sit behind the relocated `tex → flic → btbl` pointer chain. Needs the parser to walk that chain (locate each page) + tie each `tex` symbol to its page. Affects only `Main`'s GUI sprites. Not required for shs/bsh models — none reference tex. |
 | `mms` position decode | Unlocks readable 3D meshes for animated objects (animals, characters, ride cars). |
 | `txs` shader semantics | Refines `.mtl` output to encode alpha mask, reflection, specular per sub-mesh based on the `txs` symbol. The 40 styles + their D3D blend/alpha-test/alpha-ref values are now tabulated in §12 — enough to drive both `.mtl` flags and ftx alpha re-masking. |
 | `ftx` per-pixel alpha plane | rct3dump's `FlexiTextureStruct` has a separate `alpha` plane (§3.5). If present on disk it would let opaque + alpha-masked sub-meshes share one ftx correctly without txs guesswork. |
