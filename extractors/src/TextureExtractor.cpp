@@ -240,26 +240,32 @@ std::uint64_t expected_dxt_size(std::uint32_t w, std::uint32_t h,
     return total;
 }
 
-bool read_tex_trailing_header(const OvlData& side_data, TexTrailingHeader& h) {
-    // `dataend` lands before the trailing section by a variable margin
-    // depending on which sub-parsers touched the file pointer last, so we
-    // can't seek straight to it. Instead, scan forward from `dataend` for the
-    // {format, width, height, mip, size} signature at +0x1C..+0x2F. The header
-    // is rigid in shape — a recognised DXT format_code, both dims powers of two
-    // in [16, 4096], a sane mip count, and pixel_size matching that format's
-    // mipmap-chain size exactly — so false positives are negligible. Buffering
-    // the whole side into memory avoids per-u32 file seeks; OVLs are at most a
-    // few MB and this runs once per pair.
+// Collect every DXT texture header in a side's trailing section (the region
+// after `dataend`). Most OVLs have exactly one; only Main.common.ovl carries
+// several (its 3 GUI atlas pages). Returned in file order.
+//
+// `dataend` lands before the trailing section by a variable margin depending
+// on which sub-parsers touched the file pointer last, so we can't seek
+// straight to it. Instead, scan forward from `dataend` for the
+// {format, width, height, mip, size} signature at +0x1C..+0x2F. The header is
+// rigid in shape — a recognised DXT format_code, both dims powers of two in
+// [16, 4096], a sane mip count, and pixel_size matching that format's
+// mipmap-chain size exactly — so false positives are negligible. After a hit
+// we skip past the whole payload so bytes inside the compressed data can't
+// trip the signature. Buffering the whole side into memory avoids per-u32 file
+// seeks; OVLs are at most a few MB and this runs once per pair.
+std::vector<TexTrailingHeader> collect_tex_trailing_headers(const OvlData& side_data) {
+    std::vector<TexTrailingHeader> out;
     std::uint64_t file_size = 0;
     std::vector<std::uint8_t> buf;
     {
         std::ifstream fs(side_data.ovlname, std::ios::binary | std::ios::ate);
-        if (!fs) return false;
+        if (!fs) return out;
         file_size = static_cast<std::uint64_t>(fs.tellg());
         fs.seekg(0);
         buf.resize(static_cast<std::size_t>(file_size));
         if (!fs.read(reinterpret_cast<char*>(buf.data()),
-                     static_cast<std::streamsize>(file_size))) return false;
+                     static_cast<std::streamsize>(file_size))) return {};
     }
     auto u32 = [&](std::size_t at) -> std::uint32_t {
         return  static_cast<std::uint32_t>(buf[at]) |
@@ -269,7 +275,7 @@ bool read_tex_trailing_header(const OvlData& side_data, TexTrailingHeader& h) {
     };
 
     const std::uint64_t lo = side_data.dataend > 0 ? side_data.dataend : 0x100;
-    if (file_size < lo + 0x30) return false;
+    if (file_size < lo + 0x30) return out;
     for (std::uint64_t off = lo; off + 0x30 < file_size; ++off) {
         std::uint32_t fmt = u32(static_cast<std::size_t>(off + 0x1c));
         std::uint32_t block_bytes = dxt_block_bytes(fmt);
@@ -290,15 +296,24 @@ bool read_tex_trailing_header(const OvlData& side_data, TexTrailingHeader& h) {
         // only positives inside random mms / prt / snd payloads are real tex
         // headers.
         if (sz != expected_dxt_size(w, hh, mip, block_bytes)) continue;
+        TexTrailingHeader h{};
         h.format_code    = fmt;
         h.width          = w;
         h.height         = hh;
         h.mipmap_count   = mip;
         h.data_size      = sz;
         h.pixel_data_pos = off + 0x30;
-        return true;
+        out.push_back(h);
+        off += 0x30 + sz - 1;  // skip the payload (-1: the loop's ++off re-adds)
     }
-    return false;
+    return out;
+}
+
+bool read_tex_trailing_header(const OvlData& side_data, TexTrailingHeader& h) {
+    auto all = collect_tex_trailing_headers(side_data);
+    if (all.empty()) return false;
+    h = all.front();
+    return true;
 }
 
 // Build the 4-entry BGRA colour palette (alpha 255) from a DXT colour
@@ -502,6 +517,63 @@ bool extract_tex(const OvlParser& parser,
     return true;
 }
 
+// Emit the distinct atlas pages of a multi-texture OVL (in practice only
+// Main.common.ovl — 3 DXT3 GUI sheets sliced by ~1900 gsi rects). The
+// per-symbol tex path can't map symbol→page (that needs the btbl/flic chain,
+// docs §4.1.1) so it defers; here we decode each distinct trailing header once,
+// named `<stem>__atlas<N>_<W>x<H>.tga`. Returns the number written.
+std::size_t extract_multitex_atlases(const OvlParser& parser,
+                                     const ExtractContext& ctx) {
+    std::vector<TexTrailingHeader> best;
+    OvlSide best_side = OvlSide::Common;
+    for (std::size_t s = 0; s < (parser.has_unique() ? 2u : 1u); ++s) {
+        auto side = static_cast<OvlSide>(s);
+        auto hs = collect_tex_trailing_headers(parser.side(side));
+        if (hs.size() > best.size()) { best = std::move(hs); best_side = side; }
+    }
+    if (best.size() < 2) return 0;  // single-header OVLs use the per-symbol path
+
+    auto strip_suffix = [](std::string s) {
+        for (const char* suf : {".common.ovl", ".unique.ovl", ".ovl"}) {
+            std::string suffix(suf);
+            if (s.size() >= suffix.size() &&
+                s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0)
+                return s.substr(0, s.size() - suffix.size());
+        }
+        return s;
+    };
+    std::string stem = strip_suffix(
+        std::filesystem::path(parser.side(best_side).ovlname).filename().string());
+
+    std::filesystem::create_directories(ctx.output_dir);
+    BinaryReader r(parser.side(best_side).ovlname);
+    std::size_t written = 0;
+    for (std::size_t i = 0; i < best.size(); ++i) {
+        const auto& h = best[i];
+        std::string name = stem + "__atlas" + std::to_string(i) + "_" +
+                           std::to_string(h.width) + "x" +
+                           std::to_string(h.height) + ".tga";
+        auto out_path = ctx.output_dir / name;
+        if (!ctx.overwrite && std::filesystem::exists(out_path)) {
+            ctx.log("skip (exists): " + name);
+            ++written;
+            continue;
+        }
+        r.seek(h.pixel_data_pos);
+        auto blocks = read_n(r, h.data_size);
+        std::vector<std::uint8_t> bgra(
+            static_cast<std::size_t>(h.width) * h.height * 4);
+        decode_dxt_level(blocks.data(), h.width, h.height, h.format_code, bgra.data());
+        write_tga(out_path, h.width, h.height, bgra);
+        ctx.log("wrote " + name + " (" + dxt_name(h.format_code) + ", " +
+                std::to_string(h.mipmap_count) + " mips)");
+        ++written;
+    }
+    ctx.log("multi-tex: " + stem + " has " + std::to_string(best.size()) +
+            " atlas page(s); symbol→page mapping needs the btbl/flic chain (§4.1.1)");
+    return written;
+}
+
 bool extract_one(const OvlParser& parser,
                  OvlSide side,
                  std::size_t lf_index,
@@ -624,6 +696,16 @@ ExtractResult TextureExtractor::extract(const OvlParser& parser, const ExtractCo
                 ctx.log(std::string("error: ") + e.what());
             }
         }
+    }
+
+    // Multi-texture atlas pages (Main's GUI sheets): the per-symbol path above
+    // defers them because the trailing scan can't tell pages apart. Emit the
+    // distinct atlas images once, index-named.
+    try {
+        res.files_written += extract_multitex_atlases(parser, ctx);
+    } catch (const std::exception& e) {
+        ++res.errors;
+        ctx.log(std::string("error (multi-tex atlas): ") + e.what());
     }
     return res;
 }
