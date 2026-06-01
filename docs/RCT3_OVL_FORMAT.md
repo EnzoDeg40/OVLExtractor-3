@@ -615,9 +615,39 @@ Untested hypotheses:
 - 17 sibling OBJs (one per decoder candidate) for A/B comparison
 
 In bulk batch runs, `side_loop` in `ModelExtractor.cpp` skips MMS entirely
-to avoid flooding the output with noise variants — only `shs` is exported
-during full sweeps. To inspect a single MMS, call the extractor with the
-specific OVL or manually re-enable the `mms` branch.
+to avoid flooding the output with noise variants — only `shs`/`bsh` are
+exported during full sweeps. To inspect a single MMS, set **`OVL_MMS=1`** (the
+mms branch is gated behind that env var) and extract the specific OVL; it emits
+`MMS_HDR` / `MORPH_DESC` / `VBUF` / `POS_BYTES` diagnostics to stderr.
+
+### 7.6 New evidence — `mms` is quantized to a bias+scale (not solved)
+
+`rct3dump` does **not** cover `mms`. Running the `OVL_MMS=1` path on `Mackeral`
+(6 v) and `Duck` (LODs of 63/49/20 v) surfaced concrete new findings:
+
+- **The morph descriptor carries a per-axis bias + scale.** Its first 32
+  "unknown" bytes are two float3s: `+0..+8` ≈ a min/offset (Mackeral
+  (−0.073, −0.060, −0.358); Duck (−0.107, −0.141, −0.251)) and `+16..+24` tiny
+  positives (~1e-4…3e-4) ≈ a scale. This **confirms the §7.4 "per-keyframe
+  scale/bias" hypothesis** and **refutes the legacy "raw 3×uint8 position"**:
+  positions are quantized, dequantized as `pos ≈ bias + raw·scale`.
+- **But naïve uint8/uint16 dequant doesn't give consistent geometry.**
+  `scale_z·65535 ≈ 16` over-ranges Z for a fish that's ~4.6 across; uint8
+  under-ranges everything. So the raw width/alignment likely varies, the
+  quantization isn't simple linear-full-range, or `positions_off` has a
+  sub-header before the data.
+- **`stride_id` (header +8, legacy "AU1") is not a byte stride** — it varies per
+  mesh (Mackeral 6 = vc; Duck LODs 47/38/15 ≈ 0.75·vc), more like a count of
+  unique/shared entries.
+- **The base buffer's `a`/`b` u16 fields look like a position remap** — they
+  descend with vertex index (Mackeral 5,4,3; Duck-L1 a=b=46,45,44; Duck-L2
+  a≠b: 17/20, 16/19), consistent with §7.4's "swizzled indices into a separate
+  position table" (vertex *i* may read `position[a_i]`).
+
+Net: **materially advanced** (the dequant constants are located, two hypotheses
+resolved) but **not solved**. Next step: pin `positions_off`'s exact byte span
+(to `index_off` / the next morph) to derive the true per-vertex stride, then
+test `pos = bias + raw·scale` with the `a`-remap and candidate widths.
 
 
 ## 8. SHS — Static Shape mesh (fully decoded)
@@ -874,7 +904,7 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 | Item | Impact when solved |
 |---|---|
 | `Main` GUI textures (`tex → flic → btbl`) | Single-tex DXT1/3/5 is decoded and `AtlasExtractor` slices single-tex packs' `gsi` today. `Main` is the holdout: ~31 GUI textures sliced by ~1900 `gsi`, but only 3 are byte-scannable; the other ~28 sit behind the relocated `tex → flic → btbl` pointer chain. Needs the parser to walk that chain (locate each page) + tie each `tex` symbol to its page. Affects only `Main`'s GUI sprites. Not required for shs/bsh models — none reference tex. |
-| `mms` position decode | Unlocks readable 3D meshes for animated objects (animals, characters, ride cars). |
+| `mms` position decode | Unlocks readable 3D meshes for animated objects (animals, characters, ride cars). Advanced this session: positions are quantized to a bias+scale found in the morph descriptor (§7.6); exact raw width/remap still TBD. |
 | `txs` specular/reflection in `.mtl` | Alpha (opaque/cutout/blend) is now applied (§8.5). Still flat: `*Specular*` / `*Reflection*` styles could set `Ks`/`Ns`/reflection maps, and ftx alpha re-masking (so cutout works on ftx textures, which we emit opaque) remains open. |
 | `ftx` per-pixel alpha plane | rct3dump's `FlexiTextureStruct` has a separate `alpha` plane (§3.5). If present on disk it would let opaque + alpha-masked sub-meshes share one ftx correctly without txs guesswork. |
 | Skinned animation render (bsh + ban) | `bsh` rest-pose meshes export (§8.6) and `ban` tracks decode to JSON (§8.7). The remaining piece is *applying* the tracks: bind each by bone name to `BoneShape1.BonePositions1` (bind pose) and emit a skinned glTF (skin + animation channels) or baked per-frame OBJs. Would animate characters / animals / vehicles. |

@@ -390,6 +390,35 @@ bool process_mms(const OvlParser& parser,
             }
             std::cerr << "\n";
         }
+        // Morph descriptor (64 B at morph_off): first 32 bytes are "unknown" —
+        // dump as hex + as float32 to look for a scale/bias (bbox) for
+        // dequantizing positions.
+        auto pm = parser.offset_to_position(h.morph_off);
+        if (pm.found) {
+            BinaryReader r(parser.side(pm.currentOVL).ovlname);
+            r.seek(pm.position);
+            std::uint8_t mb[64];
+            for (int i = 0; i < 64; ++i) mb[i] = r.read_u8();
+            std::cerr << "MORPH_DESC " << symbol << " floats:";
+            for (int i = 0; i < 16; ++i) {
+                float f; std::memcpy(&f, mb + i*4, 4);
+                std::cerr << " +" << (i*4) << "=" << f;
+            }
+            std::cerr << "\n";
+        }
+        // Base vertex buffer first 3 records (12 B each): u16 a, u16 b, f32 U, f32 V.
+        auto pv = parser.offset_to_position(h.vertex_off);
+        if (pv.found) {
+            BinaryReader r(parser.side(pv.currentOVL).ovlname);
+            r.seek(pv.position);
+            std::cerr << "VBUF " << symbol << ":";
+            for (int i = 0; i < 3; ++i) {
+                std::uint16_t a = r.read_u16(), b = r.read_u16();
+                float u = r.read_f32(), v = r.read_f32();
+                std::cerr << " [a=" << a << " b=" << b << " uv=" << u << "," << v << "]";
+            }
+            std::cerr << "\n";
+        }
     }
 
     ctx.log("mms " + symbol + ": v=" + std::to_string(h.vertex_count) +
@@ -1192,6 +1221,11 @@ bool side_loop(const OvlParser& parser,
                                   ctx.overwrite, ctx, auto_tex, /*bone=*/true);
             } else if (ldr.tag == "ban") {
                 ok = process_ban(parser, side, i, ctx.output_dir,
+                                 ctx.overwrite, ctx);
+            } else if (ldr.tag == "mms" && std::getenv("OVL_MMS") != nullptr) {
+                // mms position decode is unsolved (§7); off by default, opt-in
+                // via OVL_MMS=1 for reverse-engineering (emits diagnostics).
+                ok = process_mms(parser, side, i, ctx.output_dir,
                                  ctx.overwrite, ctx);
             } else {
                 continue;
