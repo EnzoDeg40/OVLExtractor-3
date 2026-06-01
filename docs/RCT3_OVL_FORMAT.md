@@ -61,7 +61,7 @@ complete RCT3 installation (Main + all expansions) — zero parse errors.
 | `tex`  | Texture (DXT-compressed)         | DXT1 + DXT3 + DXT5 single-tex decoded (§4); multi-tex v5 open |
 | `btbl` | BmpTbl — array of `FlicHeader` + texture data | Structure known via rct3dump (§4.1); multi-tex anchor |
 | `flic` | Flic — inline texture, or an index into a `btbl` | Structure known via rct3dump (§4.1) |
-| `txs`  | Texture shader / blend style     | 40 named styles known (§12); not yet applied to output |
+| `txs`  | Texture shader / blend style     | 40 styles known (§12); applied to `.mtl` — opaque/cutout/blend → `d`/`map_d` (§8.5) |
 | `fts`  | TextureSet?                      | Treated as ftx (untested)               |
 | `ftt`  | TextureType?                     | Treated as ftx (untested)               |
 | `gsi`  | Graphic Sprite Info (atlas rect) | Fully understood (§5)                   |
@@ -705,7 +705,13 @@ slot 2  →  ('chain:ftx',       'SIOpaque:txs')
 
 - `:ftx` = the texture (decoded by `TextureExtractor`)
 - `:txs` = the shader / blend mode (e.g. `SIOpaque`, `SIAlphaMaskLow`,
-  `SIOpaqueSpecular50Reflection`). RE on `txs` is open — for now we ignore it.
+  `SIOpaqueSpecular50Reflection`). It is now **applied to the `.mtl`**: each
+  sub-mesh becomes one `newmtl <ftx>__<txs>` (so the same texture under two
+  shaders yields two materials), and the txs style is classified (§12) as
+  opaque / cutout / blend → `d` + `map_d` (cutout materials get `map_d <tex>.tga`
+  so the texture's own alpha channel masks the pixels). Verified on the
+  Helicopter (8 cutout + 14 opaque materials; `AirCrane__SIAlphaMask` emits
+  `map_Kd` + `map_d`).
 
 Survey of 76 shs across a 40-OVL random sample:
 
@@ -869,7 +875,7 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 |---|---|
 | `Main` GUI textures (`tex → flic → btbl`) | Single-tex DXT1/3/5 is decoded and `AtlasExtractor` slices single-tex packs' `gsi` today. `Main` is the holdout: ~31 GUI textures sliced by ~1900 `gsi`, but only 3 are byte-scannable; the other ~28 sit behind the relocated `tex → flic → btbl` pointer chain. Needs the parser to walk that chain (locate each page) + tie each `tex` symbol to its page. Affects only `Main`'s GUI sprites. Not required for shs/bsh models — none reference tex. |
 | `mms` position decode | Unlocks readable 3D meshes for animated objects (animals, characters, ride cars). |
-| `txs` shader semantics | Refines `.mtl` output to encode alpha mask, reflection, specular per sub-mesh based on the `txs` symbol. The 40 styles + their D3D blend/alpha-test/alpha-ref values are now tabulated in §12 — enough to drive both `.mtl` flags and ftx alpha re-masking. |
+| `txs` specular/reflection in `.mtl` | Alpha (opaque/cutout/blend) is now applied (§8.5). Still flat: `*Specular*` / `*Reflection*` styles could set `Ks`/`Ns`/reflection maps, and ftx alpha re-masking (so cutout works on ftx textures, which we emit opaque) remains open. |
 | `ftx` per-pixel alpha plane | rct3dump's `FlexiTextureStruct` has a separate `alpha` plane (§3.5). If present on disk it would let opaque + alpha-masked sub-meshes share one ftx correctly without txs guesswork. |
 | Skinned animation render (bsh + ban) | `bsh` rest-pose meshes export (§8.6) and `ban` tracks decode to JSON (§8.7). The remaining piece is *applying* the tracks: bind each by bone name to `BoneShape1.BonePositions1` (bind pose) and emit a skinned glTF (skin + animation channels) or baked per-frame OBJs. Would animate characters / animals / vehicles. |
 | OVL header v6 | Currently parser warns and continues; some Wild! / Soaked! OVLs may be affected. |

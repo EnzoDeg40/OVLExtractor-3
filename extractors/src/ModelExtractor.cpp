@@ -639,6 +639,28 @@ std::string to_lower(std::string s) {
     return s;
 }
 
+// Render class for a `txs` shader symbol. rct3dump's 40-style table (docs §12)
+// gives each style a D3D AlphaTestEnable + blend state; for OBJ/MTL purposes we
+// collapse that to three cases. AlphaTestEnable=true ⇔ the texture is a cutout
+// (its alpha channel masks the pixel) — that's every `SiAlpha*` style plus the
+// two named ones. `SIGlass` is the only semi-transparent blend. Everything else
+// (`SIOpaque*`, the opaque `*Chrome` variants, `SIFillZ`) is opaque.
+enum class TxsClass { Opaque, Cutout, Blend };
+
+TxsClass classify_txs(const std::string& txs_symbol) {
+    std::string n = to_lower(strip_tag(txs_symbol));
+    if (n == "siglass") return TxsClass::Blend;
+    if (n.rfind("sialpha", 0) == 0 || n == "billboardstandard" || n == "guiicon")
+        return TxsClass::Cutout;
+    return TxsClass::Opaque;
+}
+
+const char* txs_class_name(TxsClass c) {
+    return c == TxsClass::Opaque ? "opaque"
+         : c == TxsClass::Cutout ? "cutout"
+                                 : "blend";
+}
+
 // Per-extract() shared state: caches OvlParser instances for cross-OVL texture
 // lookups (a single coaster shs may reference textures from 2–3 distinct
 // OVLs; many shs in a batch run share the same source texture OVL — caching
@@ -882,11 +904,17 @@ bool process_mesh(const OvlParser& parser,
         m.idx.resize(sd.ic);
         if (bone) { for (auto& x : m.idx) x = ri.read_u16(); }
         else      { for (auto& x : m.idx) x = ri.read_u32(); }
-        // Material binding (one (ftx, txs) pair per sub-mesh, in order)
+        // Material binding (one (ftx, txs) pair per sub-mesh, in order). The
+        // material key combines BOTH: one ftx can be sampled by several
+        // sub-meshes with different txs shaders (e.g. gigacoaster as both
+        // SIOpaqueSpecular50Reflection and SIAlphaMaskLow), which are distinct
+        // materials. The texture file (map_Kd) is still keyed by ftx alone.
         if (s < materials.size()) {
             m.ftx_symbol = materials[s].first;
-            m.mtl_name   = sanitize(strip_tag(materials[s].first));
             m.txs_name   = materials[s].second;
+            std::string ftx_base = sanitize(strip_tag(materials[s].first));
+            std::string txs_base = sanitize(strip_tag(materials[s].second));
+            m.mtl_name = txs_base.empty() ? ftx_base : (ftx_base + "__" + txs_base);
         } else {
             m.mtl_name = "default";
         }
@@ -903,15 +931,17 @@ bool process_mesh(const OvlParser& parser,
     // produces one map_Kd line.
     struct MtlSlot {
         std::string ftx_symbol;       // original-case full symbol, may be empty
+        std::string txs_name;         // raw txs symbol (drives alpha/blend)
         std::string tga_name;         // sanitized basename + ".tga", may be empty
         bool        resolved = false; // true iff index hit
     };
-    std::map<std::string, MtlSlot> mtl_slots;  // keyed by sanitized mtl name
+    std::map<std::string, MtlSlot> mtl_slots;  // keyed by (ftx__txs) material name
     std::vector<std::string> mtl_order;
     for (const auto& m : meshes) {
         if (mtl_slots.count(m.mtl_name)) continue;
         MtlSlot slot;
         slot.ftx_symbol = m.ftx_symbol;
+        slot.txs_name   = m.txs_name;
         if (ctx.texture_index && !m.ftx_symbol.empty()) {
             auto lc = to_lower(m.ftx_symbol);
             if (const auto* e = ctx.texture_index->lookup(lc)) {
@@ -957,20 +987,29 @@ bool process_mesh(const OvlParser& parser,
     mtl << "# RCT3 OVL extract — " << symbol << "\n";
     for (const auto& name : mtl_order) {
         const auto& slot = mtl_slots.at(name);
+        TxsClass cls = slot.txs_name.empty() ? TxsClass::Opaque
+                                             : classify_txs(slot.txs_name);
         mtl << "newmtl " << name << "\n";
-        if (slot.resolved) {
-            mtl << "# source: " << slot.ftx_symbol << "\n";
-        } else if (!slot.ftx_symbol.empty()) {
+        // Provenance + shader class. The txs style (docs §12) decides whether
+        // the texture's alpha channel is a cutout mask (map_d) or ignored.
+        mtl << "# tex: " << (slot.ftx_symbol.empty() ? "(none)" : slot.ftx_symbol);
+        if (!slot.txs_name.empty())
+            mtl << "  txs: " << slot.txs_name << " (" << txs_class_name(cls) << ")";
+        mtl << "\n";
+        if (!slot.resolved && !slot.ftx_symbol.empty())
             mtl << "# unresolved: " << slot.ftx_symbol
-                << " (no entry in texture index)\n";
-        }
-        mtl << "Kd 1.0 1.0 1.0\n"
-            << "Ka 0.0 0.0 0.0\n"
-            << "Ks 0.0 0.0 0.0\n"
-            << "d 1.0\n"
-            << "illum 1\n";
+                << " (not in texture index)\n";
+        mtl << "Ka 0.0 0.0 0.0\n"
+            << "Kd 1.0 1.0 1.0\n"
+            << "Ks 0.0 0.0 0.0\n";
+        // Opaque → fully solid. Cutout → solid base, per-texel alpha from the
+        // texture (map_d). Blend (SIGlass) → semi-transparent.
+        mtl << "d " << (cls == TxsClass::Blend ? "0.6" : "1.0") << "\n";
+        mtl << "illum 2\n";
         if (slot.resolved) {
             mtl << "map_Kd " << slot.tga_name << "\n";
+            if (cls != TxsClass::Opaque)
+                mtl << "map_d " << slot.tga_name << "\n";
         }
         mtl << "\n";
     }
