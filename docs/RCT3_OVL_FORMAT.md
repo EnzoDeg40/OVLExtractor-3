@@ -71,7 +71,7 @@ complete RCT3 installation (Main + all expansions) — zero parse errors.
 | `mms`  | Morphable Mesh                   | Topology + UVs OK, positions broken (§7)|
 | `shs`  | Static Shape (rigid mesh)        | Fully decoded (§8)                      |
 | `bsh`  | Bone Shape (skinned mesh)        | Rest-pose mesh decoded (§8.6); skeletal animation open |
-| `ban`  | Bone Animation (keyframes)       | Struct known via rct3dump (§13); not extracted |
+| `ban`  | Bone Animation (keyframes)       | Tracks decoded → JSON sidecar (§8.7); skinned render open |
 | `svd`  | SceneryItemVisual (LOD + mesh refs) | Struct known via rct3dump (§13); not extracted |
 | `was`, `asd`, `vwg`, `ent`, `mdl`, `ptd`, `qtd`, `ter`, `sta`, `trr` | Various game data | Structs partly known via rct3dump (§13); not extracted |
 
@@ -741,8 +741,39 @@ Skeletal **animation** (`ban`) is a separate problem: OBJ can't carry a
 skeleton + keyframes, so it needs either a glTF exporter (skin + animation
 channels) or baked per-frame OBJs. The data is all there — `VERTEX2.bone`,
 `BoneShape1.BonePositions1` (bind pose), `BoneShape1.Bones[]` (names), and the
-`ban` keyframes (translate + axis-angle rotate, §13.3) — but it's deferred
-(§11).
+`ban` keyframes (translate + axis-angle rotate, §13.3). The tracks themselves
+now extract (§8.7); what's deferred is *applying* them (§11).
+
+### 8.7 BoneAnim (`ban`) — animation tracks → JSON
+
+`ban` holds the skeletal animation keyframes that drive `bsh` meshes. Since OBJ
+can't represent a skeleton, the extractor emits the animation **data** as a JSON
+sidecar (`<name>.anim.json`) per `ban` symbol — a foundation for a future glTF
+exporter or for direct inspection.
+
+On-disk layout (rct3dump §13.3; pointers are internal offsets):
+
+```
+BoneAnim      { u32 BoneCount; BoneAnimBone* Bones; f32 TotalTime; }
+BoneAnimBone  { char* Name; u32 TransCount; txyz* Translate;
+                u32 RotCount; txyz* Rotate; }      (20 B/entry)
+txyz          { f32 Time, X, Y, Z; }               (16 B/entry)
+```
+
+`Translate` keyframes are positions; `Rotate` keyframes are **axis-angle
+vectors** (the vector's magnitude is the rotation angle in radians — rct3dump
+turns them into matrices with Rodrigues' formula, `rotmath`). The JSON stores
+each track as `[[t,x,y,z], …]`.
+
+Verified on `WildAnimals/Helicopter` and `Crates`: the decode produces readable,
+semantically-correct bone names (`tailrotor` @ 3.3 s and `gun` @ 0.667 s on the
+Helicopter; `b1a…b2f` rig bones on the Crates) and **every** keyframe time falls
+in `[0, total_time]` (6927 Crates keyframes, 0 out of range) — the strongest
+evidence that the 20-byte bone stride and the pointer chain are read correctly.
+
+What's still missing is *applying* the animation: binding each track to its
+`bsh` bone (by name) and to `BoneShape1.BonePositions1` (bind pose), then
+emitting a skinned glTF or baked per-frame OBJs (§11).
 
 
 ## 9. Global symbol index
@@ -828,7 +859,7 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 | `mms` position decode | Unlocks readable 3D meshes for animated objects (animals, characters, ride cars). |
 | `txs` shader semantics | Refines `.mtl` output to encode alpha mask, reflection, specular per sub-mesh based on the `txs` symbol. The 40 styles + their D3D blend/alpha-test/alpha-ref values are now tabulated in §12 — enough to drive both `.mtl` flags and ftx alpha re-masking. |
 | `ftx` per-pixel alpha plane | rct3dump's `FlexiTextureStruct` has a separate `alpha` plane (§3.5). If present on disk it would let opaque + alpha-masked sub-meshes share one ftx correctly without txs guesswork. |
-| `ban` skeletal animation (bsh meshes) | `bsh` rest-pose meshes now export (§8.6); the remaining piece is skeletal animation — needs a glTF exporter (skin + animation channels) or baked per-frame OBJs, plus the bone hierarchy + `ban` keyframe decode. Would animate characters / animals / vehicles. |
+| Skinned animation render (bsh + ban) | `bsh` rest-pose meshes export (§8.6) and `ban` tracks decode to JSON (§8.7). The remaining piece is *applying* the tracks: bind each by bone name to `BoneShape1.BonePositions1` (bind pose) and emit a skinned glTF (skin + animation channels) or baked per-frame OBJs. Would animate characters / animals / vehicles. |
 | OVL header v6 | Currently parser warns and continues; some Wild! / Soaked! OVLs may be affected. |
 | The 5 stub ftx textures | Cosmetic — could be filtered out at extract time. |
 | Dice vertical stretch | Minor cosmetic question, not investigated. |

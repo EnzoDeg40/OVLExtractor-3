@@ -1016,6 +1016,118 @@ bool process_mesh(const OvlParser& parser,
     return true;
 }
 
+// One animation keyframe: time + a 3-vector (a translation, or an axis-angle
+// rotation whose magnitude is the angle in radians — rct3dump's rotmath).
+struct TXYZ { float t, x, y, z; };
+
+// ban (BoneAnim) — skeletal animation tracks for bsh meshes. OBJ can't carry a
+// skeleton + keyframes, so we emit the animation as a JSON sidecar
+// (<name>.anim.json) for downstream use (a glTF converter, inspection, …).
+// Layout (rct3dump §13.3; all pointers are internal offsets):
+//   BoneAnim     { u32 BoneCount; BoneAnimBone* Bones; f32 TotalTime; }
+//   BoneAnimBone { char* Name; u32 TransCount; txyz* Translate;
+//                  u32 RotCount; txyz* Rotate; }   (20 bytes/entry)
+//   txyz         { f32 Time, X, Y, Z; }            (16 bytes/entry)
+bool process_ban(const OvlParser& parser, OvlSide side, std::size_t lf_index,
+                 const std::filesystem::path& out_dir, bool overwrite,
+                 const ExtractContext& ctx) {
+    const auto& d = parser.side(side);
+    const auto& lf = d.linkedfiles[lf_index];
+    std::string symbol = parser.string_from_offset(lf.symbolresolve.stringpointer);
+    auto cut = symbol.rfind(':');
+    if (cut != std::string::npos) symbol = symbol.substr(0, cut);
+    std::string base = sanitize(symbol);
+
+    auto out_path = out_dir / (base + ".anim.json");
+    if (!overwrite && std::filesystem::exists(out_path)) {
+        ctx.log("skip (exists): " + base + ".anim.json");
+        return true;
+    }
+
+    auto pr = parser.offset_to_position(lf.loaderreference.datapointer);
+    if (!pr.found) return false;
+    BinaryReader r(parser.side(pr.currentOVL).ovlname);
+    r.seek(pr.position);
+    std::uint32_t bone_count = r.read_u32();
+    std::uint32_t bones_ptr  = r.read_u32();
+    float         total_time = r.read_f32();
+    if (bone_count == 0 || bone_count > 4096) {
+        ctx.log("ban: " + symbol + " implausible bone count " +
+                std::to_string(bone_count));
+        return false;
+    }
+    auto bp = parser.offset_to_position(bones_ptr);
+    if (!bp.found) {
+        ctx.log("ban: " + symbol + " bones pointer unresolved");
+        return false;
+    }
+    const std::string bones_ovl = parser.side(bp.currentOVL).ovlname;
+
+    auto read_track = [&](std::uint32_t ptr, std::uint32_t count) {
+        std::vector<TXYZ> out;
+        if (ptr == 0 || count == 0 || count > 1000000) return out;
+        auto tp = parser.offset_to_position(ptr);
+        if (!tp.found) return out;
+        BinaryReader rt(parser.side(tp.currentOVL).ovlname);
+        rt.seek(tp.position);
+        out.reserve(count);
+        for (std::uint32_t i = 0; i < count; ++i) {
+            TXYZ k;
+            k.t = rt.read_f32(); k.x = rt.read_f32();
+            k.y = rt.read_f32(); k.z = rt.read_f32();
+            out.push_back(k);
+        }
+        return out;
+    };
+    auto jesc = [](const std::string& s) {
+        std::string o;
+        for (char c : s) {
+            if (c == '"' || c == '\\') { o += '\\'; o += c; }
+            else if (static_cast<unsigned char>(c) >= 0x20) o += c;
+        }
+        return o;
+    };
+
+    std::filesystem::create_directories(out_dir);
+    std::ofstream j(out_path);
+    if (!j) return false;
+    j << "{\n  \"name\": \"" << jesc(symbol) << "\",\n"
+      << "  \"total_time\": " << total_time << ",\n"
+      << "  \"bones\": [\n";
+    std::size_t total_keys = 0;
+    for (std::uint32_t b = 0; b < bone_count; ++b) {
+        BinaryReader rb(bones_ovl);
+        rb.seek(bp.position + static_cast<std::uint64_t>(b) * 20);
+        std::uint32_t name_ptr = rb.read_u32();
+        std::uint32_t tc = rb.read_u32();
+        std::uint32_t tp = rb.read_u32();
+        std::uint32_t rc = rb.read_u32();
+        std::uint32_t rp = rb.read_u32();
+        std::string name = name_ptr ? parser.string_from_offset(name_ptr) : "";
+        auto trans = read_track(tp, tc);
+        auto rot   = read_track(rp, rc);
+        total_keys += trans.size() + rot.size();
+        auto emit = [&](const char* key, const std::vector<TXYZ>& v, bool last) {
+            j << "      \"" << key << "\": [";
+            for (std::size_t i = 0; i < v.size(); ++i) {
+                if (i) j << ", ";
+                j << "[" << v[i].t << "," << v[i].x << "," << v[i].y << ","
+                  << v[i].z << "]";
+            }
+            j << "]" << (last ? "" : ",") << "\n";
+        };
+        j << "    {\n      \"name\": \"" << jesc(name) << "\",\n";
+        emit("translate", trans, false);
+        emit("rotate", rot, true);
+        j << "    }" << (b + 1 < bone_count ? "," : "") << "\n";
+    }
+    j << "  ]\n}\n";
+    ctx.log("wrote " + base + ".anim.json (" + std::to_string(bone_count) +
+            " bone(s), " + std::to_string(total_keys) + " keys, t=" +
+            std::to_string(total_time) + "s)");
+    return true;
+}
+
 bool side_loop(const OvlParser& parser,
                OvlSide side,
                const ExtractContext& ctx,
@@ -1039,6 +1151,9 @@ bool side_loop(const OvlParser& parser,
             } else if (ldr.tag == "bsh") {
                 ok = process_mesh(parser, side, i, ctx.output_dir,
                                   ctx.overwrite, ctx, auto_tex, /*bone=*/true);
+            } else if (ldr.tag == "ban") {
+                ok = process_ban(parser, side, i, ctx.output_dir,
+                                 ctx.overwrite, ctx);
             } else {
                 continue;
             }
