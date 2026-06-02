@@ -64,6 +64,8 @@ extracted/
 *.png
 *.jpg
 *.bmp
+*.trk
+*.glb
 
 # Generated docs
 docs/_build/

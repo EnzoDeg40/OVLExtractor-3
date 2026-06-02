@@ -151,6 +151,27 @@ done
 On a typical installation this yields ~1 100 decoded TGA textures plus the
 raw blocks for other format codes.
 
+### Reconstruct a saved ride (`.trk` → glTF)
+
+`scripts/trk_to_gltf.py` turns a **saved coaster design** (`.trk`, written by
+the game under `…/Coasters/`) into a `.glb` scene, placing each extracted
+track-piece mesh at the grid position / rotation / height stored in the file.
+Pure standard library — no extra Python packages.
+
+```bash
+# Prerequisite: extract the coaster's track-piece set with --types model, so
+# that out/models/tracks/coasters/<set>/ exists (e.g. Track20 = wooden coaster).
+
+# The piece set is auto-detected from the .trk's Tracks\Coasters\<set>\ refs.
+python3 scripts/trk_to_gltf.py '[WoodenRC]MR_compact.trk' -o MR_compact.glb
+#   110 pieces, coaster set = Track20
+#   wrote MR_compact.glb  (110 pieces placed, 22 unique meshes)
+```
+
+Open the `.glb` in Blender, macOS Quick Look, or any glTF viewer. Useful flags:
+`--models DIR` (default `out/models`), `--set NAME`, `--lod HI|ME|LO`,
+`--report`. See [docs/TRK_FORMAT.md](docs/TRK_FORMAT.md) for the `.trk` layout.
+
 ## Architecture
 
 ```
@@ -184,11 +205,13 @@ OVLExtractor-3/
 │       ├── OvlInventory.{hpp,cpp}   group linked-files by category
 │       ├── TexturePreview.{hpp,cpp} BGRA-TGA decoder + QLabel preview
 │       └── MeshViewer.{hpp,cpp}     QOpenGLWidget viewer for .obj
-├── scripts/                    blender_import_objs.py (auxiliary tooling)
+├── scripts/                    auxiliary tooling
+│   ├── blender_import_objs.py  bulk-import extracted .obj into Blender
+│   └── trk_to_gltf.py          reconstruct a saved coaster (.trk) → .glb
 ├── tests/                      Catch2 unit + smoke tests
 ├── third_party/CLI11/          vendored single-header
 ├── cmake/                      build configuration helpers
-└── docs/                       RCT3_OVL_FORMAT.md, EXTRACTORS.md
+└── docs/                       RCT3_OVL_FORMAT.md, EXTRACTORS.md, TRK_FORMAT.md
 ```
 
 The split is intentional: `core/` has **zero** UI / runtime dependencies and
