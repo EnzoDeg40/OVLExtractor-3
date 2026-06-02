@@ -272,6 +272,23 @@ the loader, and RCT3 OVLs use both:
    yet emit this layout; it likely explains any tex OVL whose trailing payload
    doesn't size-match a plain contiguous DXT chain.
 
+#### 4.1.3 The on-disk linkage is implicit (load-order), not a pointer chain
+
+Dumping Main's `tex` wrappers (`OVL_TEXDBG=1`) settles why multi-tex is hard.
+The `tex` loader's `datapointer` is a `TextureStruct` (96 bytes): eight
+`0x00070007` constants, then `unk9=1`, `unk10=8`, `unk11=0x10` (the "icon" flag),
+`TextureData=0`, and at **+0x34 the `Flic**`** + **+0x38 `ts2`**. Following the
+`Flic**` on disk yields only self-referential scaffolding — records of
+`{ptr→self+4, 0, 1, 1.0f}` whose `Texture*` field is **0/unset on disk** (rct3dump
+notes "always 0 on disk files"). So **the wrapper carries no pointer to its
+pixels**. The game fills `Texture*` at load time by *executing* the loaders in
+order and consuming the trailing data stream (the `btbl` reads `count`
+`FlicHeader`s + `count` payloads; each `flic` then binds the next). The
+symbol↔page association is therefore **positional/by-load-order**, not a
+followable offset. Recovering it offline means porting rct3dump's sequential
+loader-stream reader (`ReadOvl`'s btbl/flic/tex dispatch), which our pointer-based
+parser doesn't do — the sizeable open task behind Main's GUI sprites (§4.6).
+
 ### 4.2 Trailing-section header (48 bytes per texture)
 
 ```
@@ -412,9 +429,10 @@ so Main's `gsi` are skipped for now (§4.1.1). The lone other holdout is
   atlas pages (before, it produced 88 `.tga`, only 4 distinct). What remains is
   bigger than a mapping: Main's `gsi` reference **31** GUI texture symbols and
   only the **3** contiguous DXT3 pages are found here — the other ~28 sit behind
-  the relocated `tex → flic → btbl` pointer chain (not byte-scannable), so they
-  must first be *located* (parser walks the chain) before any `tex` symbol can
-  be tied to its page for `gsi` slicing.
+  the `tex → flic → btbl` chain, which (per `OVL_TEXDBG=1`, §4.1.3) is **not a
+  followable on-disk pointer chain** — it's resolved by *load order*. Porting
+  rct3dump's sequential trailing-stream reader is the concrete (sizeable) next
+  step before any `tex` symbol can be tied to its page for `gsi` slicing.
 - **Per-mip `FlicMipHeader` layout** (§4.1.2) — needed if any `flic` v2 texture
   turns out not to size-match a contiguous chain. Not yet observed in failing
   cases, but documented so it isn't re-discovered from scratch.
@@ -925,7 +943,7 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 
 | Item | Impact when solved |
 |---|---|
-| `Main` GUI textures (`tex → flic → btbl`) | Single-tex DXT1/3/5 is decoded and `AtlasExtractor` slices single-tex packs' `gsi` today. `Main` is the holdout: ~31 GUI textures sliced by ~1900 `gsi`, but only 3 are byte-scannable; the other ~28 sit behind the relocated `tex → flic → btbl` pointer chain. Needs the parser to walk that chain (locate each page) + tie each `tex` symbol to its page. Affects only `Main`'s GUI sprites. Not required for shs/bsh models — none reference tex. |
+| `Main` GUI textures (`tex → flic → btbl`) | Single-tex DXT1/3/5 is decoded and `AtlasExtractor` slices single-tex packs' `gsi` today. `Main` is the holdout: ~31 GUI textures sliced by ~1900 `gsi`, only 3 byte-scannable. The on-disk wrappers carry **no** pixel pointer (§4.1.3) — the symbol↔page link is by *load order*, so the fix is porting rct3dump's sequential `btbl`/`flic` trailing-stream reader (sizeable parser work). Affects only `Main`'s GUI sprites. Not required for shs/bsh models — none reference tex. |
 | `mms` position decode | Unlocks readable 3D meshes for animated objects (animals, characters, ride cars). Advanced this session: positions are quantized to a bias+scale found in the morph descriptor (§7.6); exact raw width/remap still TBD. |
 | `txs` specular/reflection in `.mtl` | Alpha (opaque/cutout/blend) is now applied (§8.5). Still flat: `*Specular*` / `*Reflection*` styles could set `Ks`/`Ns`/reflection maps, and ftx alpha re-masking (so cutout works on ftx textures, which we emit opaque) remains open. |
 | `ftx` per-pixel alpha plane | rct3dump's `FlexiTextureStruct` has a separate `alpha` plane (§3.5). If present on disk it would let opaque + alpha-masked sub-meshes share one ftx correctly without txs guesswork. |

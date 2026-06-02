@@ -7,9 +7,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -574,6 +576,46 @@ std::size_t extract_multitex_atlases(const OvlParser& parser,
     return written;
 }
 
+// [debug] OVL_TEXDBG: dump each `tex` linkedfile's wrapper (TextureStruct) and
+// follow its pointer fields one level, to reverse-engineer the tex→flic→btbl
+// chain that links a tex symbol to its pixel page (Main GUI routing).
+void dump_tex_wrappers(const OvlParser& parser) {
+    for (std::size_t s = 0; s < (parser.has_unique() ? 2u : 1u); ++s) {
+        auto side = static_cast<OvlSide>(s);
+        const auto& d = parser.side(side);
+        for (const auto& lf : d.linkedfiles) {
+            Loader ldr = parser.loader_by_id(lf.loaderreference.loadernumber, side);
+            if (ldr.tag != "tex") continue;
+            std::string sym = parser.string_from_offset(lf.symbolresolve.stringpointer);
+            std::uint32_t dp = lf.loaderreference.datapointer;
+            auto pr = parser.offset_to_position(dp);
+            if (!pr.found) continue;
+            BinaryReader r(parser.side(pr.currentOVL).ovlname);
+            r.seek(pr.position);
+            std::uint32_t w[24];
+            for (int i = 0; i < 24; ++i) w[i] = r.read_u32();
+            std::cerr << "TEXW " << sym << " dp=" << std::hex << dp << std::dec << ":";
+            for (int i = 0; i < 24; ++i) {
+                std::cerr << " +" << i*4 << "=" << std::hex << w[i] << std::dec;
+                if (w[i] && parser.offset_to_position(w[i]).found) std::cerr << "*";
+            }
+            std::cerr << "\n";
+            // follow each resolvable pointer one level (dump 32 bytes hex)
+            for (int i = 0; i < 24; ++i) {
+                if (!w[i]) continue;
+                auto tp = parser.offset_to_position(w[i]);
+                if (!tp.found) continue;
+                BinaryReader rr(parser.side(tp.currentOVL).ovlname);
+                rr.seek(tp.position);
+                std::cerr << "   ->+" << i*4 << " @" << std::hex << w[i] << ":";
+                for (int b = 0; b < 32; ++b)
+                    std::cerr << " " << std::hex << (int)rr.read_u8() << std::dec;
+                std::cerr << "\n";
+            }
+        }
+    }
+}
+
 bool extract_one(const OvlParser& parser,
                  OvlSide side,
                  std::size_t lf_index,
@@ -681,6 +723,7 @@ bool extract_one(const OvlParser& parser,
 
 ExtractResult TextureExtractor::extract(const OvlParser& parser, const ExtractContext& ctx) {
     ExtractResult res{};
+    if (std::getenv("OVL_TEXDBG") != nullptr) dump_tex_wrappers(parser);
     std::filesystem::create_directories(ctx.output_dir);
 
     for (std::size_t s = 0; s < (parser.has_unique() ? 2u : 1u); ++s) {
