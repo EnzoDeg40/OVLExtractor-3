@@ -78,7 +78,14 @@ python3 scripts/trk_to_gltf.py '[WoodenRC]MR_compact.trk' -o MR_compact.glb
 ```
 
 The script reads the pieces, auto-detects the set, reuses one mesh per piece
-type across all placements, and writes a `.glb` (stdlib only). What it does
-**not** do yet: textures (one flat material for now), station platforms /
-entrance / exit (those are not `:tks` pieces), and resolving the
+type across all placements, and writes a `.glb`. Textures are embedded as PNG
+when Pillow is available — each OBJ sub-mesh (`usemtl` group) maps to its
+`<base>.tga` under the set's `_Textures` folder or `tracks/SharedTextures/`;
+without Pillow (or with `--no-textures`) it stays dependency-free and uses flat
+per-material colours. Note the `*_Flexi` textures carry magenta placeholder
+regions that RCT3 recolours at runtime from the ride's FlexiColour channels —
+not applied here.
+
+What it does **not** do yet: tint the FlexiColour regions; place the station
+platforms / entrance / exit (those are not `:tks` pieces); resolve the
 `managedobjectptr` object graph from part 1.

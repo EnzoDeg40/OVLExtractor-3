@@ -156,7 +156,8 @@ raw blocks for other format codes.
 `scripts/trk_to_gltf.py` turns a **saved coaster design** (`.trk`, written by
 the game under `…/Coasters/`) into a `.glb` scene, placing each extracted
 track-piece mesh at the grid position / rotation / height stored in the file.
-Pure standard library — no extra Python packages.
+Textures are embedded when Pillow is installed; without it (or `--no-textures`)
+it falls back to flat colours and needs only the standard library.
 
 ```bash
 # Prerequisite: extract the coaster's track-piece set with --types model, so
@@ -165,14 +166,15 @@ Pure standard library — no extra Python packages.
 # The piece set is auto-detected from the .trk's Tracks\Coasters\<set>\ refs.
 python3 scripts/trk_to_gltf.py '[WoodenRC]MR_compact.trk' -o MR_compact.glb
 #   110 pieces, coaster set = Track20
-#   wrote MR_compact.glb  (110 pieces placed, 22 unique meshes)
+#   wrote MR_compact.glb  (110 pieces placed, 22 unique meshes, 4 textures)
 ```
 
 Open the `.glb` in Blender, macOS Quick Look, or any glTF viewer. The ride is
 recentred on the origin and scaled to `--tile-size` metres per tile (default
 `1.0` → a straight piece is 1 m). Other flags: `--models DIR` (default
-`out/models`), `--set NAME`, `--lod HI|ME|LO`, `--report`. See
-[docs/TRK_FORMAT.md](docs/TRK_FORMAT.md) for the `.trk` layout.
+`out/models`), `--set NAME`, `--lod HI|ME|LO`, `--textures DIR`,
+`--no-textures`, `--report`. See [docs/TRK_FORMAT.md](docs/TRK_FORMAT.md) for
+the `.trk` layout.
 
 ## Architecture
 

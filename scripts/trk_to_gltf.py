@@ -7,6 +7,7 @@ into out/models/tracks/coasters/<set>/):
   python3 scripts/trk_to_gltf.py '[WoodenRC]MR_compact.trk'
   python3 scripts/trk_to_gltf.py ride.trk -o ride.glb --models out/models
   python3 scripts/trk_to_gltf.py ride.trk --set Track20 --lod ME --report
+  python3 scripts/trk_to_gltf.py ride.trk --no-textures        # flat material
 
 Flags:
   -o, --output PATH   output .glb (default: <trk basename>.glb next to the .trk)
@@ -16,6 +17,9 @@ Flags:
   --lod HI|ME|LO      level of detail to place (default: HI)
   --tile-size M       metres per grid tile = size of one straight piece
                       (default: 1.0); the scene is also recentred on the origin
+  --textures DIR      folder holding the piece textures (default: auto — the
+                      set's <set>_Textures folder under any out/ subtree)
+  --no-textures       skip textures, use flat per-material colours (stdlib only)
   --report            print the piece-count histogram
 
 How it works
@@ -29,16 +33,20 @@ mesh of each piece is <models>/tracks/coasters/<set>/<name>_data/<name>_<lod>.ob
 World convention, calibrated from the meshes: 1 grid tile = 4 mesh units,
 1 HEIGHT level = 1 unit, DIRECTION = 90-degree yaw steps, Y is up — already
 glTF's axis convention, so every piece becomes a node with a translation and a
-90-degree-step rotation quaternion. The whole ride hangs under one root node
-that scales it to `--tile-size` metres per tile and recentres it on the origin.
-Pure standard library, no dependencies.
+90-degree-step rotation quaternion. POSX/POSZ name the SW corner of the
+footprint, so even-tile-span pieces are shifted half a tile to re-centre. The
+ride hangs under one root node scaled to `--tile-size` metres per tile and
+recentred on the origin.
 
-See docs/TRK_FORMAT.md for the full format notes.
+Textures (the OBJ carries UVs + per-sub-mesh `usemtl` groups) are embedded as
+PNG when Pillow is available; otherwise the script falls back to flat colours
+and stays dependency-free. See docs/TRK_FORMAT.md for the format.
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import math
 import re
@@ -56,7 +64,6 @@ EF = b"\xef\xef\xef\xef"
 # .trk parsing
 # --------------------------------------------------------------------------- #
 def _utf16(buf: bytes, off: int) -> tuple[str, int]:
-    """Read a printable UTF-16LE run at off; return (text, end_offset)."""
     out = []
     j = off
     while j < len(buf) - 1 and 32 <= buf[j] < 127 and buf[j + 1] == 0:
@@ -107,10 +114,9 @@ def detect_set(buf: bytes) -> str | None:
 
 
 # --------------------------------------------------------------------------- #
-# OBJ loading (positions + normals, triangulated, sub-meshes merged)
+# OBJ loading — per-material sub-meshes with positions, normals, UVs
 # --------------------------------------------------------------------------- #
 def find_obj(models: Path, name: str, sets: list[str], lod: str) -> Path | None:
-    """Locate <name>_data/<name>_<lod>.obj, trying the given sets then any."""
     coasters = models / "tracks" / "coasters"
     search = [coasters / s for s in sets] + sorted(coasters.glob("*"))
     for setdir in search:
@@ -125,53 +131,108 @@ def find_obj(models: Path, name: str, sets: list[str], lod: str) -> Path | None:
     return None
 
 
-def load_obj(path: Path):
-    """Return (positions[float*3], normals[float*3], indices[int]) de-indexed."""
-    verts: list[tuple[float, float, float]] = []
-    norms: list[tuple[float, float, float]] = []
-    faces: list[list[tuple[int, int]]] = []
+def load_obj(path: Path) -> list[dict]:
+    """Return a list of sub-meshes, one per `usemtl` group, de-indexed:
+    {material, pos[float*3], nrm[float*3], uv[float*2], idx[int]}."""
+    verts: list[tuple] = []
+    uvs: list[tuple] = []
+    norms: list[tuple] = []
+    groups: list[tuple[str, list]] = []
+    cur_mat = "default"
+    cur_faces: list = []
+
+    def flush():
+        if cur_faces:
+            groups.append((cur_mat, cur_faces))
+
     for line in path.read_text(errors="replace").splitlines():
         if line.startswith("v "):
-            p = line.split()
-            verts.append((float(p[1]), float(p[2]), float(p[3])))
+            p = line.split(); verts.append((float(p[1]), float(p[2]), float(p[3])))
+        elif line.startswith("vt "):
+            p = line.split(); uvs.append((float(p[1]), float(p[2])))
         elif line.startswith("vn "):
-            p = line.split()
-            norms.append((float(p[1]), float(p[2]), float(p[3])))
+            p = line.split(); norms.append((float(p[1]), float(p[2]), float(p[3])))
+        elif line.startswith("usemtl "):
+            flush(); cur_mat = line.split(None, 1)[1].strip(); cur_faces = []
         elif line.startswith("f "):
             ref = []
             for w in line.split()[1:]:
                 a = (w.split("/") + ["", "", ""])[:3]
-                vi = int(a[0]) - 1
-                ni = int(a[2]) - 1 if a[2] else -1
-                ref.append((vi, ni))
-            for k in range(1, len(ref) - 1):          # triangulate fan
-                faces.append([ref[0], ref[k], ref[k + 1]])
+                ref.append((int(a[0]) - 1,
+                            int(a[1]) - 1 if a[1] else -1,
+                            int(a[2]) - 1 if a[2] else -1))
+            for k in range(1, len(ref) - 1):
+                cur_faces.append((ref[0], ref[k], ref[k + 1]))
+    flush()
 
-    uniq: dict[tuple[int, int], int] = {}
-    pos: list[float] = []
-    nrm: list[float] = []
-    idx: list[int] = []
-    for tri in faces:
-        for vi, ni in tri:
-            key = (vi, ni)
-            j = uniq.get(key)
-            if j is None:
-                j = uniq[key] = len(pos) // 3
-                pos.extend(verts[vi])
-                nrm.extend(norms[ni] if 0 <= ni < len(norms) else (0.0, 1.0, 0.0))
-            idx.append(j)
-    return pos, nrm, idx
+    out = []
+    for mat, faces in groups:
+        uniq: dict[tuple, int] = {}
+        pos: list[float] = []; nrm: list[float] = []; uv: list[float] = []; idx: list[int] = []
+        for tri in faces:
+            for vi, ti, ni in tri:
+                j = uniq.get((vi, ti, ni))
+                if j is None:
+                    j = uniq[(vi, ti, ni)] = len(pos) // 3
+                    pos.extend(verts[vi])
+                    nrm.extend(norms[ni] if 0 <= ni < len(norms) else (0.0, 1.0, 0.0))
+                    u, v = uvs[ti] if 0 <= ti < len(uvs) else (0.0, 0.0)
+                    uv.extend((u, 1.0 - v))          # OBJ V-up -> glTF V-down
+                idx.append(j)
+        out.append({"material": mat, "pos": pos, "nrm": nrm, "uv": uv, "idx": idx})
+    return out
 
 
 # --------------------------------------------------------------------------- #
-# GLB assembly (hand-written, stdlib only)
+# materials / textures
+# --------------------------------------------------------------------------- #
+def tex_basename(material: str) -> str:
+    """`WoodenCoaster_Flexi__SIOpaque` -> `WoodenCoaster_Flexi`."""
+    return material.split("__", 1)[0]
+
+
+def resolve_texture(models: Path, setname: str | None, base: str,
+                    override: Path | None) -> Path | None:
+    # Search, in order: an explicit --textures dir, the set's own _Textures
+    # folder, the shared-texture pool, then any other set's texture folder.
+    # `*[Tt]extures` matches both `Track20_Textures` and `Track31_textures`.
+    cands: list[Path] = []
+    if override:
+        cands.append(override / f"{base}.tga")
+    roots = [models] + [s for s in sorted(models.parent.glob("*")) if s.is_dir()]
+    for root in roots:
+        if setname:
+            cands.append(root / "tracks" / "coasters" / setname
+                         / f"{setname}_Textures" / f"{base}.tga")
+        cands.append(root / "tracks" / "SharedTextures" / base / f"{base}.tga")
+        cands += sorted(root.glob(f"tracks/coasters/*/*[Tt]extures/{base}.tga"))
+        cands += sorted(root.glob(f"tracks/SharedTextures/*/{base}.tga"))
+    for c in cands:
+        if c.is_file():
+            return c
+    return None
+
+
+def flat_color(base: str) -> list[float]:
+    b = base.lower()
+    if "rail" in b:
+        return [0.22, 0.23, 0.26, 1.0]                # dark metal
+    if "wood" in b or "flexi" in b:
+        return [0.55, 0.40, 0.25, 1.0]                # timber
+    return [0.55, 0.55, 0.58, 1.0]
+
+
+# --------------------------------------------------------------------------- #
+# GLB assembly
 # --------------------------------------------------------------------------- #
 def quat_y(direction: int) -> list[float]:
     a = math.radians(90.0 * direction) / 2.0
     return [0.0, math.sin(a), 0.0, math.cos(a)]
 
 
-def build_glb(pieces, meshes: dict, out: Path, tile_size: float) -> dict:
+def build_glb(pieces, meshes: dict, out: Path, tile_size: float,
+              models: Path, setname: str | None,
+              tex_dir: Path | None, want_textures: bool) -> dict:
     blob = bytearray()
     views: list[dict] = []
     accessors: list[dict] = []
@@ -191,34 +252,84 @@ def build_glb(pieces, meshes: dict, out: Path, tile_size: float) -> dict:
         accessors.append(a)
         return len(accessors) - 1
 
-    # Anchor offset for even-footprint pieces. POSX/POSZ name the SW corner of
-    # the piece's tile footprint, but a mesh is modelled centred on its block —
-    # so a piece spanning an *even* number of tiles on an axis has its centre
-    # half a tile off the anchor. Shift it back by half a tile (world space).
-    anchor: dict[str, tuple[float, float]] = {}
-    for name, (pos, _n, _i) in meshes.items():
-        sx = max(pos[0::3]) - min(pos[0::3])
-        sz = max(pos[2::3]) - min(pos[2::3])
-        ox = TILE / 2 if round(sx / TILE) % 2 == 0 else 0.0
-        oz = TILE / 2 if round(sz / TILE) % 2 == 0 else 0.0
-        anchor[name] = (ox, oz)
+    # ---- materials (resolve a texture per usemtl group, else flat colour) ----
+    Image = None
+    if want_textures:
+        try:
+            from PIL import Image  # noqa: lazy, optional
+        except ImportError:
+            print("  (Pillow not installed — falling back to flat colours; "
+                  "use --no-textures to silence)", file=sys.stderr)
+
+    images: list[dict] = []
+    textures: list[dict] = []
+    samplers = [{"wrapS": 10497, "wrapT": 10497, "magFilter": 9729, "minFilter": 9987}]
+    materials: list[dict] = []
+    mat_index: dict[str, int] = {}
+    tex_cache: dict[str, int] = {}
+    n_textured = 0
+
+    used_mats = {sm["material"] for subs in meshes.values() for sm in subs}
+    for mat in sorted(used_mats):
+        base = tex_basename(mat)
+        tex_id = None
+        if Image is not None:
+            path = resolve_texture(models, setname, base, tex_dir)
+            if path is not None:
+                if base not in tex_cache:
+                    buf = io.BytesIO()
+                    Image.open(path).convert("RGBA").save(buf, "PNG")
+                    iv = add_view(buf.getvalue(), None)
+                    images.append({"mimeType": "image/png", "bufferView": iv, "name": base})
+                    textures.append({"sampler": 0, "source": len(images) - 1})
+                    tex_cache[base] = len(textures) - 1
+                tex_id = tex_cache[base]
+        pbr = {"metallicFactor": 0.0, "roughnessFactor": 0.85}
+        if tex_id is not None:
+            pbr["baseColorTexture"] = {"index": tex_id}
+            n_textured += 1
+        else:
+            pbr["baseColorFactor"] = flat_color(base)
+        mat_index[mat] = len(materials)
+        materials.append({"name": mat, "pbrMetallicRoughness": pbr, "doubleSided": True})
+
+    # ---- one glTF mesh per piece type (sub-meshes -> primitives) ----
+    def footprint_offset(subs) -> tuple[float, float]:
+        xs = [v for sm in subs for v in sm["pos"][0::3]]
+        zs = [v for sm in subs for v in sm["pos"][2::3]]
+        if not xs:
+            return 0.0, 0.0
+        ox = TILE / 2 if round((max(xs) - min(xs)) / TILE) % 2 == 0 else 0.0
+        oz = TILE / 2 if round((max(zs) - min(zs)) / TILE) % 2 == 0 else 0.0
+        return ox, oz
 
     gltf_meshes: dict[str, int] = {}
+    anchor: dict[str, tuple[float, float]] = {}
     mesh_list: list[dict] = []
-    for name, (pos, nrm, idx) in meshes.items():
-        n = len(pos) // 3
-        mn = [min(pos[i::3]) for i in range(3)]
-        mx = [max(pos[i::3]) for i in range(3)]
-        ap = add_accessor(add_view(struct.pack(f"<{len(pos)}f", *pos), 34962),
-                          "VEC3", n, 5126, mn, mx)
-        an = add_accessor(add_view(struct.pack(f"<{len(nrm)}f", *nrm), 34962),
-                          "VEC3", n, 5126)
-        ai = add_accessor(add_view(struct.pack(f"<{len(idx)}I", *idx), 34963),
-                          "SCALAR", len(idx), 5125)
+    for name, subs in meshes.items():
+        anchor[name] = footprint_offset(subs)
+        prims = []
+        for sm in subs:
+            npos = len(sm["pos"]) // 3
+            mn = [min(sm["pos"][i::3]) for i in range(3)]
+            mx = [max(sm["pos"][i::3]) for i in range(3)]
+            ap = add_accessor(add_view(struct.pack(f"<{len(sm['pos'])}f", *sm["pos"]), 34962),
+                              "VEC3", npos, 5126, mn, mx)
+            an = add_accessor(add_view(struct.pack(f"<{len(sm['nrm'])}f", *sm["nrm"]), 34962),
+                              "VEC3", npos, 5126)
+            attrs = {"POSITION": ap, "NORMAL": an}
+            if sm["uv"]:
+                au = add_accessor(add_view(struct.pack(f"<{len(sm['uv'])}f", *sm["uv"]), 34962),
+                                  "VEC2", npos, 5126)
+                attrs["TEXCOORD_0"] = au
+            ai = add_accessor(add_view(struct.pack(f"<{len(sm['idx'])}I", *sm["idx"]), 34963),
+                              "SCALAR", len(sm["idx"]), 5125)
+            prims.append({"attributes": attrs, "indices": ai,
+                          "material": mat_index[sm["material"]]})
         gltf_meshes[name] = len(mesh_list)
-        mesh_list.append({"name": name, "primitives": [
-            {"attributes": {"POSITION": ap, "NORMAL": an}, "indices": ai, "material": 0}]})
+        mesh_list.append({"name": name, "primitives": prims})
 
+    # ---- nodes + centring/scaling root ----
     nodes = []
     for p in pieces:
         if p["name"] not in gltf_meshes:
@@ -230,23 +341,16 @@ def build_glb(pieces, meshes: dict, out: Path, tile_size: float) -> dict:
             "translation": [p["posx"] * TILE + ox, p["height"] * HUNIT, p["posz"] * TILE + oz],
             "rotation": quat_y(p["direction"]),
         })
-
-    # Wrap every piece under a root that scales the whole ride to `tile_size`
-    # metres per grid tile and recentres it on the origin (so viewers frame it).
     sf = tile_size / TILE
     txs = [n["translation"][0] for n in nodes]
     tys = [n["translation"][1] for n in nodes]
     tzs = [n["translation"][2] for n in nodes]
     cx = (min(txs) + max(txs)) / 2 if txs else 0.0
-    cy = min(tys) if tys else 0.0                       # rest the model on Y=0
+    cy = min(tys) if tys else 0.0
     cz = (min(tzs) + max(tzs)) / 2 if tzs else 0.0
-    root = {
-        "name": "ride",
-        "scale": [sf, sf, sf],
-        "translation": [-cx * sf, -cy * sf, -cz * sf],
-        "children": list(range(len(nodes))),
-    }
-    nodes.append(root)
+    nodes.append({"name": "ride", "scale": [sf, sf, sf],
+                  "translation": [-cx * sf, -cy * sf, -cz * sf],
+                  "children": list(range(len(nodes)))})
 
     gltf = {
         "asset": {"version": "2.0", "generator": "OVLExtractor trk_to_gltf"},
@@ -254,16 +358,15 @@ def build_glb(pieces, meshes: dict, out: Path, tile_size: float) -> dict:
         "scenes": [{"nodes": [len(nodes) - 1]}],
         "nodes": nodes,
         "meshes": mesh_list,
-        "materials": [{
-            "name": "Track",
-            "pbrMetallicRoughness": {"baseColorFactor": [0.55, 0.40, 0.25, 1.0],
-                                     "metallicFactor": 0.0, "roughnessFactor": 0.85},
-            "doubleSided": True,
-        }],
+        "materials": materials,
         "bufferViews": views,
         "accessors": accessors,
         "buffers": [{"byteLength": len(blob)}],
     }
+    if images:
+        gltf["images"] = images
+        gltf["textures"] = textures
+        gltf["samplers"] = samplers
 
     jchunk = json.dumps(gltf, separators=(",", ":")).encode()
     jchunk += b" " * (-len(jchunk) % 4)
@@ -274,7 +377,8 @@ def build_glb(pieces, meshes: dict, out: Path, tile_size: float) -> dict:
     glb += struct.pack("<II", len(jchunk), 0x4E4F534A) + jchunk
     glb += struct.pack("<II", len(bchunk), 0x004E4942) + bchunk
     out.write_bytes(glb)
-    return {"nodes": len(nodes), "meshes": len(mesh_list), "bytes": len(glb)}
+    return {"nodes": len(nodes) - 1, "meshes": len(mesh_list),
+            "textures": len(images), "bytes": len(glb)}
 
 
 # --------------------------------------------------------------------------- #
@@ -288,6 +392,9 @@ def main() -> None:
     ap.add_argument("--lod", default="HI", choices=["HI", "ME", "LO"], help="LOD (default: HI)")
     ap.add_argument("--tile-size", type=float, default=1.0,
                     help="metres per grid tile = size of one straight piece (default: 1.0)")
+    ap.add_argument("--textures", type=Path, default=None,
+                    help="texture folder (default: auto-locate <set>_Textures)")
+    ap.add_argument("--no-textures", action="store_true", help="flat colours, stdlib only")
     ap.add_argument("--report", action="store_true", help="print piece histogram")
     args = ap.parse_args()
 
@@ -326,11 +433,13 @@ def main() -> None:
                  f"{args.models}/tracks/coasters/ — check --set / --models")
 
     out = args.output or args.trk.with_suffix(".glb")
-    info = build_glb(pieces, meshes, out, args.tile_size)
+    info = build_glb(pieces, meshes, out, args.tile_size,
+                     args.models, setname, args.textures, not args.no_textures)
     placed = sum(1 for p in pieces if p["name"] in meshes)
+    extra = (f", {len(missing)} piece type(s) missing" if missing else "")
+    tex = f", {info['textures']} textures" if info["textures"] else ", flat colours"
     print(f"wrote {out}  ({info['bytes']:,} bytes, {placed} pieces placed, "
-          f"{info['meshes']} unique meshes"
-          + (f", {len(missing)} piece type(s) missing" if missing else "") + ")")
+          f"{info['meshes']} unique meshes{tex}{extra})")
 
 
 if __name__ == "__main__":
