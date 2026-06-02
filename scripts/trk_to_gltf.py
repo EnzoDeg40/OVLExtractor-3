@@ -191,6 +191,18 @@ def build_glb(pieces, meshes: dict, out: Path, tile_size: float) -> dict:
         accessors.append(a)
         return len(accessors) - 1
 
+    # Anchor offset for even-footprint pieces. POSX/POSZ name the SW corner of
+    # the piece's tile footprint, but a mesh is modelled centred on its block —
+    # so a piece spanning an *even* number of tiles on an axis has its centre
+    # half a tile off the anchor. Shift it back by half a tile (world space).
+    anchor: dict[str, tuple[float, float]] = {}
+    for name, (pos, _n, _i) in meshes.items():
+        sx = max(pos[0::3]) - min(pos[0::3])
+        sz = max(pos[2::3]) - min(pos[2::3])
+        ox = TILE / 2 if round(sx / TILE) % 2 == 0 else 0.0
+        oz = TILE / 2 if round(sz / TILE) % 2 == 0 else 0.0
+        anchor[name] = (ox, oz)
+
     gltf_meshes: dict[str, int] = {}
     mesh_list: list[dict] = []
     for name, (pos, nrm, idx) in meshes.items():
@@ -211,10 +223,11 @@ def build_glb(pieces, meshes: dict, out: Path, tile_size: float) -> dict:
     for p in pieces:
         if p["name"] not in gltf_meshes:
             continue
+        ox, oz = anchor[p["name"]]
         nodes.append({
             "name": f"{p['name']}@{p['posx']},{p['height']},{p['posz']}",
             "mesh": gltf_meshes[p["name"]],
-            "translation": [p["posx"] * TILE, p["height"] * HUNIT, p["posz"] * TILE],
+            "translation": [p["posx"] * TILE + ox, p["height"] * HUNIT, p["posz"] * TILE + oz],
             "rotation": quat_y(p["direction"]),
         })
 

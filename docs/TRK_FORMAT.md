@@ -63,6 +63,14 @@ Sanity checks on `[WoodenRC]MR_compact.trk`: a `straight` mesh is 4×4;
 `medslopechain` lift climbs HEIGHT 1→3→5…→30. So every piece becomes a glTF node
 = a translation + a 90°-step rotation quaternion, no per-vertex math required.
 
+**Anchor offset.** `POSX/POSZ` name the SW corner of a piece's tile footprint,
+but each mesh is modelled centred on its block. A piece spanning an *even*
+number of tiles on an axis (e.g. `tightcurve`, 2×2) therefore has its centre
+half a tile off the anchor — shift it back by `TILE/2` in world X/Z on each
+even axis so curves meet the straights they bridge. (Asymmetric pieces —
+`loosecurve`, `sbend`, the slope+curve combos — are only approximate this way;
+exact placement would need RCT3's per-piece connection metadata.)
+
 ## Reconstructing the ride
 
 ```bash
