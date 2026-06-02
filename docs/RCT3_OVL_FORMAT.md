@@ -649,6 +649,25 @@ resolved) but **not solved**. Next step: pin `positions_off`'s exact byte span
 (to `index_off` / the next morph) to derive the true per-vertex stride, then
 test `pos = bias + raw·scale` with the `a`-remap and candidate widths.
 
+**Systematic brute-force (still unsolved).** `OVL_MMS=1` now also dumps the raw
+`positions`/`index`/`vbuf` blocks + `bias`/`scale` to `/tmp/mms_dump/`, and a
+scorer (`/tmp/mms_brute.py`) was run over the cross product of {u8, i8, u16,
+i16, half, f32, packed-10} × {strides 3/4/6/12} × {byte offsets 0–16} ×
+{sequential, `a`-remapped}, scoring each decode by the index buffer's triangle
+edge coherence (mean edge ÷ bbox diagonal — scale/bias-invariant). **No
+per-vertex format produced a coherent mesh** (best ≈ 0.36, indistinguishable
+from random scatter). A **delta** (cumulative-sum) decode scored much lower
+(i16 ≈ 0.146) — but rendering it confirms that's a *metric artifact* (delta
+naturally shortens consecutive-vertex edges even when the topology is wrong; the
+duck still renders shattered). Calibration on 300 real `shs`/`bsh` meshes shows
+the metric itself is weak (real meshes span 0.10–0.74, median 0.52, because
+many are low-poly with large triangles), so edge-coherence alone can't rank
+candidates. Conclusion: the position stream is **not** a simple per-vertex
+quantization at `positions_off`; it's likely a non-trivial compression (true
+delta-from-base with a separate base, a block/range codec keyed by
+`stride_id`≈0.75·vc, or positions reached through another indirection). Genuinely
+hard — left open with the dump tooling in place for a future attempt.
+
 
 ## 8. SHS — Static Shape mesh (fully decoded)
 

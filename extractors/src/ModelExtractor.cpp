@@ -488,6 +488,43 @@ bool process_mms(const OvlParser& parser,
     std::vector<std::uint16_t> idx(h.index_count);
     for (auto& x : idx) x = ri.read_u16();
 
+    // [debug] OVL_MMS: dump raw blocks to /tmp/mms_dump for offline brute-force
+    // decoding (find the position quantization by scoring geometry coherence).
+    if (std::getenv("OVL_MMS") != nullptr) {
+        std::filesystem::create_directories("/tmp/mms_dump");
+        std::string tag = sanitize(symbol);
+        float bias[3] = {0,0,0}, scale[3] = {0,0,0};
+        auto pmd = parser.offset_to_position(h.morph_off);
+        if (pmd.found) {
+            BinaryReader rmd(parser.side(pmd.currentOVL).ovlname);
+            rmd.seek(pmd.position);
+            for (int i = 0; i < 3; ++i) bias[i] = rmd.read_f32();
+            (void)rmd.read_f32();
+            for (int i = 0; i < 3; ++i) scale[i] = rmd.read_f32();
+        }
+        BinaryReader rpd(parser.side(pp.currentOVL).ovlname);
+        rpd.seek(pp.position);
+        std::vector<std::uint8_t> big;
+        for (int i = 0; i < 32768 && !rpd.eof(); ++i) big.push_back(rpd.read_u8());
+        std::ofstream((("/tmp/mms_dump/" + tag + ".pos")).c_str(), std::ios::binary)
+            .write(reinterpret_cast<char*>(big.data()),
+                   static_cast<std::streamsize>(big.size()));
+        std::ofstream((("/tmp/mms_dump/" + tag + ".vbuf")).c_str(), std::ios::binary)
+            .write(reinterpret_cast<char*>(vbuf.data()),
+                   static_cast<std::streamsize>(vbuf.size()));
+        std::ofstream((("/tmp/mms_dump/" + tag + ".idx")).c_str(), std::ios::binary)
+            .write(reinterpret_cast<char*>(idx.data()),
+                   static_cast<std::streamsize>(idx.size() * 2));
+        std::ofstream mm((("/tmp/mms_dump/" + tag + ".meta")).c_str());
+        mm << "vc " << h.vertex_count << "\nic " << h.index_count
+           << "\ntimes " << morph0.times_count
+           << "\nbias " << bias[0] << " " << bias[1] << " " << bias[2]
+           << "\nscale " << scale[0] << " " << scale[1] << " " << scale[2]
+           << "\npos_off " << morph0.positions_off << " vert_off " << h.vertex_off
+           << " idx_off " << h.index_off << " morph_off " << h.morph_off << "\n";
+        std::cerr << "MMS_DUMP " << tag << " (" << big.size() << " pos bytes)\n";
+    }
+
     auto write_obj = [&](const std::filesystem::path& path,
                          const std::vector<Vertex>& vs,
                          const std::string& suffix) {
