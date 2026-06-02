@@ -168,9 +168,11 @@ python3 scripts/trk_to_gltf.py '[WoodenRC]MR_compact.trk' -o MR_compact.glb
 #   wrote MR_compact.glb  (110 pieces placed, 22 unique meshes)
 ```
 
-Open the `.glb` in Blender, macOS Quick Look, or any glTF viewer. Useful flags:
-`--models DIR` (default `out/models`), `--set NAME`, `--lod HI|ME|LO`,
-`--report`. See [docs/TRK_FORMAT.md](docs/TRK_FORMAT.md) for the `.trk` layout.
+Open the `.glb` in Blender, macOS Quick Look, or any glTF viewer. The ride is
+recentred on the origin and scaled to `--tile-size` metres per tile (default
+`1.0` → a straight piece is 1 m). Other flags: `--models DIR` (default
+`out/models`), `--set NAME`, `--lod HI|ME|LO`, `--report`. See
+[docs/TRK_FORMAT.md](docs/TRK_FORMAT.md) for the `.trk` layout.
 
 ## Architecture
 

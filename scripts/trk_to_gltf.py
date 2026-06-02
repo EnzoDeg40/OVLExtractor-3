@@ -14,6 +14,8 @@ Flags:
   --set NAME          coaster piece set, e.g. Track20 (default: auto-detected
                       from the Tracks\\Coasters\\<set>\\ references in the .trk)
   --lod HI|ME|LO      level of detail to place (default: HI)
+  --tile-size M       metres per grid tile = size of one straight piece
+                      (default: 1.0); the scene is also recentred on the origin
   --report            print the piece-count histogram
 
 How it works
@@ -27,7 +29,9 @@ mesh of each piece is <models>/tracks/coasters/<set>/<name>_data/<name>_<lod>.ob
 World convention, calibrated from the meshes: 1 grid tile = 4 mesh units,
 1 HEIGHT level = 1 unit, DIRECTION = 90-degree yaw steps, Y is up — already
 glTF's axis convention, so every piece becomes a node with a translation and a
-90-degree-step rotation quaternion. Pure standard library, no dependencies.
+90-degree-step rotation quaternion. The whole ride hangs under one root node
+that scales it to `--tile-size` metres per tile and recentres it on the origin.
+Pure standard library, no dependencies.
 
 See docs/TRK_FORMAT.md for the full format notes.
 """
@@ -167,7 +171,7 @@ def quat_y(direction: int) -> list[float]:
     return [0.0, math.sin(a), 0.0, math.cos(a)]
 
 
-def build_glb(pieces, meshes: dict, out: Path) -> dict:
+def build_glb(pieces, meshes: dict, out: Path, tile_size: float) -> dict:
     blob = bytearray()
     views: list[dict] = []
     accessors: list[dict] = []
@@ -214,10 +218,27 @@ def build_glb(pieces, meshes: dict, out: Path) -> dict:
             "rotation": quat_y(p["direction"]),
         })
 
+    # Wrap every piece under a root that scales the whole ride to `tile_size`
+    # metres per grid tile and recentres it on the origin (so viewers frame it).
+    sf = tile_size / TILE
+    txs = [n["translation"][0] for n in nodes]
+    tys = [n["translation"][1] for n in nodes]
+    tzs = [n["translation"][2] for n in nodes]
+    cx = (min(txs) + max(txs)) / 2 if txs else 0.0
+    cy = min(tys) if tys else 0.0                       # rest the model on Y=0
+    cz = (min(tzs) + max(tzs)) / 2 if tzs else 0.0
+    root = {
+        "name": "ride",
+        "scale": [sf, sf, sf],
+        "translation": [-cx * sf, -cy * sf, -cz * sf],
+        "children": list(range(len(nodes))),
+    }
+    nodes.append(root)
+
     gltf = {
         "asset": {"version": "2.0", "generator": "OVLExtractor trk_to_gltf"},
         "scene": 0,
-        "scenes": [{"nodes": list(range(len(nodes)))}],
+        "scenes": [{"nodes": [len(nodes) - 1]}],
         "nodes": nodes,
         "meshes": mesh_list,
         "materials": [{
@@ -252,6 +273,8 @@ def main() -> None:
                     help="extracted-models root (default: out/models)")
     ap.add_argument("--set", dest="setname", help="coaster piece set (default: auto)")
     ap.add_argument("--lod", default="HI", choices=["HI", "ME", "LO"], help="LOD (default: HI)")
+    ap.add_argument("--tile-size", type=float, default=1.0,
+                    help="metres per grid tile = size of one straight piece (default: 1.0)")
     ap.add_argument("--report", action="store_true", help="print piece histogram")
     args = ap.parse_args()
 
@@ -290,7 +313,7 @@ def main() -> None:
                  f"{args.models}/tracks/coasters/ — check --set / --models")
 
     out = args.output or args.trk.with_suffix(".glb")
-    info = build_glb(pieces, meshes, out)
+    info = build_glb(pieces, meshes, out, args.tile_size)
     placed = sum(1 for p in pieces if p["name"] in meshes)
     print(f"wrote {out}  ({info['bytes']:,} bytes, {placed} pieces placed, "
           f"{info['meshes']} unique meshes"
