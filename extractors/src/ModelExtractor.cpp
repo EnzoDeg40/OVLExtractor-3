@@ -70,7 +70,7 @@ bool read_header(const OvlParser& parser, const LinkedFiles& lf, MmsHeader& h) {
     return true;
 }
 
-struct Vertex { float x, y, z, u, v; };
+struct Vertex { float x=0, y=0, z=0, nx=0, ny=0, nz=0, u=0, v=0; };
 
 void read_uvs(const std::uint8_t* buf, std::uint32_t count,
               std::vector<Vertex>& verts) {
@@ -909,7 +909,7 @@ bool process_mesh(const OvlParser& parser,
             v.x = rv.read_f32();
             v.y = rv.read_f32();
             v.z = rv.read_f32();
-            (void)rv.read_f32(); (void)rv.read_f32(); (void)rv.read_f32();
+            v.nx = rv.read_f32(); v.ny = rv.read_f32(); v.nz = rv.read_f32();
             if (bone) {
                 (void)rv.read_u32();  // bone index (skinning; unused for rest pose)
                 (void)rv.read_u32();  // unk
@@ -1060,6 +1060,10 @@ bool process_mesh(const OvlParser& parser,
         for (const auto& v : m.verts)
             o << "vt " << v.u << " " << (1.0f - v.v) << "\n";
     }
+    for (const auto& m : meshes) {
+        for (const auto& v : m.verts)
+            o << "vn " << v.nx << " " << v.ny << " " << v.nz << "\n";
+    }
     std::uint32_t vbase = 0;
     std::uint32_t tris_total = 0;
     for (std::size_t s = 0; s < meshes.size(); ++s) {
@@ -1067,12 +1071,14 @@ bool process_mesh(const OvlParser& parser,
         o << "g " << base << "_sub" << s << "\n";
         o << "usemtl " << m.mtl_name << "\n";
         std::uint32_t tris = static_cast<std::uint32_t>(m.idx.size()) / 3;
+        // Faces index position/UV/normal — all share the per-vertex order.
         for (std::uint32_t t = 0; t < tris; ++t) {
             std::uint32_t a = m.idx[t*3 + 0] + vbase + 1;
             std::uint32_t b = m.idx[t*3 + 1] + vbase + 1;
             std::uint32_t c = m.idx[t*3 + 2] + vbase + 1;
-            o << "f " << a << "/" << a << " " << b << "/" << b
-              << " " << c << "/" << c << "\n";
+            o << "f " << a << "/" << a << "/" << a << " "
+              << b << "/" << b << "/" << b << " "
+              << c << "/" << c << "/" << c << "\n";
         }
         tris_total += tris;
         vbase += static_cast<std::uint32_t>(m.verts.size());

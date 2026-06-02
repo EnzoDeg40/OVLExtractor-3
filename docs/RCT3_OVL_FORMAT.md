@@ -717,7 +717,10 @@ buffer — they do **not** index into a global concatenated vertex array).
 
 The sentinel at `+0x18` is the strongest fingerprint of the format. UV `v`
 is flipped on output (OBJ `vt v` = `1 - input_v`) to match standard tooling
-conventions.
+conventions. The per-vertex normal at `+0x0C` is now emitted as OBJ `vn` (faces
+are `v/vt/vn`), giving smooth shading instead of flat-faceted import. This
+applies to both `shs` and `bsh` (`bsh`'s `VERTEX2` keeps the same pos+normal
+prelude, §13.1).
 
 ### 8.5 Material binding
 
