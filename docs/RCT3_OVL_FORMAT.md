@@ -81,53 +81,90 @@ What "fully decoded" buys you, per loader, is documented in
 
 ## 3. FTX texture format
 
-Every `ftx` linked file points at a 76-byte header followed by a palette and
-an unrelated pixel-data block (see §3.2 for the split). All format codes
+Every `ftx` linked file points at a header that describes one or more
+**frames**; each frame owns a palette, a plane of 1-byte palette indices,
+and an optional per-pixel **alpha plane**. All format codes
 (3, 4, 5, 6, 7, 8, 9) share the **same on-disk layout** — indexed8 + BGRA
 palette — so a single decode path works across all of them.
 
 ### 3.1 Header layout (at `loaderreference.datapointer`)
 
+> **Revised.** Every `PTR` below is confirmed against the OVL relocation
+> table, and this layout resolves **1594 / 1594** `ftx` in a full retail
+> install with zero failures. The table previously in this section was
+> misaligned from `+0x18` onward; §3.8 records the evidence and the three
+> bugs that misalignment caused.
+
 ```
-+0x00 u32  format       — size class: width = height = 2^format
-+0x04 u32  width        — redundant, equals 2^format (except format=8)
-+0x08 u32  height       — redundant, equals 2^format (except format=8)
-+0x0C u32  unk_a        — 0
-+0x10 u32  unk_b        — 0
-+0x14 u32  unk_c        — 7 commonly; meaning unclear
-+0x18 u32  mipmap_count — 1 for format=8; garbage for others (see §10)
-+0x1C u32  metadata_off1
-+0x20 u32  unk_e        — 1
-+0x24 u32  metadata_off2
-+0x28 u32  zero
-+0x2C u32  format_repeat   — same as offset 0
-+0x30 u32  width_repeat
-+0x34 u32  height_repeat
-+0x38 u32  unk_c_repeat
-+0x3C u32  pixel_internal_offset  ← key field, see §3.2
-+0x40 ...  256-entry × 4-byte BGRA palette  (1024 bytes)
++0x00 u32  format         — size class: width = height = 2^format ("scale")
++0x04 u32  width
++0x08 u32  height
++0x0C u32  fps            — animation speed; 0 for static textures
++0x10 u32  recolorable    — bitmask: 1 = colour1, 2 = colour2, 4 = colour3
++0x14 u32  anim_seq_count — length of the animation sequence
++0x18 PTR  anim_seq       — u32[anim_seq_count], frame indices
++0x1C u32  frame_count    — number of frame descriptors
++0x20 PTR  frames         — FtxFrame[frame_count], stride 0x1C
++0x24 u32  zero
++0x28 ...  inline payload: the anim_seq array, then the frames array,
+           then each frame's palette / texel / alpha planes
 ```
 
-### 3.2 Pixel data lives elsewhere
+Each **frame descriptor** is `0x1C` bytes:
 
-The 76-byte header + 1024-byte palette occupy the data block at the
-loader's `datapointer`. The actual pixel **indices** (1 byte per pixel)
-are in a **separate chunk**, reached via the `pixel_internal_offset` field
-(passed through `parser.offset_to_position()`).
+```
++0x00 u32  format
++0x04 u32  width
++0x08 u32  height
++0x0C u32  recolorable  — per-frame copy of the header's mask
++0x10 PTR  palette  — 256 × 4 bytes BGRA (1024 bytes)
++0x14 PTR  texels   — width × height, 1 byte per pixel (palette index)
++0x18 PTR  alpha    — width × height, 1 byte per pixel; **0 when absent**
+```
 
-So decode = read palette from header block @ +0x40, follow
-`pixel_internal_offset` for `width × height` 1-byte indices, then
-`bgra[i] = palette[index]`. The 4th palette byte is **not** a per-entry
-alpha — across the palettes we sampled (Dice, gigacoaster, …) it sits at 0
-or small values for the whole 256-entry table, so we emit alpha = 255
-unconditionally and let the caller paint transparency from the material
-shader (see §3.5).
+This matches the reference importer's `FlexiTextureInfoStruct`
+(`scale, width, height, fps, Recolorable, offsetCount, *offset1, fts2Count,
+*fts2`) field for field.
 
-An earlier version of the extractor hard-coded `index 0 → alpha = 0`
-(chroma-key heuristic). It worked for textures with a keyed-out background
-(Carcass, foliage cutouts) but broke any model where index 0 is a real
-color used in the mesh interior — most notably the Dice cube, where index
-0 paints the dot/edge fill of an `SIOpaque` material.
+`fps` at `+0x0C` is the cleanest discriminator for animation: measured across
+a full install it is non-zero for **20 / 20** animated textures and zero for
+all **1574** static ones (observed rates 3, 4, 5, 6, 8, 9, 10, 14, 15, 25).
+`recolorable` at `+0x10` takes exactly the values `{0..7}` — every
+combination of the three bits — and drives the FlexiColour recolour system.
+
+There is no `mipmap_count` and no `pixel_internal_offset` field. `ftx` has
+no mipmaps, and what earlier readings called `pixel_internal_offset` at
+`+0x3C` is really `frames[0].texels` — it read correctly only because a
+single-frame texture places `frames[0]` at `+0x28`, which puts that frame's
+`texels` pointer at `+0x28 + 0x14 = +0x3C`.
+
+The `anim_seq` / `frames` pairing is confirmed by arithmetic: the two arrays
+are stored back to back, so `frames_ptr − anim_seq_ptr` equals
+`anim_seq_count × 4` exactly (`lavaani` 68 = 17×4, `lavabubble` 80 = 20×4,
+`Glow` 108 = 27×4).
+
+### 3.2 Decoding a frame
+
+**Follow the pointers — do not use fixed offsets.** A fixed palette offset
+is wrong for every animated texture and off by one entry for every static
+one (§3.8).
+
+1. Read `frame_count` (`+0x1C`) and `frames` (`+0x20`).
+2. Resolve `frames + k * 0x1C` through `parser.offset_to_position()` to get
+   frame *k*. Frame 0 is the still image; §3.9 covers animation.
+3. From the frame descriptor, resolve `palette` (1024 bytes),
+   `texels` (`width × height` bytes) and, if non-zero, `alpha`
+   (`width × height` bytes).
+4. `bgra[i] = palette[texels[i]]`, and
+   `bgra[i].a = alpha ? alpha[i] : 255`.
+
+Palette, texels and alpha each live wherever their pointer resolves to —
+usually the same block as the header, but that is not guaranteed and must
+not be assumed.
+
+The 4th byte of each palette entry is **not** a per-entry alpha; it sits at
+0 or small values across the whole 256-entry table. Per-pixel transparency
+comes from the `alpha` plane, not from the palette (§3.5).
 
 ### 3.3 The `format_code` is a size class, NOT a pixel format
 
@@ -158,27 +195,43 @@ and an early version of this extractor decoded as RGB → produced an image
 where a brown carcass (R=139, G=69, B=19) rendered as bright blue
 (B=19, G=69, R=139). Always copy palette bytes straight to TGA's BGRA.
 
-### 3.5 Alpha is a material property, not a texture property
+### 3.5 Alpha IS a texture property — the plane is on disk
 
-Whether a pixel should be transparent is decided by the **txs shader** bound
-to the sub-mesh that samples the texture, not by the texture data. Sub-meshes
-with `SIAlphaMask*` / `SIAlphaBlend*` txs need transparent areas; sub-meshes
-with `SIOpaque*` don't. Since one texture can be sampled by multiple
-sub-meshes (with different txs), baking alpha into the `.tga` would corrupt
-the opaque cases. Restoring alpha specifically for the alpha-masked subset
-is a follow-up that needs `txs` semantic decode (open item, §11).
+**Resolved.** This section previously concluded that transparency was purely
+a material (`txs`) property and that no alpha plane had been located on disk.
+Both statements were wrong. rct3dump's `FlexiTextureStruct` third pointer —
+the one behind `dest[i] = palette[texture[i]] | (alpha[i] << 24)` — is
+present on disk at **`frame + 0x18`**.
 
-**Lead from rct3dump (unconfirmed on disk):** the reference's in-memory
-`FlexiTextureStruct` carries *three* separate data pointers —
-`palette`, `texture` (the 1-byte indices), and a distinct **`alpha`** plane —
-and its decode is literally `dest[i] = palette[texture[i]] | (alpha[i] << 24)`
-*when `alpha != 0`*. That suggests some ftx entries store a real per-pixel
-alpha plane next to the index plane, rather than relying solely on the txs
-material. We have **not** yet located such a plane in the 76-byte on-disk
-header (the reference struct is the post-load in-RAM form, where pointers are
-fixed up; on disk they're internal offsets), but the `metadata_off1/2/3`
-fields at +0x1C/+0x24/+0x3C are unexplained candidates worth probing on an
-ftx known to need alpha (chain, foliage). See §11.
+Evidence:
+
+- **It is a pointer.** `frame + 0x18` appears in the OVL relocation table
+  whenever it is non-zero.
+- **It is optional, not garbage.** Across the full install it is either a
+  relocation-confirmed pointer or *exactly* `0` — never an arbitrary value.
+  **1169 / 1594 (73.3 %)** of `ftx` carry one.
+- **It is one byte per pixel, pixel-registered.** Rendering the plane as
+  greyscale reproduces the artwork's silhouette precisely. In the common
+  case the two planes are laid out back to back, so `alpha − texels` equals
+  `width × height` (4096 for 64×64, 65536 for 256×256) — but this is a
+  layout convenience, **not** an invariant: the planes can resolve into
+  different blocks, and roughly half of all ftx do not satisfy it. Size the
+  alpha plane from `width × height`; do not use the gap as a validity check.
+- **It matches the material semantics.** `Carcass` (foliage / branches,
+  alpha-masked) has a plane that is 30.4 % fully transparent and 66.4 %
+  fully opaque — a classic cutout mask. `Dice` — the `SIOpaque` cube whose
+  index 0 is a real interior colour — has **no** plane at all
+  (`alpha == 0`), so it decodes fully opaque with no special-casing.
+
+This removes the need for `txs` guesswork to recover cutout alpha: emit
+`alpha[i]` when the plane exists and `255` when it doesn't. The old
+`index 0 → alpha = 0` chroma-key heuristic (still present in
+`AtlasExtractor::decode_ftx_at`) should be deleted — it is what the alpha
+plane replaces, and it is exactly what broke the Dice cube.
+
+`txs` is still what decides *blend mode* (opaque vs cutout vs
+semi-transparent) for a sub-mesh; it is no longer needed to decide *which
+pixels* are transparent.
 
 ### 3.6 The "false positive" with A8
 
@@ -188,13 +241,72 @@ RCT3 palettes are frequently near-monotonic and the indices themselves
 form recognizable shapes. The real format is palette indexed8 — using the
 palette yields full color. (BambooSign should be green, not grey.)
 
-### 3.7 The 5 stubs
+### 3.7 The "stubs" are animated textures
 
-In the 1594 ftx entries found in the full game, **5 fail to decode** —
-all with a wildly invalid `pixel_internal_offset` (e.g. `1065353216` =
-the IEEE-754 bit pattern for float `1.0`, clearly garbage). These are
-placeholder entries that reference real textures stored elsewhere. Not
-a bug, just empty slots.
+**Corrected.** These are not stubs, placeholders or empty slots — nothing is
+wrong with them on disk. They are the **animated** `ftx` (`frame_count > 1`),
+and the old fixed-offset reader misparsed them.
+
+For an animated texture the inline payload at `+0x28` starts with the
+`anim_seq` array (`1, 2, 3, 4, …`), not with a frame descriptor. A reader
+that assumes `frames[0]` lives at `+0x28` therefore picks up sequence
+entries where it expects pointers, which is why `+0x3C` looked like "a
+wildly invalid `pixel_internal_offset`". The value `1065353216`
+(= float `1.0`) came from reading an unrelated struct entirely.
+
+Following the `frames` pointer at `+0x20` (§3.2) decodes **1594 / 1594**
+`ftx` with zero failures — the misparsing category disappears.
+
+Named examples: `lavaani` and `lavabubble` (Volcano), `Glow`
+(AnimatedTexture), `UfoLights` / `UfoLightsSlow` (Saucer), `TVSequence`
+(LazerQuest), `Dolphin` (DolphinShow), `wheelsun` (GiantFerrisWheel),
+`flexilight` (AnimatedLights), `ridecam` (Cinema), `zgenergy`
+(ZeroGeeTramp).
+
+### 3.8 Evidence for the revised layout, and what the old one broke
+
+The correction came from cross-checking each `u32` in the header against the
+OVL **relocation table** (`OvlParser::is_relocation` — a field listed there
+is a pointer; one that isn't, isn't), then confirming the result at corpus
+scale and visually.
+
+Three consequences of the old table:
+
+1. **Palette read 4 bytes early.** The old reader took the palette from
+   `datapointer + 64` (`0x40`). `0x40` is `frames[0].alpha` — still part of
+   the frame descriptor. The real palette begins at `0x44`, which is where
+   `frames[0].palette` points in **every** static `ftx` measured. The
+   4-byte shift is exactly one BGRA entry, so colour index *i* rendered as
+   palette entry *i − 1*. Visible result on `Carcass`: foliage rendered
+   **blue** instead of green and the background dark blue instead of black.
+   Independent confirmation: `palette + 1024` lands exactly on the texel
+   plane, leaving no gap, so the palette cannot start at `0x40`.
+2. **The alpha plane was invisible.** The field the old table labelled as
+   the start of the palette *is* the alpha pointer (§3.5).
+3. **Animated textures were unreadable** and got classified as stubs (§3.7).
+
+`mipmap_count` at `+0x18` was never a count — it is the `anim_seq` pointer,
+which is why it read as "garbage for others".
+
+### 3.9 Animation
+
+`frame_count` is `1` for 1574 of the 1594 `ftx`; **20** are animated, with
+3–17 frames (histogram: 1→1574, 3→2, 4→4, 5→3, 6→1, 8→2, 10→3, 11→1,
+13→1, 14→1, 17→1).
+
+`anim_seq` is a list of frame indices — the playback order, which may repeat
+or hold frames rather than simply counting `0..frame_count-1`; observed
+sequences include ping-pong and hold-on-first-frame patterns. Note that
+`anim_seq_count` and `frame_count` differ in general (`lavaani` 17 / 17,
+`lavabubble` 20 / 11, `Glow` 27 / 14).
+
+Playback rate is `fps` at header `+0x0C`. Because it is non-zero for exactly
+the animated textures, `fps != 0` is a more reliable animation test than
+`frame_count > 1` if you only want to read one field.
+
+Extracting frame 0 preserves today's one-file-per-symbol output. Emitting
+the rest (e.g. `<symbol>.frame<N>.tga` plus the sequence in the JSON
+sidecar) would make animated textures usable downstream.
 
 
 ## 4. TEX texture format — DXT1 decode
@@ -441,6 +553,75 @@ skipped (cleanly, no crash).
 survey reference a `:tex`. Cracking `tex` is unnecessary for textured
 3D models (see §8.5).
 
+### 4.7 The `tex → flic` chain (mapped — replaces the byte scan)
+
+The chain that makes `tex` **symbol-addressable** is fully present on disk,
+so the trailing byte-scan and the multi-tex deferral can both be retired.
+Verified on `Path/PathIcons`; pointer fields confirmed via the relocation
+table.
+
+**`tex` struct at `loaderreference.datapointer`:**
+
+```
++0x00..+0x1C  u32[8]  flags (0x00070007 observed throughout)
++0x20         u32     count
++0x30         u32     low 16 = flic count, high 16 = addon pack
++0x34         PTR     Flic** array      <-- relocation-confirmed
++0x38         PTR                       <-- relocation-confirmed
+```
+
+`+0x34` and `+0x38` are the *only* relocation entries in the struct;
+everything else is plain data.
+
+**Walking it:**
+
+```
+tex PathIcons:tex   flicCount=1  arrayPtr=0x1e2
+   flic[0] ptr=0x1e6   Flic{ +00=0, +04=1, +08=1065353216 }
+```
+
+`1065353216` = `0x3F800000` = `1.0f`, matching rct3dump's
+`FlicStruct { u32* FlicDataPtr /* 0 on disk */; u32 unk1 /* 1 */; float unk2 /* 1.0 */ }`.
+
+**The link closes on address identity.** Enumerating *all* loader
+references — not just those that become `linkedfiles` — shows the common
+side carries two **stringless** ones:
+
+```
+=== common : 2 loaderrefs, 0 linkedfiles, dataend=0x21c ===
+  [0] tag=btbl  extradata=2  dp=0x1da  (stringless)
+  [1] tag=flic  extradata=1  dp=0x1e6  (stringless)
+
+=== unique : 11 loaderrefs, 11 linkedfiles ===
+  [10] tag=tex  extradata=0  dp=0x4ce  PathIcons:tex
+```
+
+The Flic pointer `0x1e6` **is** the `flic` loader reference's
+`datapointer`. So `tex` symbol → Flic → a specific `flic` loader reference,
+one per symbol. On `Main.common.ovl` each `tex` symbol (`FrontEndBG1`,
+`FrontEndBG1b`, `FrontEndBG2`, …) has its own distinct `+0x34` pointer,
+spaced 16 bytes apart — the pages *are* individually addressable.
+
+**`hasextradata` is a count, not a flag.** `LoadReference.hasextradata`
+(already parsed, never used) gives the number of extra-data blobs owned by
+that reference: `btbl` = 2, `flic` = 1. The blobs live after `dataend`, and
+the flic's single blob is the DXT payload the existing trailing scan
+already locates and decodes correctly.
+
+**What's left:** parsing the extra-data chunk table so each blob can be
+attributed to its owner. Partial framing observed at the start of
+PathIcons' flic blob: a `u32` count (`3`), then 3 relocation offsets
+(`0x116, 0x12a, 0x1e2`), then `0x18`, then the
+`{format, width, height, mipcount}` quad. That matches the "u32×4
+relocation offsets / 0x18 constant" note in `TextureExtractor.cpp` — so
+that observation was right, but it is a **per-chunk relocation list**, not
+a copy of the global table.
+
+**Suggested acceptance test:** implement the chain, then require that
+chain-located pixel bytes are byte-identical to trailing-scan-located bytes
+on every single-`tex` OVL. Once that holds, the same code resolves
+multi-`tex` OVLs with no scan at all.
+
 
 ## 5. GSI — atlas region descriptor
 
@@ -644,10 +825,32 @@ mms branch is gated behind that env var) and extract the specific OVL; it emits
   a≠b: 17/20, 16/19), consistent with §7.4's "swizzled indices into a separate
   position table" (vertex *i* may read `position[a_i]`).
 
-Net: **materially advanced** (the dequant constants are located, two hypotheses
-resolved) but **not solved**. Next step: pin `positions_off`'s exact byte span
-(to `index_off` / the next morph) to derive the true per-vertex stride, then
-test `pos = bias + raw·scale` with the `a`-remap and candidate widths.
+- **The bias/scale are LOD-invariant** — independent support that they are
+  bounding-box parameters rather than per-mesh noise. `Shark_L1/_L2/_L3` all
+  carry `(−1.2663, −0.4412, −3.0909)`; the `Duck` LODs likewise agree to
+  ~3 decimals despite having 63 / 49 / 20 vertices.
+- **The buffer at `positions_off` is NOT vertex-major.** This rules out the
+  shared assumption behind all 17 candidate decoders, which differ only in
+  element width, sign convention and axis order — every one of them reads
+  `vertex[i]` at `positions_off + i·stride`. Two independent measurements:
+  - *Coherence.* Using mean triangle edge length ÷ bbox diagonal, calibrated
+    on known-good `shs` meshes (`PeriscopeHLOD` 0.091, `GlockenSpielLow`
+    0.147, `Shell02HI` 0.169), applying `bias + raw·scale` scores
+    **0.34–0.44** — statistically indistinguishable from the failing
+    `int8/127` baseline, i.e. noise. A correctly decoded mesh cannot score
+    in that band.
+  - *Frame-to-frame delta.* Treating the buffer as consecutive keyframes of
+    `vc × 3` bytes gives a mean |frame0 − frame1| of **~80 / 255 per byte**.
+    Adjacent animation keyframes cannot differ that much.
+
+Net: **materially advanced** (the dequant constants are located, three
+hypotheses resolved) but **not solved**. The remaining search should target
+the *ordering / framing* of the position buffer, not more scale-and-offset
+variants — concretely, §7.4's "sub-header before the data" and the
+`a`-remap hypothesis, both of which survive the evidence above. Pinning
+`positions_off`'s exact byte span (to `index_off` / the next morph) is still
+the right first step; decompiling the consumer of `positions_off` in
+`RCT3.exe` would settle it faster than further black-box iteration.
 
 
 ## 8. SHS — Static Shape mesh (fully decoded)
@@ -691,15 +894,53 @@ shs's SymbolResolve slice (verified on multi-material samples — see §8.5).
 
 ### 8.3 Sub-mesh descriptor (≥ 40 bytes per entry)
 
-Fields we use (everything else is `0` or per-variant metadata we ignore):
+The whole 40-byte entry is now accounted for — there is no unknown region:
 
 ```
-+0x00 .. +0x17  unknown / flag bytes (mostly 0, first u32 = 0xFFFFFFFF)
++0x00           u32 support_type    — 0xFFFFFFFF = none
++0x04           PTR ftx_ref         — → FlexiTexture
++0x08           PTR txs_ref         — → TextureStyle (shader)
++0x0C           u32 transparency    — observed {0, 1, 2}
++0x10           u32 texture_flags   — bitfield; see below
++0x14           u32 sides           — observed {1, 3}
 +0x18           u32 vertex_count    (this sub-mesh)
 +0x1C           u32 index_count     (this sub-mesh, count of u32 indices)
-+0x20           u32 vertex_offset   (virtual offset to this sub-mesh's verts)
-+0x24           u32 index_offset    (virtual offset to this sub-mesh's indices)
++0x20           PTR vertices        (this sub-mesh's vertex buffer)
++0x24           PTR indices         (this sub-mesh's index buffer)
 ```
+
+`ftx_ref` / `txs_ref` at `+0x04` / `+0x08` are **relocation slots** — the
+dwords are `0` on disk and must be resolved through the fixup table, not read
+directly. That also explains the sentinel scanner's signature: `0xFFFFFFFF`
+followed by four zero dwords is simply
+`support_type = -1, ftx_ref = 0, txs_ref = 0, transparency = 0, flags = 0`,
+i.e. it matches **untextured** meshes only — which is exactly the documented
+limitation of that scan.
+
+**`+0x10` gates whether a sub-mesh is visual.** Sub-meshes with
+`(texture_flags & 0x9000) != 0` are non-visual — shadow-only / collision
+geometry — and must be **skipped** when extracting for rendering or export.
+The extractor does not currently read this field, so those sub-meshes are
+being written into the `.obj` output, stacked on top of the real geometry.
+
+Measured over **33 213** `shs` sub-mesh descriptors in a full retail install:
+
+```
++0x0C transparency : 0 ×22169, 1 ×10490, 2 ×554
++0x10 texture_flags: 0 (vast majority), 0x14, 0x24, 0x44, 0xc, 0x8014, …
+                     42 descriptors have & 0x9000 set (e.g. 0x8014 ×28)
++0x14 sides        : 3 ×20900, 1 ×769
+```
+
+They are rare on this path (~0.13 %), so a small sample will show none — the
+field's identity was confirmed by its value *shape* (a bitfield taking a
+handful of flag combinations, unlike the neighbouring counters) rather than
+by frequency.
+
+⚠️ Use `0x9000`, **not** `0x9004`. Bit `0x4` marks *visible* chain-lift
+overlay meshes; masking it drops real geometry. (The game's static-batch
+cull tests `0x9004`, but a parallel render path tests `0x9000` and draws
+bit-`0x4` meshes — `0x9000` is the correct universal mask for an exporter.)
 
 Verification: sum of per-sub-mesh `vc`/`ic` exactly matches the header totals
 (e.g. for `45medslopechain_HI`: 210 + 224 + 24 = 458 ✓ ; 468 + 336 + 36 = 840 ✓).
@@ -870,14 +1111,17 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 
 ## 10. Quirks worth remembering
 
-- **`mipmap_count` is garbage for non-format-8 ftx headers.** Header
-  field at offset 0x18 reads values like 511821, 263360, etc. Either
-  the layout differs for non-format-8 or this field was repurposed.
-  We hardcode `1` for those.
-- **Animated textures (Dolphin, lavabubble, TVSeq…) used to fail extraction.**
-  Symptom: tiny `pixel_internal_offset` (6, 64). Root cause: previous
-  attempts read pixels from the wrong block; the palette-decode path
-  works fine because both palette and indices are reachable.
+- ~~**`mipmap_count` is garbage for non-format-8 ftx headers.**~~
+  **Explained (§3.1/§3.8):** there is no `mipmap_count`. The field at
+  `+0x18` is the `anim_seq` **pointer**, so it reads as large arbitrary
+  values (511821, 263360, …) because that is what an internal offset looks
+  like. `ftx` has no mipmaps at all.
+- ~~**Animated textures (Dolphin, lavabubble, TVSeq…) used to fail
+  extraction.**~~ **Explained (§3.7):** the "tiny `pixel_internal_offset`
+  (6, 64)" symptom is the reader landing in the inline `anim_seq` array
+  (`1, 2, 3, 4, …`) instead of a frame descriptor, because animated `ftx`
+  do **not** place `frames[0]` at `+0x28`. Following the `frames` pointer
+  at `+0x20` fixes the whole class.
 - **`ftx` uses no DXT — but `tex` does.** ⚠️ *Superseded note:* we originally
   concluded "no DXT compression in RCT3" after hours of failed DXT1/3/5 +
   RGB565 + BGRA8888 attempts on **ftx**, which really is indexed8 palette. That
@@ -903,13 +1147,13 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 
 | Item | Impact when solved |
 |---|---|
-| `Main` GUI textures (`tex → flic → btbl`) | Single-tex DXT1/3/5 is decoded and `AtlasExtractor` slices single-tex packs' `gsi` today. `Main` is the holdout: ~31 GUI textures sliced by ~1900 `gsi`, but only 3 are byte-scannable; the other ~28 sit behind the relocated `tex → flic → btbl` pointer chain. Needs the parser to walk that chain (locate each page) + tie each `tex` symbol to its page. Affects only `Main`'s GUI sprites. Not required for shs/bsh models — none reference tex. |
+| `Main` GUI textures (`tex → flic → btbl`) | **Chain now mapped — see §4.7.** `tex + 0x34` is a relocation-confirmed `Flic**` array and the resolved Flic address *is* the `datapointer` of a `flic` loader reference, giving a per-symbol mapping. What remains is parsing the **extra-data chunk table** after `dataend` (`hasextradata` is a per-loader-reference blob *count*, not a flag) so each blob can be attributed to its owning reference instead of byte-scanned. |
 | `mms` position decode | Unlocks readable 3D meshes for animated objects (animals, characters, ride cars). Advanced this session: positions are quantized to a bias+scale found in the morph descriptor (§7.6); exact raw width/remap still TBD. |
-| `txs` specular/reflection in `.mtl` | Alpha (opaque/cutout/blend) is now applied (§8.5). Still flat: `*Specular*` / `*Reflection*` styles could set `Ks`/`Ns`/reflection maps, and ftx alpha re-masking (so cutout works on ftx textures, which we emit opaque) remains open. |
-| `ftx` per-pixel alpha plane | rct3dump's `FlexiTextureStruct` has a separate `alpha` plane (§3.5). If present on disk it would let opaque + alpha-masked sub-meshes share one ftx correctly without txs guesswork. |
+| `txs` specular/reflection in `.mtl` | Alpha (opaque/cutout/blend) is now applied (§8.5). Still flat: `*Specular*` / `*Reflection*` styles could set `Ks`/`Ns`/reflection maps. (The "ftx alpha re-masking" part of this item is superseded by §3.5 — the alpha plane supplies the mask directly.) |
+| ~~`ftx` per-pixel alpha plane~~ **RESOLVED** | Located on disk at `frame + 0x18`; present on 1169 / 1594 (73.3 %) of `ftx`, exactly `0` otherwise (§3.5). Opaque and alpha-masked sub-meshes can now share one ftx with no txs guesswork. Implementation: emit `alpha[i]`, else `255`, and delete the `index 0 → alpha = 0` heuristic in `AtlasExtractor`. |
 | Skinned animation render (bsh + ban) | `bsh` rest-pose meshes export (§8.6) and `ban` tracks decode to JSON (§8.7). The remaining piece is *applying* the tracks: bind each by bone name to `BoneShape1.BonePositions1` (bind pose) and emit a skinned glTF (skin + animation channels) or baked per-frame OBJs. Would animate characters / animals / vehicles. |
 | OVL header v6 | Currently parser warns and continues; some Wild! / Soaked! OVLs may be affected. |
-| The 5 stub ftx textures | Cosmetic — could be filtered out at extract time. |
+| ~~The 5 stub ftx textures~~ **RESOLVED** | Not stubs — animated `ftx` misparsed by the old fixed-offset reader (§3.7). Following the `frames` pointer decodes 1594 / 1594 with zero failures. |
 | Dice vertical stretch | Minor cosmetic question, not investigated. |
 
 

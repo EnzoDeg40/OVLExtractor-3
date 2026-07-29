@@ -86,21 +86,28 @@ or `ftt`:
 1. Locate the data block, read its full size (header + palette + small
    metadata) and dump it verbatim as `<symbol>.ovltex` — kept around so
    future RE on `tex` can be done offline without re-running the extractor.
-2. Parse the FTX-style header (format, width, height, mipmap, pixel_off).
+2. Parse the FTX header (format, width, height, `frame_count`, `frames` ptr).
 3. Sanity check dimensions (`0 < w,h ≤ 8192`); skip otherwise.
-4. Read the 256-entry BGRA palette at `+0x40` of the header block.
-5. Follow `pixel_internal_offset` to read `width × height` 1-byte indices.
-6. Map each index through the palette to BGRA, with **alpha = 255** for all
-   pixels (the 4th palette byte isn't a per-entry alpha; transparency is a
-   per-sub-mesh `txs` shader concern, see §3.5 of the format doc).
+4. Resolve `frames + k * 0x1C` to get frame *k* (frame 0 = the still image).
+5. From the frame descriptor, follow its `palette` pointer (256-entry BGRA,
+   1024 bytes), its `texels` pointer (`width × height` 1-byte indices), and
+   its `alpha` pointer when non-zero (`width × height` 1-byte alpha).
+6. Map each index through the palette to BGRA, taking alpha from the alpha
+   plane when present and `255` otherwise.
 7. Write `<symbol>.tga` (uncompressed, 32-bit, top-down origin).
 8. Write `<symbol>.json` sidecar with parsed header fields.
+
+> ⚠️ **Do not read the palette at a fixed `+0x40` (or any fixed offset).**
+> `+0x40` is the frame's `alpha` pointer; the palette is wherever the
+> frame's `palette` pointer resolves to. See §3.1/§3.2/§3.8 of the format
+> doc — the fixed offset shifts every colour by one palette entry and
+> misparses all 20 animated `ftx`.
 
 Output per linked file:
 - `<symbol>.tga`     — viewable in any tool
 - `<symbol>.ovltex`  — raw bytes (for offline RE)
 - `<symbol>.json`    — `{symbol, loader_tag, format_code, width, height,
-                        mipmap_count, pixel_internal_offset, raw_block_size}`
+                        frame_count, has_alpha, raw_block_size}`
 
 CLI:
 ```bash
@@ -148,12 +155,18 @@ What the extractor does:
    - Crop the rectangle (clamped to the texture's bounds) and write
      `<gsi_symbol>.tga`.
 
-`AtlasExtractor`'s `decode_ftx_at` still applies the legacy `index 0 →
-alpha = 0` chroma-key while `TextureExtractor`'s `decode_indexed8` no longer
-does (see §3 above). This is deliberate for now: sprite atlases tend to use
-the index-0-as-background convention, while standalone textures bound to
-3D meshes do not. The discrepancy is worth flagging if you start trusting
-alpha from atlas output for non-UI purposes.
+⚠️ **Known divergence — both sides are wrong.** `AtlasExtractor`'s
+`decode_ftx_at` applies the legacy `index 0 → alpha = 0` chroma-key while
+`TextureExtractor`'s `decode_indexed8` emits `alpha = 255`, so the same FTX
+decodes differently depending on which extractor runs. Neither is correct:
+the real per-pixel alpha is the **alpha plane** at `frame + 0x18`, present
+on 73.3 % of `ftx` (§3.5 of the format doc). Both copies also read the
+palette 4 bytes early (§3.8).
+
+The fix is to delete the chroma-key heuristic and share one
+pointer-following decode path between the two extractors — they are
+currently near-identical copies, which is how the divergence arose in the
+first place (`sanitize()` exists in four files and `write_tga()` in two).
 
 Output: one `<sprite>.tga` per resolvable `gsi` linked file.
 
