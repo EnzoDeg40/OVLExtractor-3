@@ -1,5 +1,6 @@
 add_library(ovlcore STATIC
     src/BinaryReader.cpp
+    src/OvlChecksum.cpp
     src/OvlParser.cpp
 )
 

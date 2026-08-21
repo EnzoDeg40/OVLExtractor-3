@@ -13,6 +13,7 @@ FetchContent_MakeAvailable(Catch2)
 add_executable(ovl_tests
     test_endianness.cpp
     test_binary_reader.cpp
+    test_checksum.cpp
     test_header_parsing.cpp
 )
 

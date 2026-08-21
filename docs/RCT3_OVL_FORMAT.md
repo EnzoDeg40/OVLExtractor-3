@@ -892,6 +892,10 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 - **Header version 6 is deferred.** Both this rewrite and the legacy
   OVLExtractor-2 stop at v5; v6 OVLs are flagged as `parser.valid() == false`
   with a warning but the parser doesn't throw.
+- **`.CHK` is a CRC-32 with the last byte counted twice.** Not a variant
+  polynomial — an off-by-one in the game's read loop, which tests `feof` only
+  after folding a byte in (§14). And a computed value of `0` means "skip the
+  check", so an unreadable OVL passes rather than fails.
 - **Hard-skip MMS in bulk batches.** Until position decode is solved, the
   17 diagnostic OBJ variants per MMS file would drown the output of a
   full-install sweep. `ModelExtractor::extract` only emits SHS in batch
@@ -1069,3 +1073,107 @@ file-type blocks, the relocation/pointer-fixup pass, and symbol resolution
 a second opinion if a v5 edge case ever disagrees with our parser. Loader
 dispatch by tag is the big `if (stricmp(LoaderNames…))` ladder at `:1891`
 onward — a ready-made catalog of every loader tag and the struct it maps to.
+
+
+## 14. `.CHK` sidecar checksum (fully decoded)
+
+Some OVLs ship with a four-byte sidecar next to them:
+
+```
+Main.common.ovl.CHK          Style/Vanilla/Style.common.ovl.CHK
+Main.unique.ovl.CHK          Style/Vanilla/Style.unique.ovl.CHK
+```
+
+Each holds a single little-endian `u32`. It is a **CRC-32** of the OVL image —
+the ordinary reflected one, polynomial `0x04C11DB7`, init `0xFFFFFFFF`, final
+complement — computed over the file contents **followed by a repeat of the
+file's last byte**:
+
+```python
+checksum = zlib.crc32(data + data[-1:]) & 0xFFFFFFFF
+```
+
+Verified against all four `.CHK` files in a Complete Edition install:
+
+| File | Size | `.CHK` |
+|---|---:|---|
+| `Main.common.ovl` | 25 360 223 | `0xB40450FA` |
+| `Main.unique.ovl` | 840 398 | `0x63113006` |
+| `Style/Vanilla/Style.common.ovl` | 567 101 | `0x684B16EC` |
+| `Style/Vanilla/Style.unique.ovl` | 331 075 | `0x0A36B039` |
+
+### Why the last byte is counted twice
+
+It is not a design choice — it is an off-by-one in the game's read loop. From
+`RCT3.exe` at `0x00E042B0` (file offsets are for the Steam Complete Edition
+build, `RCT3.exe` MD5 `d4760a4b91d0b7e65ca3928a9ddb71dc`):
+
+```asm
+0x00E04285  or      ebx, 0xffffffff     ; crc = 0xFFFFFFFF
+0x00E0428E  call    fopen               ; mode string is "rb", so no text translation
+loop:
+0x00E042B1  call    ferror              ; bail out on error
+0x00E042C9  call    fread               ; fread(&buf, 1, 1, f)   <-- one byte at a time
+0x00E042CE  movzx   eax, byte ptr [ebp - 0x415]
+0x00E042D5  movzx   ecx, bl             ; crc & 0xFF
+0x00E042D8  xor     ecx, eax            ; ^ byte
+0x00E042DA  shr     ebx, 8              ; crc >>= 8
+0x00E042DE  xor     ebx, [ebp + ecx*4 - 0x410]   ; ^ table[...]
+0x00E042E5  call    feof                ; <-- tested only AFTER folding the byte in
+0x00E042EF  je      loop
+0x00E042FA  not     ebx                 ; final complement
+```
+
+`feof` is checked *after* the byte has already been folded in. On the last
+iteration `fread` fails at EOF and returns 0, but it leaves the one-byte stack
+buffer at `[ebp-0x415]` holding the **previous** byte, which is folded a second
+time before the loop notices. Any reimplementation must reproduce this to agree
+with the shipped files.
+
+### The table generator is the standard one in disguise
+
+`0x00E03F90` builds the 256-entry table the long way: it bit-reverses the index
+into the top byte, runs eight MSB-first rounds against the *unreflected*
+polynomial `0x04C11DB7`, then bit-reverses the 32-bit result before storing it.
+That is algebraically identical to the usual reflected table built from
+`0xEDB88320`, so `core/src/OvlChecksum.cpp` generates it directly. Worth knowing
+if you are matching disassembly against the code: the two look nothing alike.
+
+### Verification is skipped when the file cannot be read
+
+If `fopen` fails, the routine returns `0` (`xor ebx, ebx` at `0x00E042FE`), and
+the caller at `0x0082EF53`… `0x00E0430F` treats a computed value of `0` as
+"nothing to check" and returns success without ever opening the `.CHK`. A
+missing or unreadable OVL therefore passes the integrity check rather than
+failing it.
+
+### API
+
+```cpp
+#include "ovl/OvlChecksum.hpp"
+
+std::uint32_t sum = ovl::chk_checksum(data, size);
+bool ok = ovl::chk_matches(data, size, stored_from_chk_file);
+```
+
+### Not to be confused with the save-game checksum
+
+RCT3's `.dat` saves (parks, scenarios, coaster designs, and ~390 other files
+sharing the `2A DA 1E F1` container) also end in a `u32` integrity field, but it
+is a **completely different algorithm** — a running 16-bit state whose output
+byte is accumulated into a non-wrapping 32-bit total:
+
+```python
+state, total = 0xD971, 0
+for b in data[:-4]:
+    dl    = ((state >> 8) ^ b) & 0xFF
+    state = (0x58BF - (((dl + state) & 0xFFFF) * 0x3193)) & 0xFFFF
+    total += dl
+```
+
+Unlike the `.CHK` CRC it is maintained inline by every serializer primitive
+(the constants `0x3193` / `0x58BF` appear at 354 sites in `.text`), covers the
+whole file except its own four trailing bytes, and always lands near
+`127.5 x filesize` because `dl` is a byte and `total` never wraps. Verified on
+395 files. It is out of scope for this extractor but recorded here so the two
+are not mistaken for one another.
