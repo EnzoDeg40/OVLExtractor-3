@@ -1710,6 +1710,13 @@ writer reproduces `German` and `French` byte for byte (minus the tail) and
 What the game does **not** do: discover new languages. The Language list of
 the options dialog is fixed to English / French / German on this build (names
 from `Main`'s `Language_<Stem>:txt`), `Language "Spanish"` in `Options.txt`
-falls back to English, and a `gui/Spanish.common.ovl` is never opened. A new
-language therefore replaces one of the three slots — e.g. ship Spanish as
-`gui/French.common.ovl` — until the list in the executable is patched.
+falls back to English, and a `gui/Spanish.common.ovl` is never opened. The
+gate is one function, `IsSupportedLanguage` (`0x1005bf5c7` in the Mac
+executable: four string compares, "Japanese" being the fourth), called by the
+loader and by the options dialog, which otherwise lists every
+`gui/*.common.ovl` under the `Language_<Stem>:txt` label of `Main`.
+`rct3_saves/tools/mac/patch_language_list.py` makes it return true (3 bytes,
+ad-hoc re-signed): verified, "Español" then appears in the list and the
+interface switches live to a `gui/Spanish` pair written by
+`ovl_text_pack.py`. Without the patch, a new language replaces one of the
+three slots — e.g. ship Spanish as `gui/French.common.ovl`.
