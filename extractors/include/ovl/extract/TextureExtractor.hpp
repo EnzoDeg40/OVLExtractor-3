@@ -43,11 +43,14 @@ public:
     // separate 8-bit alpha plane. `has_alpha` is set when an alpha plane was
     // found; otherwise every pixel gets alpha 255. `recolorable` receives the
     // 3-bit remap-channel mask (1/2/4 = first/second/third colour).
+    // `recolor` (3 swatch indices 0..31, others = keep) recolours the remap
+    // bands with the game's FlexiColour ramps (docs §3.8).
     static bool decode_ftx_bgra(const OvlParser& parser, std::uint32_t datapointer,
                                 std::uint32_t& width, std::uint32_t& height,
                                 std::vector<std::uint8_t>& bgra,
                                 bool* has_alpha = nullptr,
-                                std::uint32_t* recolorable = nullptr);
+                                std::uint32_t* recolorable = nullptr,
+                                const int* recolor = nullptr);
 
     // Decode linked file `lf_index` on `side` whatever its texture tag (ftx →
     // decode_ftx_bgra, tex → decode_tex_bgra). False for non-texture loaders.
@@ -56,7 +59,8 @@ public:
                                    std::uint32_t& width, std::uint32_t& height,
                                    std::vector<std::uint8_t>& bgra,
                                    bool* has_alpha = nullptr,
-                                   std::uint32_t* recolorable = nullptr);
+                                   std::uint32_t* recolorable = nullptr,
+                                   const int* recolor = nullptr);
 
     static bool decode_tex_bgra(const OvlParser& parser, OvlSide declaring_side,
                                 std::uint32_t& width, std::uint32_t& height,

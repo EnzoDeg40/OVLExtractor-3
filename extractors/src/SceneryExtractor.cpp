@@ -156,8 +156,8 @@ struct DecodedTex {
 // and texts from them, with per-extract caches.
 class AssetSource {
 public:
-    AssetSource(const OvlParser& local, const TextureIndex* index)
-        : local_(local), index_(index) {}
+    AssetSource(const OvlParser& local, const TextureIndex* index, const int* recolor = nullptr)
+        : local_(local), index_(index), recolor_(recolor) {}
 
     const DecodedTex& texture(const std::string& symbol_with_tag) {
         std::string key = lower(symbol_with_tag);
@@ -166,7 +166,7 @@ public:
         DecodedTex& t = textures_[key];
         locate(symbol_with_tag, [&](const OvlParser& p, const LinkedRef& ref, const std::string& where) {
             t.ok = TextureExtractor::decode_linked_bgra(p, ref.side, ref.index, t.w, t.h,
-                                                        t.bgra, &t.has_alpha, &t.recolorable);
+                                                        t.bgra, &t.has_alpha, &t.recolorable, recolor_);
             t.source = where;
             return t.ok;
         });
@@ -229,6 +229,7 @@ private:
 
     const OvlParser&                                  local_;
     const TextureIndex*                               index_;
+    const int*                                        recolor_ = nullptr;
     std::map<std::string, std::unique_ptr<OvlParser>> parsers_;
     std::map<std::string, DecodedTex>                 textures_;
     std::map<std::string, std::string>                texts_;
@@ -307,6 +308,7 @@ public:
         gltf::Mesh mesh;
         mesh.name = shape.symbol;
         for (const auto& part : shape.parts) {
+            if (part.texture_flags & kNonVisualFlags) continue;   // shadow / collision mesh
             gltf::Primitive p;
             p.material = material(part.ftx_symbol, part.txs_symbol);
             std::size_t n = part.verts.size();
@@ -521,7 +523,8 @@ bool load_shape_by_symbol(const OvlParser& parser, const std::string& sym, Shape
 
 ExtractResult SceneryExtractor::extract(const OvlParser& parser, const ExtractContext& ctx) {
     ExtractResult res{};
-    AssetSource textures(parser, ctx.texture_index);
+    const bool recolor = ctx.recolor[0] >= 0 || ctx.recolor[1] >= 0 || ctx.recolor[2] >= 0;
+    AssetSource textures(parser, ctx.texture_index, recolor ? ctx.recolor : nullptr);
     const auto shops = read_shops(parser, textures);
     std::set<std::string> used_meshes;   // lowercased "name:tag"
     std::filesystem::create_directories(ctx.output_dir);

@@ -35,7 +35,14 @@ struct ShapePart {
     std::vector<std::uint32_t> indices;
     std::string                ftx_symbol;   // e.g. "BalloonStall:ftx" (may be empty)
     std::string                txs_symbol;   // e.g. "SIOpaque:txs" (may be empty)
+    std::uint32_t              transparency = 0;   // +0x0C: 0 opaque, 1 alpha test, 2 blend
+    // +0x10 textureFlags. Sub-meshes with (flags & 0x9000) are not drawn:
+    // shadow casters / collision geometry (VNStaticSurface_Create's mask,
+    // rerct3 svd-lod notes). kNonVisualFlags below.
+    std::uint32_t              texture_flags = 0;
 };
+
+inline constexpr std::uint32_t kNonVisualFlags = 0x9000;
 
 // bsh bone. `parent` is what rct3dump called BoneNumber: the index of the
 // parent bone, or -1 for a root. `local` is the bind transform relative to the

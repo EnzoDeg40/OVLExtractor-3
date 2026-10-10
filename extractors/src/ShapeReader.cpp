@@ -128,7 +128,10 @@ bool read_shape(const OvlParser& parser, OvlSide side, std::size_t lf_index,
     for (std::size_t s = 0; s < sm_ptrs.size(); ++s) {
         auto sr = open_at(parser, sm_ptrs[s]);
         if (!sr) { err = "sub-mesh pointer unresolved"; return false; }
-        sr->seek(sr->tell() + 0x18);
+        sr->seek(sr->tell() + 0x0C);
+        std::uint32_t transparency = sr->read_u32();
+        std::uint32_t texture_flags = sr->read_u32();
+        sr->read_u32();
         std::uint32_t svc = sr->read_u32();
         std::uint32_t sic = sr->read_u32();
         std::uint32_t vptr = sr->read_u32();
@@ -137,6 +140,8 @@ bool read_shape(const OvlParser& parser, OvlSide side, std::size_t lf_index,
         sum_ic += sic;
 
         ShapePart part;
+        part.transparency = transparency;
+        part.texture_flags = texture_flags;
         auto vr = open_at(parser, vptr);
         auto ir = open_at(parser, iptr);
         if (!vr || !ir) { err = "sub-mesh buffer unresolved"; return false; }

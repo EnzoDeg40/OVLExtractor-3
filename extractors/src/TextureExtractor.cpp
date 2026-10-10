@@ -141,15 +141,42 @@ bool read_plane(const OvlParser& parser, std::uint32_t ptr, std::size_t n,
     return true;
 }
 
+// RCT3's FlexiColour recolour table (docs §3.8): 32 swatches × 85 ramp
+// positions, RGB, captured from the running game.
+const std::uint8_t kFlexiLut[32 * 85 * 3] = {
+#include "FlexiColourLut.inc"
+};
+
+// Swap the remap bands of a recolourable palette (BGRA) for the ramps of the
+// chosen swatches: band c (indices 1+85c … 85+85c) of a texture whose
+// `recolorable` bit c is set takes kFlexiLut[recolor[c]][i - 1 - 85c].
+// A channel value outside 0..31 leaves its band alone (the game's
+// "no recolour" default is 32).
+void apply_recolor(std::vector<std::uint8_t>& pal, std::uint32_t recolorable, const int* recolor) {
+    if (!recolor) return;
+    for (int c = 0; c < 3; ++c) {
+        if (!(recolorable & (1u << c)) || recolor[c] < 0 || recolor[c] > 31) continue;
+        const std::uint8_t* ramp = kFlexiLut + recolor[c] * 85 * 3;
+        for (int i = 0; i < 85; ++i) {
+            std::size_t idx = static_cast<std::size_t>(1 + 85 * c + i);
+            pal[idx * 4 + 0] = ramp[i * 3 + 2];
+            pal[idx * 4 + 1] = ramp[i * 3 + 1];
+            pal[idx * 4 + 2] = ramp[i * 3 + 0];
+        }
+    }
+}
+
 // Decode an FTX frame: BGRA palette[index], alpha from the alpha plane when
 // the texture has one (cut-outs: leaves, railings, signs…), else 255. The
 // palette's 4th byte is not alpha (always 0) and is ignored.
 bool decode_indexed8(const OvlParser& parser, const FtxHeader& h,
-                     std::vector<std::uint8_t>& bgra_out, bool& has_alpha) {
+                     std::vector<std::uint8_t>& bgra_out, bool& has_alpha,
+                     const int* recolor = nullptr) {
     std::size_t pixels = static_cast<std::size_t>(h.width) * h.height;
     if (pixels == 0) return false;
     std::vector<std::uint8_t> pal, indices, alpha;
     if (!read_plane(parser, h.palette_ptr, 256 * 4, pal)) return false;
+    apply_recolor(pal, h.recolorable, recolor);
     if (!read_plane(parser, h.pixel_internal_offset, pixels, indices)) return false;
     has_alpha = h.alpha_ptr != 0 && read_plane(parser, h.alpha_ptr, pixels, alpha);
     bgra_out.resize(pixels * 4);
@@ -797,12 +824,13 @@ bool TextureExtractor::decode_ftx_bgra(const OvlParser& parser,
                                        std::uint32_t& height,
                                        std::vector<std::uint8_t>& bgra,
                                        bool* has_alpha,
-                                       std::uint32_t* recolorable) {
+                                       std::uint32_t* recolorable,
+                                       const int* recolor) {
     FtxHeader h{};
     if (!read_ftx_header(parser, datapointer, h)) return false;
     if (!sane_dimensions(h.width, h.height)) return false;
     bool alpha = false;
-    if (!decode_indexed8(parser, h, bgra, alpha)) return false;
+    if (!decode_indexed8(parser, h, bgra, alpha, recolor)) return false;
     width = h.width;
     height = h.height;
     if (has_alpha) *has_alpha = alpha;
@@ -816,14 +844,15 @@ bool TextureExtractor::decode_linked_bgra(const OvlParser& parser, OvlSide side,
                                           std::uint32_t& height,
                                           std::vector<std::uint8_t>& bgra,
                                           bool* has_alpha,
-                                          std::uint32_t* recolorable) {
+                                          std::uint32_t* recolorable,
+                                          const int* recolor) {
     const auto& lf = parser.side(side).linkedfiles[lf_index];
     Loader ldr = parser.loader_by_id(lf.loaderreference.loadernumber, side);
     if (has_alpha) *has_alpha = false;
     if (recolorable) *recolorable = 0;
     if (ldr.tag == "ftx")
         return decode_ftx_bgra(parser, lf.loaderreference.datapointer, width,
-                               height, bgra, has_alpha, recolorable);
+                               height, bgra, has_alpha, recolorable, recolor);
     if (ldr.tag == "tex") {
         if (!decode_tex_bgra(parser, side, width, height, bgra)) return false;
         // DXT3/DXT5 carry real alpha; DXT1 decodes to opaque 255.

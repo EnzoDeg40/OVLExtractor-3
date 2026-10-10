@@ -147,9 +147,11 @@ int do_extract_scenery(const ovl::OvlParser& p,
                        bool overwrite,
                        bool verbose,
                        const ovl::TextureIndex* texture_index,
-                       bool all_lods) {
+                       bool all_lods,
+                       const std::vector<int>& recolor) {
     ovl::SceneryExtractor x;
     ovl::ExtractContext ctx;
+    for (std::size_t k = 0; k < 3 && k < recolor.size(); ++k) ctx.recolor[k] = recolor[k];
     ctx.output_dir = out_dir;
     ctx.overwrite = overwrite;
     ctx.texture_index = texture_index;
@@ -194,6 +196,7 @@ struct Actions {
     bool scenery = false;
     bool track = false;
     bool all_lods = false;
+    std::vector<int> recolor;
     bool overwrite = false;
     bool verbose = false;
     bool auto_textures = false;
@@ -289,7 +292,7 @@ int process_one(const std::filesystem::path& input,
     }
     if (a.scenery) {
         rc |= do_extract_scenery(parser, out_dir, a.overwrite, a.verbose,
-                                 a.texture_index, a.all_lods);
+                                 a.texture_index, a.all_lods, a.recolor);
         did_anything = true;
     }
     if (a.track) {
@@ -484,6 +487,11 @@ int main(int argc, char** argv) {
     app.add_flag("--all-lods", a.all_lods,
                  "With --types scenery, also write a .glb for every lower level of detail "
                  "(the most detailed one is always written).");
+    app.add_option("--recolor", a.recolor,
+                   "With --types scenery: FlexiColour swatches (0-31) for the three remap "
+                   "channels of recolourable textures, e.g. --recolor 12 2 2; -1 keeps a "
+                   "channel's mask colour (default: all kept)")
+        ->expected(1, 3);
     app.add_option("-o,--output-dir", output_dir,
                    "Output directory (default: ./extracted/<basename>/ for single file, "
                    "./extracted/ for directory input)");

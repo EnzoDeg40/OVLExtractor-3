@@ -57,9 +57,17 @@ by the `Tracks\Coasters\<set>\<set>…` references in the same file (e.g.
 `Track20`). The set is also the ride's `trr` track path, see
 [RCT3_OVL_FORMAT.md §15](RCT3_OVL_FORMAT.md).
 
-The file does not say whether a piece is driven forwards or backwards. That
-falls out of the geometry: a `medslope` driven backwards is a down slope,
-a `tightcurve` driven backwards is a right turn (§15.4).
+**Better: read it as objects.** The tail is the game's object stream, the
+same as a park save's, and rct3_saves' `rct3.stream.Walk` decodes it:
+`TrackedRideInstance`, `Track`, `TrackSegment`, `TrackPiece` (all fields:
+`Reversed`, `Next`/`Prev`, `StartDistance`, `FlexiColourField`, …),
+`TrackPlatformPiece`, `RideStations`, `SceneryItemPlacementSingle`
+(entrance/exit), `SIDDatabaseEntry`. The packed-record scan above reads
+only the piece placement. `scripts/rct3_track.py read_design()` uses `Walk`
+when the rct3_saves checkout is next to this one. The direction of travel
+**is** stored (`TrackPiece.Reversed`). When it can't be read, it falls out
+of the geometry: a `medslope` driven backwards is a down slope, a
+`tightcurve` driven backwards is a right turn (§15.4).
 
 ### World convention (exact)
 

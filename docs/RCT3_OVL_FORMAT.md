@@ -237,7 +237,25 @@ tint through the pure channel colour to a darkened one; the game swaps a
 ramp for the same shading of the colour the player picks. Extracted as-is,
 recolorable textures therefore show the blue / magenta / yellow mask colours
 (GenericStall, most ride and scenery "Flexi" textures). The flag is carried
-into glTF material `extras.recolorable`. Survey: flags 7 (315 textures),
+into glTF material `extras.recolorable`.
+
+**Recolouring like the game** (`--types scenery --recolor A B C`). The
+player picks one of **32 swatches** per channel. The game builds, at start-up,
+a 32 × 85 table of RGB ramps (`FlexiColour_InitRecolorRampLUT` in rerct3's
+Windows notes). Position 41 of a ramp is the pure swatch colour, 0–40
+lighten it and 42–84 darken it, and palette index `i` of band `c` is drawn
+with `table[swatch_c][i − 1 − 85c]`. On the Mac build the table sits at
+`0x100e43480`. It was captured from the running game through
+rct3_saves' probe (`scripts/capture_flexicolour_lut.py`) and is byte for byte
+the table rerct3 captured on Windows. It ships as
+`extractors/src/FlexiColourLut.inc`. A channel value ≥ 32 is the game's
+"no recolour" default and keeps the mask ramp. Where the triples come from:
+`Track.TrackFlexiColours` (track, platforms, supports),
+`TrackedRideInstance.CarFlexiColours` / `CarLightFlexiColours` (cars),
+`SceneryItemPlacementSingle.FlexiColourField` (entrance / exit…), all in a
+park save **and** in a `.trk` (§15.8); `sid.default_colours` for a fresh
+item. Pure swatches (index 41): `0 #2f4343, 1 #839797, 2 #d3dbdb, …, 12
+#639b77, …, 18 #f3cb1b, 24 #8f7f6b, 27 #ab0000, 28 #e80701, 31 #ef786d`. Survey: flags 7 (315 textures),
 3 (70), 1 (19), 5 (16), 2/4 (7 each), 6 (3).
 
 ### 3.9 Animated flexitextures
@@ -1544,8 +1562,16 @@ In park saves (`TrackPiece`) the travel direction **is** stored:
 the 74 tracks of the 42 campaign parks (`rct3_saves/tools/track_geometry.py`):
 2999/3024 joints meet under §15.4, and `Reversed` agrees with the geometric
 travel direction on 1124/1140 directed pieces. The 16 others are ties
-where both orientations connect. `.trk` designs drop the field, so §15.4's
-geometric inference is needed there. When several ride types share piece
+where both orientations connect. **A `.trk` is the same object stream** (rct3_saves' `Walk` reads it):
+it holds the `TrackedRideInstance` (name, `TrackedRideSymbolName`,
+`TrainSelection`, `NCarsPerTrain`, platform style/type, every FlexiColour
+triple), the `Track`, every `TrackPiece` **with `Reversed`**, the
+`TrackPlatformPiece`s with their exact sid and stair flags, and the entrance
+/ exit as `SceneryItemPlacementSingle` (`StandardEntrance` /
+`StandardExit` from `style\Vanilla\style`). On the 208 shipped designs
+`Reversed` agrees with the geometric inference on 7503/7624 directed
+pieces. The geometric inference (§15.4) is only needed when the object
+stream can't be read. When several ride types share piece
 names over different track sets (Corkscrew / LoopingRC / Twister…), pick
 the type whose geometry connects the most joints, or read
 `TrackedRideInstance.TrackedRideSymbolName`.
@@ -1558,11 +1584,29 @@ in rerct3's notes) and not reconstructed here yet.
 ### 15.9 Putting a ride together
 
 ```bash
-ovlextract -t track   -o json  <track set>.ovl <ride>.ovl <train>.ovl <platform style>.ovl
-ovlextract -t scenery -o glb --texture-index idx.json --assets-root "$ASSETS" <every _data / car OVL>
-python3 scripts/rct3_track.py layout json design.trk --glb-dir glb --cars 4   # → design.layout.json
+# once: the ride data of the whole game (≈15 s) and the symbol index
+find "$ASSETS/Tracks" "$ASSETS/Cars" "$ASSETS/Style" -name '*.common.ovl' ! -name '*_data.*' |
+  while read f; do ovlextract -t track -o json "$f"; done
+ovlextract --build-index idx.json "$ASSETS"
+
+python3 scripts/rct3_track.py layout json design.trk --glb-dir glb      # → design.layout.json
+python3 scripts/rct3_track.py assets json design.layout.json --index idx.json \
+        --assets-root "$ASSETS" --out glb      # each mesh, recoloured as the design says
+python3 scripts/rct3_track.py layout json design.trk --glb-dir glb      # again: car lengths
 blender -b --python scripts/blender_ride.py -- design.layout.json glb --glb ride.glb --render ride.png
 ```
+
+`layout` reads the design's objects when rct3_saves is next to this
+repository (`../rct3_saves/src`, or `RCT3_SAVES_SRC`): pieces in `Next`
+order with their `Reversed` flag, the exact platform pieces, entrance and
+exit, the selected train and car count, the colours. Without it (or with
+`--infer`) it infers direction and platforms (§15.4, §15.8). `assets` takes
+a track piece's mesh from the `_data` OVL next to *its* set (piece names
+repeat across sets) and everything else through the index, and writes
+recoloured copies to `glb/c<a>_<b>_<c>/`. Cars are spaced by their own mesh
+length, and a train longer than the station overhangs the preceding pieces.
+Sub-meshes with `textureFlags & 0x9000` (shadow / collision) are left out
+of every export (`ShapePart::texture_flags`).
 
 The layout lists every track piece (§15.4 transform), one platform piece per
 station piece (§15.8) and a train parked nose-first at the end of the first

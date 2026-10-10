@@ -24,6 +24,9 @@ struct ExtractContext {
     // SceneryExtractor: also write one .glb per lower level of detail (the
     // most detailed LOD is always written as <name>.glb).
     bool                                   all_lods = false;
+    // SceneryExtractor: FlexiColour swatches (0..31) for the three remap
+    // channels of recolourable textures; -1 keeps the mask colours.
+    int                                    recolor[3] = {-1, -1, -1};
 };
 
 struct ExtractResult {

@@ -833,6 +833,7 @@ bool process_mesh(const OvlParser& parser,
     std::vector<SubMesh> meshes;
     meshes.reserve(shape.parts.size());
     for (const auto& part : shape.parts) {
+        if (part.texture_flags & kNonVisualFlags) continue;   // shadow / collision mesh
         SubMesh m;
         // RCT3 is Direct3D (left-handed); OBJ consumers assume right-handed.
         // Mirror Z and flip the winding, or every model comes out mirrored

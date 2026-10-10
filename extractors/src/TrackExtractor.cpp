@@ -57,7 +57,8 @@ std::string lower(std::string s) {
 }
 
 std::string base_name(const OvlParser& p) {
-    std::string n = std::filesystem::path(p.side(OvlSide::Common).ovlname).filename().string();
+    std::filesystem::path path(p.side(OvlSide::Common).ovlname);
+    std::string n = path.filename().string();
     for (const char* suf : {".common.ovl", ".unique.ovl", ".ovl"}) {
         std::string s(suf);
         if (n.size() > s.size() && n.compare(n.size() - s.size(), s.size(), s) == 0) {
@@ -65,6 +66,9 @@ std::string base_name(const OvlParser& p) {
             break;
         }
     }
+    // Every theme has its own Style/<Theme>/Style.ovl: name those after
+    // their folder so they don't overwrite each other.
+    if (lower(n) == "style") n += "_" + path.parent_path().filename().string();
     return n;
 }
 
@@ -309,7 +313,9 @@ ExtractResult TrackExtractor::extract(const OvlParser& parser, const ExtractCont
 
     if (!sections.empty()) {
         std::ostringstream o;
-        o << "{\n  \"track_set\": " << jstr(base) << ",\n  \"sections\": [\n";
+        o << "{\n  \"track_set\": " << jstr(base)
+          << ",\n  \"source\": " << jstr(parser.side(OvlSide::Common).ovlname)
+          << ",\n  \"sections\": [\n";
         for (std::size_t i = 0; i < sections.size(); ++i) {
             const auto& t = sections[i];
             o << "    {\"name\":" << jstr(t.symbol);

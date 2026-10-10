@@ -40,14 +40,27 @@ def main():
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
-    files = {p.stem.lower(): p for p in glb_dir.glob("*.glb")}
+    # <svd>.glb, or its recoloured copy in c<a>_<b>_<c>/ (rct3_track.py assets)
+    files = {}
+    for p in glb_dir.rglob("*.glb"):
+        sub = p.parent.name if p.parent != glb_dir else ""
+        files[(sub, p.stem.lower())] = p
+
+    def colour_dir(colours):
+        if not colours:
+            return ""
+        c = [v if 0 <= v < 32 else -1 for v in colours]
+        return "" if all(v < 0 for v in c) else "c" + "_".join(str(v) for v in c)
+
     assets = {}
     missing = set()
     for it in layout["items"]:
-        key = it["asset"].lower()
+        sub = colour_dir(it.get("colours"))
+        key = (sub, it["asset"].lower())
+        it["_key"] = key
         if key in assets or key in missing:
             continue
-        f = files.get(key)
+        f = files.get(key) or files.get(("", key[1]))
         if not f:
             missing.add(key)
             continue
@@ -59,7 +72,7 @@ def main():
         shapes = {pb.custom_shape for o in new if o.type == "ARMATURE"
                   for pb in o.pose.bones if pb.custom_shape}
         new = [o for o in new if o not in shapes]
-        col = bpy.data.collections.new("asset_" + it["asset"])
+        col = bpy.data.collections.new("asset_" + it["asset"] + ("_" + sub if sub else ""))
         for o in new:
             for c in o.users_collection:
                 c.objects.unlink(o)
@@ -72,7 +85,7 @@ def main():
     scene.collection.children.link(ride)
     placed = []
     for it in layout["items"]:
-        col = assets.get(it["asset"].lower())
+        col = assets.get(it["_key"])
         if not col:
             continue
         m = it["matrix"]
