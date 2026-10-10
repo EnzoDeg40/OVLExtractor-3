@@ -1579,28 +1579,50 @@ names over different track sets (Corkscrew / LoopingRC / Twister…), pick
 the type whose geometry connects the most joints, or read
 `TrackedRideInstance.TrackedRideSymbolName`.
 
-**Supports** are not part of the piece meshes. They are generated at runtime
-(`TrackPiece_BuildSupports` → `SupportGrid_PlaceColumns` →
+**Supports** are not part of the piece meshes; the game builds them at
+runtime (`TrackPiece_BuildSupports` → `SupportGrid_PlaceColumns` →
 `ScenerySupportManager_RebuildCellVisuals` in rerct3's notes). Each piece's
 `sid.supports` names its style (`ts1` for Track3/Corkscrew and most steel
-sets, `ts2` for Track20/wooden, `ts6` for Track32–34, `ts3` lift bases…).
-The style's pieces are `sid`s in the central `Supports/Supports.ovl` (257
-of them) with meshes in `Supports/<style>/`, by type: **12** middle
-(`<style>_support_1H/2H/4H/8H`, height = mesh height), **13** top, **14**
-bottom (footing), **15** bottom-extra, **16** girder (`_girder_1L/2L/3L`),
-**17** cap. A column goes on every footprint cell whose `sid` cell flags
-have bit 1 (Supports), from the terrain up to the structure. The game
-then stacks cap pieces and middles largest-first, and adds girders
-between cells linked by the `sid` connection entries (`+0x34` count,
-`+0x38` 88-byte records). `rct3_track.py layout --supports` builds an
-approximation: one column per flagged cell, from height 0 to the track
-base over that cell (lowest rail point − the set's rail height), footing +
-middles largest-first + top, coloured with the track triple. No girders, no
-terrain, inverted track not handled. Compared in game (FrightNight, LayDown
-coaster, `ts1`): the style, the colour (the track's 3rd channel) and the
-column shape match, but the game puts a column only every 2–3 tiles, so
-the per-cell selection rule (in `TrackPiece_BuildSupports`) is still to be
-found.
+sets, `ts2` for Track20/wooden, `ts6` for Track32–34…). The style's pieces
+are `sid`s in the central `Supports/Supports.ovl` (257 of them), meshes in
+`Supports/<style>/`, by type: **12** middle (`_support_1H/2H/4H/8H`), **13**
+top, **14** bottom (footing), **15** bottom-extra, **16** girder
+(`_girder_1L/2L/3L`), **17** cap.
+
+**Where columns go: the sid connection entries** (`sid +0x34` count,
+`+0x38` → 88-byte `SceneryItemTrack`). They come in groups
+(`direction_type` 1, 2, 3…). In a group, the entry whose `end` cell equals
+its `start` cell is the point the track rests on: footprint cell `start`,
+sub-position `start_sub[2..3]` (0.5 = cell centre), attach height `height`
+above the piece base (the underside of the track: 0 for a Track3 straight,
+0.95 mid-way up a `medslope`). The other entries of the group name
+neighbouring cells, some outside the footprint (`(0,-1)`, `(0,1)`): where the
+column moves, with a horizontal **girder**, when it cannot go straight down.
+A straight has one group, a 2×2 tight curve one, a loop four placed by hand,
+none at the top of the loop. Local cell → world tile is the game's
+`SceneryItem_GridTransform` (rerct3), sub-positions turn with
+`TransformSubGridFloat`.
+
+**Checked in the running game** (The Money Pit, Giga, `ts1`): every support
+piece is a scene node whose world matrix ends in `(x, y, z, 1.0)`, so
+scanning memory for `(z, 1.0)` at each tile and reading `x`, `y` lists the
+real columns (`rct3_saves` probe; the game builds the meshes only for the
+part of the park in view). Of the 8 columns in view, 6 sit exactly on the
+predicted point with exactly the predicted stack, e.g. footing@0, then
+1H@1, 2H@2, 4H@4, 8H@8, 8H@16, 4H@20, 2H@22, top@23 under an attach height
+of 24.37. That confirms the stacking: footing at the ground, top piece ending
+at **round(attach)** (30.37 → 30, 24.37 → 24, 8.99 → 9), middles at multiples
+of their own height, largest first. The other 2 (the first group of
+`Steepslope2straight`) stand **one third of a tile** further along the piece
+than the entry says; that rule is not known yet.
+
+`rct3_track.py layout --supports` implements this. Per group: the column on
+the main point, unless another piece covers that tile lower than the
+column top (then the next candidate cell plus a girder at the attach
+height), or the attach is less than 1.1 above the terrain. The terrain
+comes from the park save when there is one (a `.trk` has none: ground 0).
+Not verified against the game yet: the girder choice and blocking rule, the
+1/3-tile offset above, inverted track, girders/caps between two columns.
 
 ⚠ **The style string is usually at offset 0 of the OVL's string table**, so
 `sid +0x4C` holds a *relocated 0*. Reading it as a null pointer loses it

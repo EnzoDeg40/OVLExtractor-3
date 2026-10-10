@@ -418,6 +418,20 @@ def read_design(path: Path) -> dict | None:
     track = next(iter(objs("Track").values()), {})
     pieces = objs("TrackPiece")
     col = lambda d: tuple(d.get(k, 32) for k in ("COL0", "COL1", "COL2")) if d else None
+    # a park holds several rides: keep the pieces of this ride's track segments
+    tri_id = next(iter(objs("TrackedRideInstance")), None)
+    tracks = objs("Track")
+    if len(objs("TrackedRideInstance")) > 1 and tracks:
+        segs_all = objs("TrackSegment")
+        mine = next((t for t in tracks.values()
+                     if t.get("TrackedRideInstance") and t["TrackedRideInstance"].id == tri_id), None)
+        if mine:
+            track = mine
+            segs, cur = set(), mine.get("FirstSegment")
+            while cur and cur.id in segs_all and cur.id not in segs:
+                segs.add(cur.id)
+                cur = segs_all[cur.id].get("NextSegment")
+            pieces = {k: v for k, v in pieces.items() if v.get("Segment") and v["Segment"].id in segs}
     # travel order: follow Next from the lowest StartDistance
     order, seen = [], set()
     if pieces:
@@ -461,7 +475,22 @@ def read_design(path: Path) -> dict | None:
         singles.append({"sid": name, "ovl": ovl, "x": d["POSX"], "z": d["POSZ"], "height": d["HEIGHT"],
                         "direction": d["DIRECTION"] & 3, "corner": d.get("CORNER", 0),
                         "colours": col(v.get("FlexiColourField"))})
+    # terrain heights (min, max of the 4 corners) under the ride, for supports
+    terrain = {}
+    try:
+        from rct3.terrain import Terrain
+        t = Terrain(Path(path).read_bytes())
+        for p in placed:
+            for dx in range(-3, 6):
+                for dz in range(-3, 6):
+                    c, r_ = p["x"] + dx, p["z"] + dz
+                    if 0 <= c < t.w and 0 <= r_ < t.h and (c, r_) not in terrain:
+                        cs = t.corners(c, r_)
+                        terrain[(c, r_)] = (min(cs), max(cs))
+    except Exception:
+        terrain = {}                       # a .trk has no terrain: ground at 0
     return {"ride": (tri.get("TrackedRideSymbolName") or "").split(":")[0],
+            "terrain": terrain,
             "name": tri.get("Name", ""), "train_selection": tri.get("TrainSelection", 0),
             "cars_per_train": tri.get("NCarsPerTrain", 0), "trains": tri.get("NTrains", 0),
             "platform": (tri.get("PlatformStyle"), tri.get("PlatformType")),
@@ -726,65 +755,179 @@ def _rail_height(cat: "Catalog", sec: Section) -> float:
     return sec.joint("entry")["pos"][1]
 
 
-def support_columns(cat: "Catalog", sec: Section, p: Placed, ground: float = 0.0):
-    """Approximate support columns under a placed piece: one per footprint
-    cell flagged for supports (sid cell flags bit 1), from the ground to the
-    track base over that cell (lowest rail point − the set's rail height),
-    stacked from the style's pieces. Returns [(asset, glTF matrix)].
+def _grid_transform(lx, lz, ox, oz, w, h, d):
+    """SceneryItem_GridTransform @0x00961910 (rerct3 RE): local footprint cell
+    -> world tile for a placed item."""
+    return [(lx + ox, lz + oz), (lz + ox, (w - lx - 1) + oz),
+            ((w - lx - 1) + ox, (h - lz - 1) + oz), ((h - lz - 1) + ox, lx + oz)][d & 3]
 
-    The game's builder (TrackPiece_BuildSupports → SupportGrid_PlaceColumns →
-    ScenerySupportManager_RebuildCellVisuals) also lays girders between cells
-    from the sid connection entries and handles inverted track; this does
-    neither."""
+
+def _sub_transform(x, z, d):
+    """SupportGrid_TransformSubGridFloat @0x009b2210 (rerct3 RE)."""
+    return [(x, z), (z, 1 - x), (1 - x, 1 - z), (1 - z, x)][d & 3]
+
+
+def _style_pieces(cat: "Catalog", style: str) -> dict:
+    """The support style's pieces from Supports/Supports.ovl sids:
+    middles (type 12, height = sid size y), top (13), bottom (14), girders (16)."""
+    if not hasattr(cat, "_style_cache"):
+        cat._style_cache = {}
+    if style in cat._style_cache:
+        return cat._style_cache[style]
+    out = {"middle": [], "top": None, "bottom": None, "girder": []}
+    for name in ("support_1H", "support_2H", "support_4H", "support_8H", "support_16H",
+                 "supporttop_1H", "supportbot_1H", "girder_1L", "girder_2L", "girder_3L"):
+        sid = cat.sid(f"{style}_{name}")
+        if not sid:
+            continue
+        asset = _svd(sid, f"{style}_{name}")
+        size = sid.get("size") or [0, 1, 0]
+        if sid.get("type") == 12:
+            out["middle"].append((float(size[1]), asset))
+        elif sid.get("type") == 13:
+            out["top"] = (float(size[1]), asset)
+        elif sid.get("type") == 14:
+            out["bottom"] = (float(size[1]), asset)
+        elif sid.get("type") == 16:
+            out["girder"].append((int(name[-2]), asset))     # length in thirds of a tile? 1L/2L/3L
+    out["middle"].sort(reverse=True)
+    out["girder"].sort()
+    cat._style_cache[style] = out
+    return out
+
+
+def stack_column(bottom: float, top: float, pieces: dict) -> list[tuple[str, float]]:
+    """Fill [bottom, top] with support pieces the way the game does
+    (ScenerySupportManager_RebuildCellVisuals, rerct3 RE; checked against the
+    live game, where a 32-high column under a Giga lift reads footing@0, then
+    1H@1, 2H@2, 4H@4, 8H@8, 8H@16, 4H@24, 2H@28, 1H@30, top@31): footing at
+    the ground, top piece ending at `top`, middles placed at multiples of their
+    own height, largest first. Returns [(asset, y)]."""
+    out = []
+    lo, hi = bottom, top
+    if pieces.get("bottom") and hi - lo >= pieces["bottom"][0]:
+        out.append((pieces["bottom"][1], lo))
+        lo += pieces["bottom"][0]
+    if pieces.get("top") and hi - lo >= pieces["top"][0]:
+        hi -= pieces["top"][0]
+        out.append((pieces["top"][1], hi))
+    gaps = [(lo, hi)]
+    for h, asset in pieces["middle"]:
+        nxt = []
+        for a, b in gaps:
+            i0, i1 = math.ceil(a / h - 1e-6), math.floor(b / h + 1e-6)
+            if i0 < i1:
+                for i in range(i0, i1):
+                    out.append((asset, i * h))
+                if a < i0 * h - 1e-6:
+                    nxt.append((a, i0 * h))
+                if i1 * h < b - 1e-6:
+                    nxt.append((i1 * h, b))
+            else:
+                nxt.append((a, b))
+        gaps = nxt
+    return out
+
+
+class SupportContext:
+    """What a support column must avoid: the tiles covered by other track
+    pieces (with the height they start at), and the terrain."""
+
+    def __init__(self, ride: "Ride", pieces: list[Placed], terrain=None):
+        self.terrain = terrain or {}
+        self.occupied: dict[tuple[int, int], list[tuple[int, float]]] = {}
+        for i, p in enumerate(pieces):
+            sec = ride.section(p.name)
+            if not sec:
+                continue
+            w, h = sec.squares
+            for cz in range(h):
+                for cx in range(w):
+                    t = _grid_transform(cx, cz, p.x, p.z, w, h, p.direction)
+                    self.occupied.setdefault(t, []).append((i, p.height))
+
+    def ground(self, tx: int, tz: int) -> float:
+        g = self.terrain.get((tx, tz))
+        return g[0] if g else 0.0
+
+    def ground_max(self, tx: int, tz: int) -> float:
+        g = self.terrain.get((tx, tz))
+        return g[1] if g else 0.0
+
+    def blocked(self, tx: int, tz: int, below: float, own: int) -> bool:
+        """Another piece covers this tile lower than `below`."""
+        return any(i != own and hb < below - 1.1 for i, hb in self.occupied.get((tx, tz), []))
+
+
+def support_columns(cat: "Catalog", sec: Section, p: Placed, index: int,
+                    ctx: "SupportContext") -> list[dict]:
+    """Support structure of one placed piece, from its sid connection entries
+    (SceneryItemTrack, 88 B — the game's own support points; docs §15.8).
+
+    Entries come in groups (direction_type). In each group the entry whose end
+    cell is its start cell is the point the track rests on: a column from the
+    ground straight up to round(attach height). The other entries name
+    neighbouring cells: when the tile under the point is taken by another
+    piece, the column moves there and a horizontal girder at the attach height
+    joins its top to the point. A group whose column cannot stand anywhere, or
+    that sits less than 1.1 above the ground, gets no support.
+    Returns [{"asset", "matrix"}]."""
     style = (sec.data.get("sid") or {}).get("supports") or set_support_style(cat, sec)
     if not style:
         return []
-    pieces = {}
-    for name in ("support_1H", "support_2H", "support_4H", "support_8H", "supportbot_1H", "supporttop_1H"):
-        sid = cat.sid(f"{style}_{name}")
-        if sid:
-            pieces[name] = (_svd(sid, f"{style}_{name}"), float((sid.get("size") or [0, 1, 0])[1]))
-    middles = sorted(((h, a) for n, (a, h) in pieces.items() if n.startswith("support_")), reverse=True)
-    if not middles:
+    pieces = _style_pieces(cat, style)
+    if not pieces["middle"]:
         return []
-    sid = sec.data.get("sid") or {}
-    sx, sz = sec.squares
-    cells = sid.get("cells") or []
-    line = CentreLine(cat, sec)
-    rail_h = _rail_height(cat, sec)
-    f = piece_transform(sec, p)
+    w, h = sec.squares
+    groups: dict[int, list[dict]] = {}
+    for c in (sec.data.get("sid") or {}).get("connections") or []:
+        groups.setdefault(c["direction_type"], []).append(c)
+    ident = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
     out = []
-    for cz in range(sz):
-        for cx in range(sx):
-            k = cz * sx + cx
-            if k < len(cells) and not (cells[k][0] & 2):
+    for dt, entries in groups.items():
+        main = next((c for c in entries if c["start"] == c["end"]), None)
+        if main is None:
+            continue
+        attach = p.height + main["height"]
+        # the game ends the column at round(attach): measured in the live game,
+        # attach 30.37 -> 30, 24.37 -> 24, 8.99 -> 9, 32.0 -> 32
+        top = math.floor(attach + 0.5)
+        sx, sz = _grid_transform(main["start"][0], main["start"][1], p.x, p.z, w, h, p.direction)
+        ux, uz = _sub_transform(main["start_sub"][2], main["start_sub"][3], p.direction)
+        point = ((sx + ux) * TILE, (sz + uz) * TILE)
+        candidates = [(sx, sz, point)]
+        for c in entries:
+            if c is main:
                 continue
-            # local cell bounds (piece modelled centred on its footprint)
-            x0, z0 = -sx * 2 + cx * 4, -sz * 2 + cz * 4
-            ys = [q[1] for q in line.pts if x0 <= q[0] <= x0 + 4 and z0 <= q[2] <= z0 + 4]
-            if not ys:
+            ex, ez = _grid_transform(c["end"][0], c["end"][1], p.x, p.z, w, h, p.direction)
+            candidates.append((ex, ez, ((ex + 0.5) * TILE, (ez + 0.5) * TILE)))
+        for k, (tx, tz, (cx, cz)) in enumerate(candidates):
+            g = ctx.ground(tx, tz)
+            if top - ctx.ground_max(tx, tz) < 1.1 or ctx.blocked(tx, tz, top, index):
                 continue
-            top = math.floor(min(ys) - rail_h + 1e-3) + p.height
-            if top - ground < 1:
-                continue
-            wx, _, wz = f((x0 + 2, 0, z0 + 2))
-            y = ground
-            stack = []
-            if "supportbot_1H" in pieces:
-                stack.append(pieces["supportbot_1H"]); y += pieces["supportbot_1H"][1]
-            want_top = pieces.get("supporttop_1H")
-            limit = top - (want_top[1] if want_top else 0)
-            for h, a in middles:
-                while y + h <= limit + 1e-6:
-                    stack.append((a, h)); y += h
-            if want_top and y + want_top[1] <= top + 1e-6:
-                stack.append(want_top)
-            y = ground
-            ident = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-            for a, h in stack:
-                out.append((a, game_to_gltf_matrix(ident, (wx, y, wz))))
-                y += h
+            for asset, y in stack_column(g, top, pieces):
+                out.append({"asset": asset, "matrix": game_to_gltf_matrix(ident, (cx, y, cz))})
+            if k > 0 and pieces["girder"]:
+                out.append(_girder(pieces, (cx, top, cz), (point[0], top, point[1])))
+            break
     return out
+
+
+def _girder(pieces: dict, a, b) -> dict:
+    """A horizontal girder from a to b (game frame). The girder meshes lie
+    along their local X (1L/2L/3L: 1.66 / 2.66 / 3.66 long); the shortest one
+    that spans the gap is stretched to it."""
+    dx, dz = b[0] - a[0], b[2] - a[2]
+    dist = math.hypot(dx, dz)
+    lengths = {1: 1.66, 2: 2.66, 3: 3.66}
+    n, asset = next(((n, a_) for n, a_ in pieces["girder"] if lengths.get(n, 9) >= dist),
+                    pieces["girder"][-1])
+    sc = dist / lengths.get(n, dist or 1)
+    ux, uz = (dx / dist, dz / dist) if dist > 1e-6 else (1.0, 0.0)
+    # columns: local X -> along the gap (scaled), Y up, Z = X × Y in the game frame
+    cols = [[ux * sc, 0, uz * sc], [0, 1, 0], [-uz, 0, ux]]
+    mid = ((a[0] + b[0]) / 2, a[1], (a[2] + b[2]) / 2)
+    return {"asset": asset, "matrix": game_to_gltf_matrix(cols, mid)}
 
 
 def _svd(sid: dict | None, fallback: str) -> str:
@@ -825,13 +968,14 @@ def ride_layout(cat: "Catalog", ride: Ride, pieces: list[Placed], cars: int = 0,
                           "ovl_dir": str(Path(sec.source).parent) if sec.source else ""})
 
     if supports:
-        for p, col in zip(pieces, piece_colours):
+        ctx = SupportContext(ride, pieces, (design or {}).get("terrain"))
+        for i, (p, col) in enumerate(zip(pieces, piece_colours)):
             sec = ride.section(p.name)
             if not sec:
                 continue
-            for asset, m in support_columns(cat, sec, p):
-                items.append({"kind": "support", "piece": sec.name, "asset": asset, "matrix": m,
-                              "colours": col})
+            for it in support_columns(cat, sec, p, i, ctx):
+                items.append({"kind": "support", "piece": sec.name, "asset": it["asset"],
+                              "matrix": it["matrix"], "colours": col})
 
     # station runs in travel order
     runs, cur = [], []

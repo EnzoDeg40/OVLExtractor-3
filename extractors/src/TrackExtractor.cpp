@@ -168,6 +168,21 @@ std::string sid_json(const SceneryItemInfo& s) {
             o << (i ? "," : "") << "[" << jstr(s.params[i].first) << "," << jstr(s.params[i].second) << "]";
         o << "]";
     }
+    if (!s.connections.empty()) {
+        o << ",\"connections\":[";
+        for (std::size_t i = 0; i < s.connections.size(); ++i) {
+            const auto& c = s.connections[i];
+            o << (i ? "," : "") << "{\"start\":[" << c.start_x << "," << c.start_z << "],\"start_sub\":"
+              << jvec(c.start_sub, 4) << ",\"height\":" << jnum(c.height) << ",\"end\":[" << c.end_x << ","
+              << c.end_z << "],\"end_sub\":[" << jnum(c.end_sub_x) << "," << jnum(c.end_sub_z)
+              << "],\"end_height\":" << jnum(c.end_height) << ",\"angled\":" << c.angled
+              << ",\"raw\":[" << c.raw_34 << "," << c.raw_38 << "],\"angled_start_sub\":["
+              << c.angled_start_sub[0] << "," << c.angled_start_sub[1] << "],\"angled_end\":"
+              << jvec(c.angled_end) << ",\"flags\":" << c.flags << ",\"direction_type\":"
+              << c.direction_type << "}";
+        }
+        o << "]";
+    }
     if (!s.individual_animations.empty())
         o << ",\"individual_animations\":" << jstrs(s.individual_animations);
     if (s.anr_chunks || s.anr_cycles_per_circuit)

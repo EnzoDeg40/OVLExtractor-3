@@ -500,6 +500,32 @@ bool read_scenery_item(const OvlParser& parser, OvlSide side, std::size_t lf_ind
     std::uint32_t svd_count = v[0x50 / 4];
     out.svds = symbol_array(parser, v[0x54 / 4], svd_count);
     for (int k = 0; k < 3; ++k) out.default_colours[k] = v[0x8C / 4 + k];
+    std::uint32_t cc = v[0x34 / 4];
+    if (cc > 0 && cc < 1024) {
+        auto e = u32s_at(parser, v[0x38 / 4], cc * 22);
+        for (std::uint32_t i = 0; i < cc; ++i) {
+            const std::uint32_t* q = &e[i * 22];
+            SceneryConnection c;
+            c.start_x = static_cast<std::int32_t>(q[0]);
+            c.start_z = static_cast<std::int32_t>(q[1]);
+            for (int k = 0; k < 4; ++k) c.start_sub[k] = as_f32(q[2 + k]);
+            c.height = as_f32(q[6]);
+            c.end_x = static_cast<std::int32_t>(q[7]);
+            c.end_z = static_cast<std::int32_t>(q[8]);
+            c.end_sub_x = as_f32(q[9]);
+            c.end_sub_z = as_f32(q[10]);
+            c.end_height = as_f32(q[11]);
+            c.angled = static_cast<std::int32_t>(q[12]);
+            c.raw_34 = q[13];
+            c.raw_38 = q[14];
+            c.angled_start_sub[0] = static_cast<std::int32_t>(q[15]);
+            c.angled_start_sub[1] = static_cast<std::int32_t>(q[16]);
+            for (int k = 0; k < 3; ++k) c.angled_end[k] = as_f32(q[17 + k]);
+            c.flags = q[20];
+            c.direction_type = static_cast<std::int32_t>(q[21]);
+            out.connections.push_back(c);
+        }
+    }
     std::uint32_t pc = v[0x68 / 4];
     if (pc > 0 && pc < 64) {
         auto pr = u32s_at(parser, v[0x6C / 4], pc * 2);

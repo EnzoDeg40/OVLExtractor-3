@@ -37,6 +37,9 @@ def main():
     blend, glb, render = arg(argv, "--blend"), arg(argv, "--glb"), arg(argv, "--render")
     size, views, focus = arg(argv, "--size", 1400, int), arg(argv, "--views", 1, int), arg(argv, "--focus")
     elev, zoom = arg(argv, "--elev", 35.0, float), arg(argv, "--zoom", 1.0, float)
+    game_cam = arg(argv, "--game-camera")          # json: pos, forward, origin (rct3_saves look_at)
+    aspect = arg(argv, "--aspect", 1.5, float)
+    hfov = arg(argv, "--hfov", 45.0, float)       # the game's FOV is horizontal, 45°
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
@@ -124,7 +127,47 @@ def main():
     if glb:
         bpy.ops.export_scene.gltf(filepath=str(Path(glb).resolve()), export_format="GLB")
     if render:
-        render_views(scene, placed, assets, Path(render), size, views, focus, elev, zoom)
+        if game_cam:
+            render_game_camera(scene, json.loads(Path(game_cam).read_text()), Path(render), size, aspect, hfov)
+        else:
+            render_views(scene, placed, assets, Path(render), size, views, focus, elev, zoom)
+
+
+def setup_render(scene, w, h):
+    engines = {e.identifier for e in bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items}
+    scene.render.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in engines else "BLENDER_EEVEE"
+    scene.render.resolution_x, scene.render.resolution_y = w, h
+    world = bpy.data.worlds.new("w")
+    world.use_nodes = True
+    world.node_tree.nodes["Background"].inputs[0].default_value = (0.55, 0.65, 0.8, 1)
+    scene.world = world
+    sun = bpy.data.objects.new("sun", bpy.data.lights.new("sun", "SUN"))
+    sun.data.energy = 3.0
+    sun.rotation_euler = (math.radians(50), 0, math.radians(30))
+    scene.collection.objects.link(sun)
+
+
+def render_game_camera(scene, cam_json, out, size, aspect, hfov):
+    """Render from the camera stored in a park save (game frame, left-handed):
+    layout coordinates are game coordinates minus the terrain origin."""
+    ox, oz = cam_json["origin"][0], cam_json["origin"][1]
+    gx, gy, gz = cam_json["pos"]
+    fx, fy, fz = cam_json["forward"]
+    to_bl = lambda x, y, z: C @ Vector((x, y, z))          # glTF -> Blender
+    pos = to_bl(gx - ox, gy, -(gz - oz))
+    fwd = to_bl(fx, fy, -fz)
+    setup_render(scene, size, int(size / aspect))
+    cam = bpy.data.objects.new("cam", bpy.data.cameras.new("cam"))
+    cam.data.sensor_fit = "HORIZONTAL"
+    cam.data.angle = math.radians(hfov)
+    cam.data.clip_start, cam.data.clip_end = 0.5, 5000
+    scene.collection.objects.link(cam)
+    scene.camera = cam
+    cam.location = pos
+    cam.rotation_euler = fwd.to_track_quat("-Z", "Y").to_euler()
+    scene.render.filepath = str(out)
+    bpy.ops.render.render(write_still=True)
+    print("rendered", out)
 
 
 def render_views(scene, placed, assets, out, size, views, focus, elev=35.0, zoom=1.0):
