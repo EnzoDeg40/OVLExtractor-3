@@ -3,6 +3,7 @@
 #include "ovl/BinaryReader.hpp"
 #include "ovl/Error.hpp"
 #include "ovl/OvlParser.hpp"
+#include "ovl/extract/ShapeReader.hpp"
 #include "ovl/extract/TextureExtractor.hpp"
 #include "ovl/extract/TextureIndex.hpp"
 
@@ -616,81 +617,8 @@ bool process_mms(const OvlParser& parser,
 //   +0x18  0xFFFFFFFF                (sentinel, fixed)
 //   +0x1C  uv.u, uv.v                (2× f32)
 
-// Sub-mesh descriptor — the unit of "one material slot" inside a shs.
-//
-// Each shs header at +0x28 holds a pointer to a sub-mesh table: an array of
-// u32 sub-mesh descriptor pointers terminated by 0xFFFFFFFF. Each pointed-to
-// descriptor is ≥ 40 bytes; the fields we care about are at fixed offsets:
-//
-//   +0x18  u32  vertex_count   (this sub-mesh's verts)
-//   +0x1C  u32  index_count    (this sub-mesh's indices)
-//   +0x20  u32  vertex_offset  (virtual offset, own buffer per sub-mesh)
-//   +0x24  u32  index_offset   (virtual offset, own buffer per sub-mesh)
-//
-// Verified: sum of sub-mesh vc/ic == header vc/ic for HI/ME/LO samples of
-// 45medslopechain. Each sub-mesh has its own contiguous vertex buffer
-// (stride 36, sentinel-at-+24 layout) and own index buffer (u32 triangle
-// list), indexed locally (0..vc-1 within the sub-mesh).
-struct SubMeshDesc {
-    std::uint32_t vc;
-    std::uint32_t ic;
-    std::uint32_t verts_off;
-    std::uint32_t idx_off;
-};
-
-std::vector<SubMeshDesc> read_submesh_table(const OvlParser& parser,
-                                            const LinkedFiles& lf) {
-    std::vector<SubMeshDesc> out;
-    auto pr = parser.offset_to_position(lf.loaderreference.datapointer);
-    if (!pr.found) return out;
-    BinaryReader rh(parser.side(pr.currentOVL).ovlname);
-    rh.seek(pr.position + 0x28);
-    std::uint32_t table_ptr = rh.read_u32();
-    if (table_ptr == 0) return out;
-    auto tp = parser.offset_to_position(table_ptr);
-    if (!tp.found) return out;
-    BinaryReader rt(parser.side(tp.currentOVL).ovlname);
-    rt.seek(tp.position);
-    std::vector<std::uint32_t> sm_ptrs;
-    for (int i = 0; i < 64; ++i) {  // safety bound
-        std::uint32_t p = rt.read_u32();
-        if (p == 0xFFFFFFFFu || p == 0) break;
-        sm_ptrs.push_back(p);
-    }
-    for (auto p : sm_ptrs) {
-        auto sp = parser.offset_to_position(p);
-        if (!sp.found) { out.clear(); return out; }
-        BinaryReader rs(parser.side(sp.currentOVL).ovlname);
-        rs.seek(sp.position + 0x18);
-        SubMeshDesc d{};
-        d.vc        = rs.read_u32();
-        d.ic        = rs.read_u32();
-        d.verts_off = rs.read_u32();
-        d.idx_off   = rs.read_u32();
-        out.push_back(d);
-    }
-    return out;
-}
-
-// Materials referenced by a shs come from its SymbolResolve slice (the
-// resolves whose loadpointer matches this LoaderReference's internal_offset).
-// Each (ftx, txs) consecutive pair = one material slot, in the same order
-// as the sub-mesh table. Returns pairs of (ftx_symbol, txs_symbol).
-std::vector<std::pair<std::string, std::string>>
-collect_materials(const OvlParser& parser, OvlSide side,
-                  const LinkedFiles& lf) {
-    std::vector<std::pair<std::string, std::string>> out;
-    const auto& d = parser.side(side);
-    std::vector<std::string> seq;
-    for (const auto& sr : d.symbolresolves) {
-        if (sr.loadpointer != lf.loaderreference.internal_offset) continue;
-        seq.push_back(parser.string_from_offset(sr.stringpointer));
-    }
-    for (std::size_t i = 0; i + 1 < seq.size(); i += 2) {
-        out.emplace_back(seq[i], seq[i + 1]);
-    }
-    return out;
-}
+// Sub-mesh table + descriptor layout and the order-based (ftx, txs) material
+// binding are documented and decoded in ShapeReader.cpp (docs §8.2–8.5).
 
 // Strip the trailing ":ftx" / ":txs" tag from a symbol; returns "" if empty.
 std::string strip_tag(std::string s) {
@@ -851,11 +779,10 @@ void dump_shs_survey(const OvlParser& parser, OvlSide side,
 // emission. They differ only in the per-vertex stride and index width:
 //   shs: VERTEX  (36 B) = pos(12) normal(12) sentinel/color(4) uv(8); u32 idx
 //   bsh: VERTEX2 (44 B) = pos(12) normal(12) bone(4) unk(4) color(4) uv(8); u16 idx
-// bsh vertex positions are already model-space (rct3dump's viewer computes a
-// per-bone bind-pose transform but writes the raw positions for the static
-// view — see DoShapes), so a rest-pose export is identical to shs apart from
-// the stride and index width. The bone index per vertex is read and discarded
-// here; skeletal animation (ban) is a separate concern (OBJ can't carry it).
+// Decoding is shared with SceneryExtractor (ShapeReader). bsh vertex positions
+// are model-space at the bind pose, which is also frame 0 of the item's ban
+// animation, so the OBJ shows the item as the game does when it starts
+// animating. For the skeleton + animation, use `--types scenery` (glTF).
 bool process_mesh(const OvlParser& parser,
                   OvlSide side,
                   std::size_t lf_index,
@@ -884,40 +811,17 @@ bool process_mesh(const OvlParser& parser,
         return true;
     }
 
-    // Read vc/ic from fixed header offsets
-    std::uint32_t vc, ic;
-    {
-        auto pr = parser.offset_to_position(lf.loaderreference.datapointer);
-        if (!pr.found) return false;
-        BinaryReader r(parser.side(pr.currentOVL).ovlname);
-        r.seek(pr.position + 0x18);
-        vc = r.read_u32();
-        ic = r.read_u32();
-    }
-    ctx.log(std::string(kind) + " " + symbol + ": v=" + std::to_string(vc) +
-            " i=" + std::to_string(ic));
-    if (vc == 0 || ic == 0 || vc > 200000 || ic > 600000) {
-        ctx.log(std::string(kind) + ": implausible counts, skipping");
+    Shape shape;
+    std::string err;
+    if (!read_shape(parser, side, lf_index, bone, shape, err)) {
+        ctx.log(std::string(kind) + " " + symbol + ": " + err);
         return false;
     }
-
-    auto submeshes = read_submesh_table(parser, lf);
-    if (submeshes.empty()) {
-        ctx.log(std::string(kind) + ": no sub-mesh table at +0x28");
-        return false;
+    std::uint32_t vc = 0, ic = 0;
+    for (const auto& p : shape.parts) {
+        vc += static_cast<std::uint32_t>(p.verts.size());
+        ic += static_cast<std::uint32_t>(p.indices.size());
     }
-
-    // Sanity: sub-mesh counts should sum to header totals.
-    std::uint32_t sum_vc = 0, sum_ic = 0;
-    for (const auto& s : submeshes) { sum_vc += s.vc; sum_ic += s.ic; }
-    if (sum_vc != vc || sum_ic != ic) {
-        ctx.log(std::string(kind) + ": sub-mesh sum mismatch (header v=" + std::to_string(vc) +
-                "/i=" + std::to_string(ic) + " vs sum v=" +
-                std::to_string(sum_vc) + "/i=" + std::to_string(sum_ic) + ")");
-        return false;
-    }
-
-    auto materials = collect_materials(parser, side, lf);
 
     struct SubMesh {
         std::vector<Vertex>         verts;
@@ -927,59 +831,33 @@ bool process_mesh(const OvlParser& parser,
         std::string                 txs_name;    // raw txs symbol (for sidecar)
     };
     std::vector<SubMesh> meshes;
-    meshes.reserve(submeshes.size());
-    for (std::size_t s = 0; s < submeshes.size(); ++s) {
-        const auto& sd = submeshes[s];
+    meshes.reserve(shape.parts.size());
+    for (const auto& part : shape.parts) {
         SubMesh m;
-        // Vertices (stride 36, sentinel at +24)
-        auto pv = parser.offset_to_position(sd.verts_off);
-        if (!pv.found) {
-            ctx.log(std::string(kind) + ": sub-mesh " + std::to_string(s) +
-                    " vertex pointer unresolved");
-            return false;
-        }
-        BinaryReader rv(parser.side(pv.currentOVL).ovlname);
-        rv.seek(pv.position);
-        m.verts.reserve(sd.vc);
-        for (std::uint32_t i = 0; i < sd.vc; ++i) {
+        // RCT3 is Direct3D (left-handed); OBJ consumers assume right-handed.
+        // Mirror Z and flip the winding, or every model comes out mirrored
+        // (text on signs reads backwards).
+        m.verts.reserve(part.verts.size());
+        for (const auto& sv : part.verts) {
             Vertex v;
-            v.x = rv.read_f32();
-            v.y = rv.read_f32();
-            v.z = rv.read_f32();
-            v.nx = rv.read_f32(); v.ny = rv.read_f32(); v.nz = rv.read_f32();
-            if (bone) {
-                (void)rv.read_u32();  // bone index (skinning; unused for rest pose)
-                (void)rv.read_u32();  // unk
-                (void)rv.read_u32();  // color (D3DCOLOR)
-            } else {
-                (void)rv.read_u32();  // sentinel/color (validated empirically)
-            }
-            v.u = rv.read_f32();
-            v.v = rv.read_f32();
+            v.x = sv.pos[0];    v.y = sv.pos[1];    v.z = -sv.pos[2];
+            v.nx = sv.normal[0]; v.ny = sv.normal[1]; v.nz = -sv.normal[2];
+            v.u = sv.uv[0];     v.v = sv.uv[1];
             m.verts.push_back(v);
         }
-        // Indices: sub-mesh-local triangle list. bsh = u16, shs = u32.
-        auto pi = parser.offset_to_position(sd.idx_off);
-        if (!pi.found) {
-            ctx.log(std::string(kind) + ": sub-mesh " + std::to_string(s) +
-                    " index pointer unresolved");
-            return false;
-        }
-        BinaryReader ri(parser.side(pi.currentOVL).ovlname);
-        ri.seek(pi.position);
-        m.idx.resize(sd.ic);
-        if (bone) { for (auto& x : m.idx) x = ri.read_u16(); }
-        else      { for (auto& x : m.idx) x = ri.read_u32(); }
+        m.idx = part.indices;
+        for (std::size_t t = 0; t + 2 < m.idx.size(); t += 3)
+            std::swap(m.idx[t + 1], m.idx[t + 2]);
         // Material binding (one (ftx, txs) pair per sub-mesh, in order). The
         // material key combines BOTH: one ftx can be sampled by several
         // sub-meshes with different txs shaders (e.g. gigacoaster as both
         // SIOpaqueSpecular50Reflection and SIAlphaMaskLow), which are distinct
         // materials. The texture file (map_Kd) is still keyed by ftx alone.
-        if (s < materials.size()) {
-            m.ftx_symbol = materials[s].first;
-            m.txs_name   = materials[s].second;
-            std::string ftx_base = sanitize(strip_tag(materials[s].first));
-            std::string txs_base = sanitize(strip_tag(materials[s].second));
+        if (!part.ftx_symbol.empty() || !part.txs_symbol.empty()) {
+            m.ftx_symbol = part.ftx_symbol;
+            m.txs_name   = part.txs_symbol;
+            std::string ftx_base = sanitize(strip_tag(part.ftx_symbol));
+            std::string txs_base = sanitize(strip_tag(part.txs_symbol));
             m.mtl_name = txs_base.empty() ? ftx_base : (ftx_base + "__" + txs_base);
         } else {
             m.mtl_name = "default";
@@ -1073,9 +951,15 @@ bool process_mesh(const OvlParser& parser,
         mtl << "d " << (cls == TxsClass::Blend ? "0.6" : "1.0") << "\n";
         mtl << "illum 2\n";
         if (slot.resolved) {
-            mtl << "map_Kd " << slot.tga_name << "\n";
-            if (cls != TxsClass::Opaque)
-                mtl << "map_d " << slot.tga_name << "\n";
+            // <tex>.tga is opaque; <tex>_rgba.tga carries the FTX alpha plane
+            // (docs §3.5) and is what alpha-tested / blended materials sample.
+            if (cls != TxsClass::Opaque) {
+                std::string rgba = slot.tga_name.substr(0, slot.tga_name.size() - 4) + "_rgba.tga";
+                mtl << "map_Kd " << rgba << "\n"
+                    << "map_d " << rgba << "\n";
+            } else {
+                mtl << "map_Kd " << slot.tga_name << "\n";
+            }
         }
         mtl << "\n";
     }

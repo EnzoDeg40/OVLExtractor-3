@@ -21,6 +21,9 @@ struct ExtractContext {
     // When true and `texture_index` is set, ModelExtractor also extracts each
     // referenced texture to `output_dir` so the .mtl's map_Kd paths resolve.
     bool                                   auto_extract_textures = false;
+    // SceneryExtractor: also write one .glb per lower level of detail (the
+    // most detailed LOD is always written as <name>.glb).
+    bool                                   all_lods = false;
 };
 
 struct ExtractResult {

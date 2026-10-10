@@ -81,53 +81,75 @@ What "fully decoded" buys you, per loader, is documented in
 
 ## 3. FTX texture format
 
-Every `ftx` linked file points at a 76-byte header followed by a palette and
-an unrelated pixel-data block (see §3.2 for the split). All format codes
-(3, 4, 5, 6, 7, 8, 9) share the **same on-disk layout** — indexed8 + BGRA
-palette — so a single decode path works across all of them.
+Every `ftx` linked file points at the on-disk form of rct3dump's
+`FlexiTextureInfoStruct`, followed (normally inline) by a frame-offset array,
+one `FlexiTextureStruct` per frame and the 1024-byte palette. Pixel indices
+and the optional alpha plane live in a separate chunk. All format codes
+(3, 4, 5, 6, 7, 8, 9) share this layout — indexed8 + BGRA palette (+ 8-bit
+alpha plane) — so a single decode path works across all of them.
+
+> **Correction (Oct 2026).** Earlier versions of this document (and of the
+> extractor) read the palette at `+0x40`. That word is the *alpha-plane
+> pointer*; the palette starts at `+0x44` for a single-frame texture. Reading
+> from `+0x40` shifted every colour by one palette entry, which produced the
+> "noisy / speckled" look of many extracted textures (stall signs, wood,
+> metal). With the pointers followed properly, **1594 / 1594** ftx in a full
+> Complete Edition install decode, including the 5 entries previously written
+> off as "stubs" (§3.7).
 
 ### 3.1 Header layout (at `loaderreference.datapointer`)
 
+Every "ptr" is an internal offset fixed up by the relocation table — resolve
+it with `offset_to_position()` rather than assuming it is inline.
+
 ```
-+0x00 u32  format       — size class: width = height = 2^format
-+0x04 u32  width        — redundant, equals 2^format (except format=8)
-+0x08 u32  height       — redundant, equals 2^format (except format=8)
-+0x0C u32  unk_a        — 0
-+0x10 u32  unk_b        — 0
-+0x14 u32  unk_c        — 7 commonly; meaning unclear
-+0x18 u32  mipmap_count — 1 for format=8; garbage for others (see §10)
-+0x1C u32  metadata_off1
-+0x20 u32  unk_e        — 1
-+0x24 u32  metadata_off2
-+0x28 u32  zero
-+0x2C u32  format_repeat   — same as offset 0
-+0x30 u32  width_repeat
-+0x34 u32  height_repeat
-+0x38 u32  unk_c_repeat
-+0x3C u32  pixel_internal_offset  ← key field, see §3.2
-+0x40 ...  256-entry × 4-byte BGRA palette  (1024 bytes)
+FlexiTextureInfoStruct (36 B)
++0x00 u32  scale         log2 size class: width = height = 2^scale (8 = free dims)
++0x04 u32  width
++0x08 u32  height
++0x0C u32  fps           animation rate, 0 for static textures
++0x10 u32  recolorable   bit 0 / 1 / 2 = 1st / 2nd / 3rd remap colour (§3.8)
++0x14 u32  offset_count  length of the frame-sequence array (1 when static)
++0x18 ptr  offsets    →  u32[offset_count] frame indices (the old "mipmap_count
+                         is garbage" quirk: this word is a pointer, §10)
++0x1C u32  frame_count   number of FlexiTextureStruct entries (1 when static)
++0x20 ptr  frames     →  FlexiTextureStruct[frame_count]
+
+FlexiTextureStruct (28 B per frame; for a static texture it sits at +0x28)
++0x00 u32  scale, +0x04 width, +0x08 height     (repeat of the header)
++0x0C u32  recolorable                          (repeat of the header)
++0x10 ptr  palette  →  256 × BGRA (1024 B; for a static texture inline at +0x44)
++0x14 ptr  texture  →  width × height u8 palette indices (separate chunk)
++0x18 ptr  alpha    →  width × height u8 alpha, or 0 when the texture has none
 ```
+
+Single-frame example (`BalloonStall:ftx`, 256 × 256, block base `B`):
+`+0x18 = B+0x24` (offsets array, one `0`), `+0x20 = B+0x28` (frame 0),
+frame `palette = B+0x44`, `texture = 0x22D`, `alpha = 0x1022D` — the alpha
+plane sits right after the 65 536 index bytes.
+
+Survey over a full install: 1594 ftx, **1169 carry an alpha plane**, 437 are
+recolorable, 20 are animated (`frame_count` 3 – 17: lava, water, TV screens…).
 
 ### 3.2 Pixel data lives elsewhere
 
-The 76-byte header + 1024-byte palette occupy the data block at the
-loader's `datapointer`. The actual pixel **indices** (1 byte per pixel)
-are in a **separate chunk**, reached via the `pixel_internal_offset` field
-(passed through `parser.offset_to_position()`).
+The header + palette occupy the data block at the loader's `datapointer`; the
+1-byte **indices** and the **alpha** plane are in a separate chunk, reached
+through the frame struct's `texture` / `alpha` pointers. Decode:
 
-So decode = read palette from header block @ +0x40, follow
-`pixel_internal_offset` for `width × height` 1-byte indices, then
-`bgra[i] = palette[index]`. The 4th palette byte is **not** a per-entry
-alpha — across the palettes we sampled (Dice, gigacoaster, …) it sits at 0
-or small values for the whole 256-entry table, so we emit alpha = 255
-unconditionally and let the caller paint transparency from the material
-shader (see §3.5).
+```
+bgra[i] = palette[texture[i]]          (B, G, R from the palette entry)
+alpha[i] = alpha_ptr ? alpha[i] : 255  (palette byte 3 is always 0 — not alpha)
+```
+
+which is exactly rct3dump's `ReadTexture2` (`pals[s->texture[i]] |
+s->alpha[i] << 24`).
 
 An earlier version of the extractor hard-coded `index 0 → alpha = 0`
 (chroma-key heuristic). It worked for textures with a keyed-out background
 (Carcass, foliage cutouts) but broke any model where index 0 is a real
-color used in the mesh interior — most notably the Dice cube, where index
-0 paints the dot/edge fill of an `SIOpaque` material.
+color used in the mesh interior — most notably the Dice cube. The alpha
+plane is the real mechanism the heuristic was approximating.
 
 ### 3.3 The `format_code` is a size class, NOT a pixel format
 
@@ -158,27 +180,27 @@ and an early version of this extractor decoded as RGB → produced an image
 where a brown carcass (R=139, G=69, B=19) rendered as bright blue
 (B=19, G=69, R=139). Always copy palette bytes straight to TGA's BGRA.
 
-### 3.5 Alpha is a material property, not a texture property
+### 3.5 Alpha plane vs. material: when transparency applies
 
-Whether a pixel should be transparent is decided by the **txs shader** bound
-to the sub-mesh that samples the texture, not by the texture data. Sub-meshes
-with `SIAlphaMask*` / `SIAlphaBlend*` txs need transparent areas; sub-meshes
-with `SIOpaque*` don't. Since one texture can be sampled by multiple
-sub-meshes (with different txs), baking alpha into the `.tga` would corrupt
-the opaque cases. Restoring alpha specifically for the alpha-masked subset
-is a follow-up that needs `txs` semantic decode (open item, §11).
+The alpha plane is data, but it only **means** something where the sampling
+sub-mesh's `txs` style enables alpha testing/blending (§12): `SIAlphaMask*`,
+`SiAlpha*`, `BillboardStandard`, `GUIIcon` (cutout) and `SIGlass` (blend).
+Opaque styles ignore it — and on the regions only opaque sub-meshes sample,
+the plane is frequently **0** (e.g. `HersheyStall`: 63 736 of 65 536 texels
+at alpha 0). One ftx is routinely shared by opaque and cutout sub-meshes, so
+baking the plane into the one texture an opaque material uses punches holes
+in it (Blender renders those faces black / see-through).
 
-**Lead from rct3dump (unconfirmed on disk):** the reference's in-memory
-`FlexiTextureStruct` carries *three* separate data pointers —
-`palette`, `texture` (the 1-byte indices), and a distinct **`alpha`** plane —
-and its decode is literally `dest[i] = palette[texture[i]] | (alpha[i] << 24)`
-*when `alpha != 0`*. That suggests some ftx entries store a real per-pixel
-alpha plane next to the index plane, rather than relying solely on the txs
-material. We have **not** yet located such a plane in the 76-byte on-disk
-header (the reference struct is the post-load in-RAM form, where pointers are
-fixed up; on disk they're internal offsets), but the `metadata_off1/2/3`
-fields at +0x1C/+0x24/+0x3C are unexplained candidates worth probing on an
-ftx known to need alpha (chain, foliage). See §11.
+Extractor convention therefore:
+
+- `<tex>.tga` — opaque (alpha forced to 255): what opaque materials use and
+  what you want to look at.
+- `<tex>_rgba.tga` — with the alpha plane, written only when the plane
+  exists; `.mtl` cutout/blend materials reference it for both `map_Kd` and
+  `map_d`.
+- In `.glb` exports (§14) each material embeds the variant it needs:
+  `alphaMode: MASK` (cutoff 0.5) + RGBA image for cutouts, `BLEND` for
+  `SIGlass`, `OPAQUE` + opaque image otherwise.
 
 ### 3.6 The "false positive" with A8
 
@@ -188,13 +210,38 @@ RCT3 palettes are frequently near-monotonic and the indices themselves
 form recognizable shapes. The real format is palette indexed8 — using the
 palette yields full color. (BambooSign should be green, not grey.)
 
-### 3.7 The 5 stubs
+### 3.7 The 5 "stubs" (resolved)
 
-In the 1594 ftx entries found in the full game, **5 fail to decode** —
-all with a wildly invalid `pixel_internal_offset` (e.g. `1065353216` =
-the IEEE-754 bit pattern for float `1.0`, clearly garbage). These are
-placeholder entries that reference real textures stored elsewhere. Not
-a bug, just empty slots.
+Five ftx used to fail with a "wildly invalid `pixel_internal_offset`" such as
+`1065353216` (float `1.0`). That value was read from a fixed `+0x3C`, which
+is only the index-plane pointer when the frame struct sits at `+0x28`. With
+the `frames` pointer followed, all five decode.
+
+### 3.8 Recolorable textures (remap palette)
+
+When `recolorable != 0` the palette is not a picture palette but RCT3's
+**remap palette** — three 85-entry ramps, one per player-chosen colour:
+
+| Indices   | Channel (bit) | Mask colour in the file | Ramp |
+|-----------|---------------|-------------------------|------|
+| 0         | —             | pure green `00FF00`     | unused / key |
+| 1 – 85    | 1st (bit 0)   | blue                    | `E2E2FF` (near white) → `0000FF` (idx 42) → `000028` (dark) |
+| 86 – 170  | 2nd (bit 1)   | magenta                 | `FDC3FD` → `FE00FF` → `320332` |
+| 171 – 255 | 3rd (bit 2)   | yellow                  | `FFFED0` → `FFFC00` → `272700` |
+
+(values from `GenericStall:ftx`, flags = 7.) Each ramp goes from a whitened
+tint through the pure channel colour to a darkened one; the game swaps a
+ramp for the same shading of the colour the player picks. Extracted as-is,
+recolorable textures therefore show the blue / magenta / yellow mask colours
+(GenericStall, most ride and scenery "Flexi" textures). The flag is carried
+into glTF material `extras.recolorable`. Survey: flags 7 (315 textures),
+3 (70), 1 (19), 5 (16), 2/4 (7 each), 6 (3).
+
+### 3.9 Animated flexitextures
+
+`frame_count > 1` textures hold one `FlexiTextureStruct` per frame (each with
+its own palette / index / alpha pointers) and a frame sequence in `offsets[]`
+played at `fps`. The extractor decodes frame 0 only.
 
 
 ## 4. TEX texture format — DXT1 decode
@@ -809,13 +856,48 @@ binding — and differs in exactly two ways:
   between normal and UV; `shs`'s `VERTEX` has a single u32 there.
 - **u16 indices, not u32.**
 
-Crucially, the on-disk vertex **positions are already model-space**: rct3dump's
-viewer multiplies each vertex by its bone's bind-pose matrix
-(`BonePositions1[vertex.bone]`) only on the *animated* render path, and even
-there writes the raw position for the static view (`DoShapes`). So a rest-pose
-export uses the raw positions directly — `process_mesh(bone=true)` is `process_shs`
-with the stride/index tweaks above, and the per-vertex bone index is read and
-discarded.
+The on-disk vertex **positions are model-space, at the bind pose**: every
+vertex of a bone sits around that bone's model-space bind transform (checked
+per bone on `IceCreamStall`: the "chocolate" vertices cluster at the
+chocolate bone's world position, 3 m up). So a rest-pose export uses the raw
+positions directly, and the bind pose is also frame 0 of the item's
+animation (§8.7), i.e. what the game shows when the animation starts.
+
+#### Bone table (BoneShape1 header, after the sub-mesh table pointer)
+
+```
++0x2C u32  bone_count
++0x30 ptr  bones   → { char* name; i32 parent; }[bone_count]     (8 B each)
++0x34 ptr  local   → D3DMATRIX[bone_count]   bind transform relative to parent
++0x38 ptr  world   → D3DMATRIX[bone_count]   model-space bind transform
+```
+
+- **`parent`** is what rct3dump calls `BoneNumber`. It is the **index of the
+  parent bone**, `-1` for a root — not a remap of the vertex bone index as
+  rct3dump's viewer assumes. Typical stall rig: `Scene Root` (identity),
+  the building (`hut`), a spinning sign/prop bone, and `peep01..04` /
+  `vendor` marker bones (guest queue and vendor positions, no vertices).
+- **`local` (BonePositions1) = parent-relative, `world` (BonePositions2) =
+  model space**, with `world = local × parent.world` in D3D row-vector
+  convention. Verified exactly on IceCreamStall: chocolate `local`
+  translation (-0.141, -0.033, -0.088) composed with its parent '' gives
+  (0.593, 3.030, -0.777) = chocolate `world` translation. They are equal
+  only for root bones, which is why they looked "≈ identical".
+- Vertex `bone` (VERTEX2 +0x18) indexes this table directly; one bone per
+  vertex, weight 1.
+
+#### Skinning, for exporters
+
+```
+v_model(t) = v_bind · inverse(world[bone]) · W_bone(t)
+W_bone(t)  = L_bone(t) · W_parent(t)
+L_bone(t)  = R(rotate key) with translation = translate key
+             (or local's translation when the bone has no translate track)
+```
+
+`SceneryExtractor` (§14) writes exactly this as a glTF skin: joint nodes with
+TRS = `local`, `inverseBindMatrices = inverse(world)`, `JOINTS_0 = bone`,
+`WEIGHTS_0 = (1,0,0,0)`.
 
 Verified on `WildAnimals/Helicopter` (4 LODs: h/m/l + DartCamMode) and
 `WildAnimals/Crates` (40 bsh): **44/44 decode cleanly**, sub-mesh vc/ic sums
@@ -823,14 +905,8 @@ match the header, positions land in a plausible model-space box (Helicopter
 ±8.6 m), and UVs sit in [0, 1] (7552 UVs, 0.2 % outside — consistent with
 texture tiling, not a decode error). The clean UV range is the strongest
 fingerprint that the 44-byte stride is right (UV is the last 8 bytes of the
-vertex; a wrong stride scrambles it).
-
-Skeletal **animation** (`ban`) is a separate problem: OBJ can't carry a
-skeleton + keyframes, so it needs either a glTF exporter (skin + animation
-channels) or baked per-frame OBJs. The data is all there — `VERTEX2.bone`,
-`BoneShape1.BonePositions1` (bind pose), `BoneShape1.Bones[]` (names), and the
-`ban` keyframes (translate + axis-angle rotate, §13.3). The tracks themselves
-now extract (§8.7); what's deferred is *applying* them (§11).
+vertex; a wrong stride scrambles it). Every one of the 23 animated stalls /
+shops / toilets also decodes and validates as a skinned glTF.
 
 ### 8.7 BoneAnim (`ban`) — animation tracks → JSON
 
@@ -848,10 +924,28 @@ BoneAnimBone  { char* Name; u32 TransCount; txyz* Translate;
 txyz          { f32 Time, X, Y, Z; }               (16 B/entry)
 ```
 
-`Translate` keyframes are positions; `Rotate` keyframes are **axis-angle
-vectors** (the vector's magnitude is the rotation angle in radians — rct3dump
-turns them into matrices with Rodrigues' formula, `rotmath`). The JSON stores
-each track as `[[t,x,y,z], …]`.
+`Translate` keyframes are **parent-relative** positions; `Rotate` keyframes
+are **parent-relative axis-angle vectors** (magnitude = angle in radians,
+which may exceed π for continuous spins). The JSON stores each track as
+`[[t,x,y,z], …]`.
+
+Verified numerically: on IceCreamStall, Rodrigues(rotate key at t=0) equals
+the bone's `local` bind rotation to 3 decimals, for both animated bones —
+the bind pose *is* frame 0. rct3dump's `rotmath()` builds the row-vector
+(D3D) form of that rotation but has a typo in `_33` (it squares
+`sin·nx` instead of using `nz²`); use the textbook formula.
+
+Example: the IceCreamStall cone bone has 6 rotate keys over 4.97 s whose
+rotations *relative to the bind pose* are 0°, 179°, 297°, 300°, 302°, 360°,
+all about the bone's local +Y: the giant cone **spins once on its axis**
+while the chocolate flake bobs (translate track). Linear interpolation
+between quaternions taken on the short arc (glTF `LINEAR`) reproduces it,
+since consecutive keys are < 180° apart.
+
+A visual (svd LOD) can list several animations, each a full `ban`: the
+toilets (`Toilet01`) carry 8 — `Door1Open` … `Door4Close` — one per door
+and direction; animated stalls carry one looping idle animation shared by
+all their bsh LODs.
 
 Verified on `WildAnimals/Helicopter` and `Crates`: the decode produces readable,
 semantically-correct bone names (`tailrotor` @ 3.3 s and `gun` @ 0.667 s on the
@@ -859,9 +953,9 @@ Helicopter; `b1a…b2f` rig bones on the Crates) and **every** keyframe time fal
 in `[0, total_time]` (6927 Crates keyframes, 0 out of range) — the strongest
 evidence that the 20-byte bone stride and the pointer chain are read correctly.
 
-What's still missing is *applying* the animation: binding each track to its
-`bsh` bone (by name) and to `BoneShape1.BonePositions1` (bind pose), then
-emitting a skinned glTF or baked per-frame OBJs (§11).
+Tracks bind to `bsh` bones **by name** (case-insensitive; an empty name is a
+valid bone name and matches). Applying them is done by the glTF exporter
+(§14).
 
 
 ## 9. Global symbol index
@@ -910,10 +1004,16 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 
 ## 10. Quirks worth remembering
 
-- **`mipmap_count` is garbage for non-format-8 ftx headers.** Header
-  field at offset 0x18 reads values like 511821, 263360, etc. Either
-  the layout differs for non-format-8 or this field was repurposed.
-  We hardcode `1` for those.
+- **ftx `+0x18` is a pointer, not `mipmap_count`.** It reads like garbage
+  (511821, 263360…) because it is the internal offset of the frame-sequence
+  array (§3.1). FTX has no mipmaps on disk.
+- **RCT3 is left-handed (Direct3D).** Exporting raw coordinates into a
+  right-handed format (OBJ consumers, glTF) mirrors every model: text on
+  signs reads backwards ("SESSIK" for "KISSES" on the Hershey stall). Mirror
+  Z (positions, normals, translations; rotation axis `(x,y,z)` →
+  `(-x,-y,z)`; matrices conjugated by `diag(1,1,-1)`) and swap two indices
+  per triangle to restore the winding. UV origin is top-left in both D3D and
+  glTF (OBJ needs `v → 1-v`).
 - **Animated textures (Dolphin, lavabubble, TVSeq…) used to fail extraction.**
   Symptom: tiny `pixel_internal_offset` (6, 64). Root cause: previous
   attempts read pixels from the wrong block; the palette-decode path
@@ -945,11 +1045,12 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 |---|---|
 | `Main` GUI textures (`tex → flic → btbl`) | Single-tex DXT1/3/5 is decoded and `AtlasExtractor` slices single-tex packs' `gsi` today. `Main` is the holdout: ~31 GUI textures sliced by ~1900 `gsi`, only 3 byte-scannable. The on-disk wrappers carry **no** pixel pointer (§4.1.3) — the symbol↔page link is by *load order*, so the fix is porting rct3dump's sequential `btbl`/`flic` trailing-stream reader (sizeable parser work). Affects only `Main`'s GUI sprites. Not required for shs/bsh models — none reference tex. |
 | `mms` position decode | Unlocks readable 3D meshes for animated objects (animals, characters, ride cars). Advanced this session: positions are quantized to a bias+scale found in the morph descriptor (§7.6); exact raw width/remap still TBD. |
-| `txs` specular/reflection in `.mtl` | Alpha (opaque/cutout/blend) is now applied (§8.5). Still flat: `*Specular*` / `*Reflection*` styles could set `Ks`/`Ns`/reflection maps, and ftx alpha re-masking (so cutout works on ftx textures, which we emit opaque) remains open. |
-| `ftx` per-pixel alpha plane | rct3dump's `FlexiTextureStruct` has a separate `alpha` plane (§3.5). If present on disk it would let opaque + alpha-masked sub-meshes share one ftx correctly without txs guesswork. |
-| Skinned animation render (bsh + ban) | `bsh` rest-pose meshes export (§8.6) and `ban` tracks decode to JSON (§8.7). The remaining piece is *applying* the tracks: bind each by bone name to `BoneShape1.BonePositions1` (bind pose) and emit a skinned glTF (skin + animation channels) or baked per-frame OBJs. Would animate characters / animals / vehicles. |
+| `txs` specular/reflection | Alpha is solved (ftx alpha plane §3.5 + txs class). Still approximate: `*Specular*` → glTF roughness 0.5, `*Chrome*` / `*Reflection*` → metallic 0.8. The environment maps they sample (`chrome:ftx`, `two:ftx`) are not in any OVL — presumably built into the engine — so chrome parts export untextured. |
+| Recolor | Recolorable ftx export with their blue/magenta/yellow mask ramps (§3.8). Applying player/default colours needs the item's default colours (probably in `sid`). |
+| `UseAdTexture:ftx` | Placeholder the generic stall signs bind; the game substitutes the chosen advert at runtime. Exported untextured. |
+| `svd` → `sid` / `sta` metadata | Stall display name/description (`…Name:txt`), sold items (`cid`), footprint and cost live in `sta`/`sid` (§13.4); not yet surfaced in the glTF manifest. |
+| Animated ftx | Only frame 0 is decoded (§3.9). |
 | OVL header v6 | Currently parser warns and continues; some Wild! / Soaked! OVLs may be affected. |
-| The 5 stub ftx textures | Cosmetic — could be filtered out at extract time. |
 | Dice vertical stretch | Minor cosmetic question, not investigated. |
 
 
@@ -1047,13 +1148,13 @@ doesn't surface. Note `shs` triangles are **u32**; `bsh` triangles are **u16**.
 ```
 BoneShape1                             BoneStruct
   D3DVECTOR BoundingBox1, 2              char* BoneName
-  u32 TotalVertexCount, TotalIndexCount  u32   BoneNumber
+  u32 TotalVertexCount, TotalIndexCount  i32   BoneNumber  ← actually the PARENT index (§8.6)
   u32 MeshCount2, MeshCount
   BoneShape2** sh                       BoneShape2: like StaticShape2 but
   u32 BoneCount                           Vertexes are VERTEX2, Triangles u16
   BoneStruct* Bones
-  D3DMATRIX* BonePositions1  ← bind pose (per bone)
-  D3DMATRIX* BonePositions2  (≈ identical to 1 in practice)
+  D3DMATRIX* BonePositions1  ← bind pose, parent-relative (§8.6)
+  D3DMATRIX* BonePositions2  ← bind pose, model space
 
 BoneAnim (ban)         BoneAnimBone               txyz (keyframe)
   u32 BoneCount          char* Name                 float Time
@@ -1063,12 +1164,12 @@ BoneAnim (ban)         BoneAnimBone               txyz (keyframe)
                          txyz* Rotate
 ```
 
-Skinning recipe (from `DoShapes`): each vertex's position/normal is multiplied
-by `BonePositions1[vertex.Bone]`. Animation adds, per keyframe, the bone's
-`Translate` to the matrix's `_41/_42/_43`, and converts the `Rotate` keyframe
-(an axis-angle **rotation vector**, magnitude = angle) to a rotation matrix via
-Rodrigues' formula (`rotmath`, `rct3tex.cpp:2807`). `Bones[i].BoneNumber ==
-0xFFFFFFFF` marks an unused bone.
+rct3dump's skinning experiment (`DoShapes`) multiplies each vertex by
+`BonePositions1[vertex.Bone]`, overwrites the matrix with the keyframe, and
+then **discards** the result (it uploads the raw positions). It treats
+`BoneNumber` as a bone remap. Both are wrong; the working recipe is in §8.6:
+`BoneNumber` is the parent index (`-1` = root), `BonePositions1` the local and
+`BonePositions2` the model-space bind transform.
 
 ### 13.4 Scenery visual (`svd`) and item (`sid`)
 
@@ -1082,6 +1183,25 @@ SceneryItemVisual (svd)                SceneryItemVisualLOD
   u32 unk6..unk11                        u32   AnimationCount
                                          BoneAnim*** AnimationArray
 ```
+
+On-disk layout as used by `read_scenery_visual` (verified on all 71
+stalls / shops / restaurants / utilities):
+
+```
+svd  +0x00 u32 flags (0x70 on stalls)  +0x14 u32 LODCount  +0x18 ptr → ptr[LODCount] → LOD
+LOD  +0x00 u32 MeshType (0 shs, 3 bsh)   +0x04 char* LODName
+     +0x08 slot StaticShape  /  +0x10 slot BoneShape   ← symbol resolves "name:shs|bsh"
+     +0x38 f32 distance   +0x3C u32 AnimationCount   +0x44 ptr → ptr[AnimationCount] → slot
+     (each slot is patched by a symbol resolve to "name:ban")
+```
+
+The mesh/animation "pointers" are 0 on disk; find the `SymbolResolve` whose
+`pointer` equals the slot's internal offset to get the referenced symbol.
+Stalls have 4 LODs, e.g. IceCream: `icecreamlod100` (bsh, 503 tris,
+distance 40) / `lod60` (bsh, 100) / `lod20` (bsh, 300) / `lod04` (shs, 4000);
+the last LOD samples a shared low-detail atlas
+(`VanillaShopsUltraLowPage01:ftx`). `distance` is the far switch distance in
+metres.
 
 `sid` (`SceneryItem`) is large (~50 fields): 64 placement flags, `size` class,
 `xsquares`/`ysquares`, world `xpos/ypos/zpos` + `xsize/ysize/zsize`, `cost`,
@@ -1109,3 +1229,37 @@ file-type blocks, the relocation/pointer-fixup pass, and symbol resolution
 a second opinion if a v5 edge case ever disagrees with our parser. Loader
 dispatch by tag is the big `if (stricmp(LoaderNames…))` ladder at `:1891`
 onward — a ready-made catalog of every loader tag and the struct it maps to.
+
+
+## 14. Packaging scenery as glTF (`--types scenery`)
+
+A scenery item (stall, shop, restaurant, toilet, decoration…) is spread
+across loaders: the `svd` lists LODs, each LOD names a `shs`/`bsh` and its
+`ban` animations, each mesh binds `(ftx, txs)` pairs, and the textures may
+live in other OVLs (`Style/sharedtextures/…` for the cash register, the
+`*UltraLow*` atlases…). `SceneryExtractor` follows that graph and writes one
+self-contained glTF 2.0 binary per item:
+
+| glTF | from |
+|---|---|
+| mesh primitives | one per sub-mesh (§8.2); positions/normals Z-mirrored, winding swapped (§10) |
+| materials | one per `(ftx, txs)`; `alphaMode` from the txs class (§12), `doubleSided` for cutouts/blend, `extras: {ftx, txs, recolorable}` |
+| images | ftx (§3) / tex (§4) decoded and embedded as PNG — opaque copy for opaque materials, RGBA copy (alpha plane) for MASK/BLEND |
+| skin | bsh bone table (§8.6): joints = bones, hierarchy from `parent`, TRS from `local`, IBM = inverse(`world`) |
+| animations | one per `ban` on the LOD, tracks matched by bone name; translations Z-mirrored, axis-angle → quaternion with `(-x,-y,z)` axis, hemisphere-continuous, `LINEAR` |
+| scene `extras` | `{rct3_svd, lod, lod_distance}` |
+
+The most detailed LOD (most triangles) goes to `<svd>.glb`; `--all-lods`
+adds `<svd>_<mesh>.glb` for the others. A `<svd>.json` manifest lists every
+LOD (mesh, type, distance, vertex/triangle/bone counts, animations), the
+materials with their alpha mode and the OVL each texture came from, and any
+unresolved texture.
+
+Validation (Oct 2026): every `ShopsAndStalls`, `Resturants` and `Utilities`
+item of the Complete Edition — 71 items, 23 of them skinned + animated, plus one orphan placeholder mesh —
+exports with **0 errors / 0 warnings** in the Khronos glTF validator and
+renders correctly in Blender (textures, cut-outs, readable sign text, cone
+spin on the ice-cream stall, door animations on the toilets). The only
+unresolved textures are engine-side: `chrome:ftx` / `two:ftx` (reflection
+maps) and `UseAdTexture:ftx` (advert placeholder).
+

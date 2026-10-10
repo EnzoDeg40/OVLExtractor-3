@@ -37,6 +37,27 @@ public:
     // Returns false for multi-tex OVLs — the trailing scan is symbol-blind so
     // it can't tell pages apart (docs §4.6) — and for non-DXT/unreadable data.
     // Used by AtlasExtractor to slice gsi sprites from tex-backed atlases.
+    // Decode the FlexiTexture (`ftx`) whose header sits at internal offset
+    // `datapointer` to BGRA pixels (docs §3). Follows the in-header pointers
+    // to the palette, the 1-byte index plane and — when present — the
+    // separate 8-bit alpha plane. `has_alpha` is set when an alpha plane was
+    // found; otherwise every pixel gets alpha 255. `recolorable` receives the
+    // 3-bit remap-channel mask (1/2/4 = first/second/third colour).
+    static bool decode_ftx_bgra(const OvlParser& parser, std::uint32_t datapointer,
+                                std::uint32_t& width, std::uint32_t& height,
+                                std::vector<std::uint8_t>& bgra,
+                                bool* has_alpha = nullptr,
+                                std::uint32_t* recolorable = nullptr);
+
+    // Decode linked file `lf_index` on `side` whatever its texture tag (ftx →
+    // decode_ftx_bgra, tex → decode_tex_bgra). False for non-texture loaders.
+    static bool decode_linked_bgra(const OvlParser& parser, OvlSide side,
+                                   std::size_t lf_index,
+                                   std::uint32_t& width, std::uint32_t& height,
+                                   std::vector<std::uint8_t>& bgra,
+                                   bool* has_alpha = nullptr,
+                                   std::uint32_t* recolorable = nullptr);
+
     static bool decode_tex_bgra(const OvlParser& parser, OvlSide declaring_side,
                                 std::uint32_t& width, std::uint32_t& height,
                                 std::vector<std::uint8_t>& bgra);

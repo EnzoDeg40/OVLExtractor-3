@@ -19,7 +19,10 @@ extractors/              libovlextractors — strategy per loader tag
   ├─ SoundExtractor      snd → .wav (PCM, optional `smpl` loop chunk)
   ├─ TextureExtractor    ftx/tex/fts/ftt → .tga + .ovltex + .json
   ├─ AtlasExtractor      gsi → cropped sprite .tga
-  ├─ ModelExtractor      shs → .obj + .mtl   (mms diagnostic only)
+  ├─ ModelExtractor      shs/bsh → .obj + .mtl, ban → .anim.json (mms diagnostic only)
+  ├─ SceneryExtractor    svd → self-contained .glb per scenery item (§5.4)
+  ├─ ShapeReader         shared in-memory readers: shs/bsh (+ bones), ban, svd
+  ├─ GltfWriter          dependency-free glTF 2.0 .glb writer + PNG encoder
   └─ TextureIndex        symbol → OVL JSON map + lookup helper
 
 cli/                     ovlextract single binary, CLI11-based
@@ -39,6 +42,7 @@ struct ExtractContext {
     std::function<void(std::string_view)>  log;
     const TextureIndex*                    texture_index = nullptr;  // §6
     bool                                   auto_extract_textures = false;
+    bool                                   all_lods = false;         // §5.4
 };
 ```
 
@@ -85,22 +89,30 @@ or `ftt`:
 
 1. Locate the data block, read its full size (header + palette + small
    metadata) and dump it verbatim as `<symbol>.ovltex` — kept around so
-   future RE on `tex` can be done offline without re-running the extractor.
-2. Parse the FTX-style header (format, width, height, mipmap, pixel_off).
+   future RE can be done offline without re-running the extractor.
+2. Parse the FlexiTexture header (format docs §3.1) and follow its pointers:
+   frame 0 → palette, index plane, alpha plane.
 3. Sanity check dimensions (`0 < w,h ≤ 8192`); skip otherwise.
-4. Read the 256-entry BGRA palette at `+0x40` of the header block.
-5. Follow `pixel_internal_offset` to read `width × height` 1-byte indices.
-6. Map each index through the palette to BGRA, with **alpha = 255** for all
-   pixels (the 4th palette byte isn't a per-entry alpha; transparency is a
-   per-sub-mesh `txs` shader concern, see §3.5 of the format doc).
-7. Write `<symbol>.tga` (uncompressed, 32-bit, top-down origin).
-8. Write `<symbol>.json` sidecar with parsed header fields.
+4. Map each index through the BGRA palette.
+5. Write `<symbol>.tga` **opaque** (alpha 255) and, when the texture has an
+   alpha plane, `<symbol>_rgba.tga` with it (32-bit, top-down). The split is
+   deliberate — the plane is only meaningful where an alpha-tested material
+   samples the texture and is often 0 elsewhere (format docs §3.5).
+6. Write `<symbol>.json` sidecar with parsed header fields.
 
 Output per linked file:
-- `<symbol>.tga`     — viewable in any tool
-- `<symbol>.ovltex`  — raw bytes (for offline RE)
-- `<symbol>.json`    — `{symbol, loader_tag, format_code, width, height,
-                        mipmap_count, pixel_internal_offset, raw_block_size}`
+- `<symbol>.tga`       — opaque, viewable in any tool
+- `<symbol>_rgba.tga`  — same pixels + the ftx alpha plane (cut-outs)
+- `<symbol>.ovltex`    — raw bytes (for offline RE)
+- `<symbol>.json`      — `{symbol, loader_tag, format_code, width, height,
+                          recolorable, frame_count, has_alpha_plane,
+                          pixel_internal_offset, raw_block_size}`
+
+Recolorable textures (`recolorable` ≠ 0) come out in their blue / magenta /
+yellow remap-mask colours — see format docs §3.8. Animated textures
+(`frame_count` > 1) are decoded at frame 0.
+
+Full-install check: 1594 / 1594 ftx decode (≈ 15 s, 618 MB of output).
 
 CLI:
 ```bash
@@ -148,12 +160,9 @@ What the extractor does:
    - Crop the rectangle (clamped to the texture's bounds) and write
      `<gsi_symbol>.tga`.
 
-`AtlasExtractor`'s `decode_ftx_at` still applies the legacy `index 0 →
-alpha = 0` chroma-key while `TextureExtractor`'s `decode_indexed8` no longer
-does (see §3 above). This is deliberate for now: sprite atlases tend to use
-the index-0-as-background convention, while standalone textures bound to
-3D meshes do not. The discrepancy is worth flagging if you start trusting
-alpha from atlas output for non-UI purposes.
+`AtlasExtractor` decodes ftx through the shared `TextureExtractor::decode_ftx_bgra`,
+so sprite transparency comes from the ftx alpha plane (the old
+"index 0 = transparent" chroma-key was a stand-in for it and is gone).
 
 Output: one `<sprite>.tga` per resolvable `gsi` linked file.
 
@@ -190,13 +199,20 @@ For each `shs` linkedfile:
 6. Emit:
    - `<symbol>.obj` — one concatenated vertex/UV stream, then one `g`/`usemtl`
      group per sub-mesh with a per-sub-mesh index base offset.
-   - `<symbol>.mtl` — one `newmtl` per unique sanitized ftx symbol. When a
-     texture index is provided and the ftx symbol resolves, the material
-     gets a `map_Kd <ftx>.tga` line — otherwise just a stub with `Kd 1 1 1`
-     and a `# unresolved` comment so the file remains valid.
+   - `<symbol>.mtl` — one `newmtl` per unique `(ftx, txs)` pair. When a
+     texture index is provided and the ftx symbol resolves, opaque materials
+     get `map_Kd <ftx>.tga`, cutout/blend materials get `map_Kd` + `map_d
+     <ftx>_rgba.tga` — otherwise just a stub with `Kd 1 1 1` and a
+     `# unresolved` comment so the file remains valid.
 
-UV `v` is flipped on output (`vt v` = `1 - input_v`) to match standard
-tooling conventions (Blender etc.).
+Geometry is converted from Direct3D's left-handed frame: Z is mirrored and
+the triangle winding swapped (without it every model is mirrored — sign
+text reads backwards). UV `v` is flipped on output (`vt v` = `1 - input_v`)
+to match OBJ conventions.
+
+`bsh` meshes go through the same path (rest pose = frame 0 of their
+animation); their `ban` tracks are written as `<name>.anim.json`. For a
+rigged, animated, texture-embedded export use `--types scenery` (§5.4).
 
 Survey on a 40-OVL random sample: **75 / 76 (99 %)** of SHS files extract.
 The one failure is an empty placeholder (`vc = ic = 0`). Sub-mesh
@@ -231,6 +247,53 @@ a CSV-on-stdout one-shot:
 Used during initial RE of the multi-material layout — kept around because
 running with `OVL_SHS_SURVEY=1` on a new OVL collection quickly tells you
 whether the same header conventions hold.
+
+
+### 5.4 SceneryExtractor — `svd` → self-contained `.glb`
+
+The "give me the whole stall" path. For each `svd` (SceneryItemVisual) in the
+OVL pair:
+
+1. Read the LOD table (format docs §13.4): per LOD the mesh symbol
+   (`shs`/`bsh`), switch distance and `ban` animations.
+2. Read every LOD mesh with `ShapeReader` (vertices, sub-meshes, `(ftx, txs)`
+   pairs, and for `bsh` the bone table: names, parent indices, local and
+   model-space bind matrices — format docs §8.6).
+3. Pick the most detailed LOD (most triangles) and build a glTF scene:
+   Z-mirrored geometry, one material per `(ftx, txs)` with `alphaMode`
+   from the txs class, textures decoded from wherever they live (same OVL
+   pair first, then the global index — needs `--texture-index` +
+   `--assets-root`) and embedded as PNG, a skin + one glTF animation per
+   `ban` for skinned LODs.
+4. Write `<svd>.glb`, plus `<svd>_<mesh>.glb` for each other LOD with
+   `--all-lods`, and the `<svd>.json` manifest (LODs, distances, counts,
+   animations, materials, texture sources, unresolved textures).
+
+Meshes that no `svd` references are written standalone as `<mesh>.glb`.
+Format details of the mapping: format docs §14.
+
+```bash
+ovlextract --types scenery --texture-index idx.json --assets-root "$ASSETS" \
+    -o out/stalls "$ASSETS/Style/Vanilla/ShopsAndStalls/IceCreamStall/IceCreamStall.common.ovl"
+# → IceCreamStall.glb (skinned, cone-spin animation), IceCreamStall.json
+
+# Every shop, stall, restaurant and utility (toilets, ATM, first aid):
+find "$ASSETS" \( -ipath '*shopsandstalls*' -o -ipath '*Resturants*' -o -ipath '*Utilities*' \) \
+     -name '*.common.ovl' | while read f; do
+  ovlextract --types scenery --texture-index idx.json --assets-root "$ASSETS" \
+      -o "out/stalls/$(basename "$f" .common.ovl)" "$f"
+done
+```
+
+Result on the Complete Edition: 71 items (23 skinned + animated), 0
+extraction errors, 0 glTF-validator errors/warnings, ~12 MB total. The
+`.glb` files open directly in Blender (`File → Import → glTF 2.0`), three.js,
+Godot, Unity (glTFast), online viewers…
+
+Known gaps: chrome/reflection parts are untextured (their environment maps
+`chrome:ftx` / `two:ftx` ship with the engine, not in any OVL); generic stall
+signs bind the runtime advert placeholder `UseAdTexture:ftx`; recolorable
+textures keep their mask colours.
 
 
 ## 6. Cross-OVL texture resolution
@@ -329,7 +392,8 @@ ovlextract [options] <input>
 | `--texture-index FILE` | Load the JSON map from a previous `--build-index` run (enables `map_Kd` emission) |
 | `--assets-root DIR` | Root directory the texture index was built against (required with `--auto-textures`) |
 | `--auto-textures` | When extracting models with `--texture-index`, also extract each referenced texture from its source OVL |
-| `-t,--types TYPE` | Resource type to extract (`sound`, `texture`, `atlas`, `model`, `dump`, `all`). Repeatable. |
+| `-t,--types TYPE` | Resource type to extract (`sound`, `texture`, `atlas`, `model`, `scenery`, `dump`, `all`). Repeatable. |
+| `--all-lods` | With `scenery`: also write a `.glb` per lower LOD |
 | `-o,--output-dir DIR` | Output directory (default: `./extracted/<basename>/` for single file, `./extracted/` for directory input) |
 | `--overwrite` | Overwrite existing output files (default skip) |
 | `-v,--verbose` | Verbose logging to stderr |
@@ -343,7 +407,8 @@ ovlextract [options] <input>
 | `--types sound` | `<symbol>.wav` per `snd` loader (mono or stereo PCM, optional `smpl` loop chunk) |
 | `--types texture` | `<symbol>.ovltex` (raw block) + `<symbol>.json` (metadata) + `<symbol>.tga` if decode succeeds |
 | `--types atlas` | `<symbol>.tga` per resolvable `gsi` (parent must be `ftx`, not `tex`) |
-| `--types model` | `<symbol>.obj` + `<symbol>.mtl` per `shs`. With `--auto-textures`, also each referenced `<ftx>.tga` |
+| `--types model` | `<symbol>.obj` + `<symbol>.mtl` per `shs`/`bsh`, `<symbol>.anim.json` per `ban`. With `--auto-textures`, also each referenced `<ftx>.tga` / `_rgba.tga` |
+| `--types scenery` | `<svd>.glb` (best LOD, textures embedded, skin + animations) + `<svd>.json` manifest per `svd`; `<mesh>.glb` for orphan meshes |
 | `--build-index` | One JSON file mapping every lowercased symbol → `{symbol, ovl, side, tag}` |
 
 ### Worked examples
@@ -429,3 +494,15 @@ textures are picked up automatically because the script imports the
 `.obj` (which references the sibling `.mtl` via `mtllib`), provided the
 `.tga` files were placed next to the `.obj` (which `--auto-textures`
 guarantees).
+
+### 8.1 Render helpers (visual checks)
+
+```bash
+# 4 views of one model (.obj or .glb) side by side; --frame N poses an animated glb
+blender -b --python scripts/blender_render_obj.py -- out/IceCreamStall.glb shot.png --frame 70
+
+# one tile per model for a whole batch (labels need Pillow in Blender's
+# Python; without it the tiles are left as _tile_NNN.png next to out.png)
+blender -b --python scripts/blender_contact_sheet.py -- out/stalls sheet.png --cols 9
+```
+

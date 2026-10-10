@@ -31,8 +31,10 @@ end (same field order as the part-1 `SceneryItemDataField` struct). The visual
 mesh of each piece is <models>/tracks/coasters/<set>/<name>_data/<name>_<lod>.obj.
 
 World convention, calibrated from the meshes: 1 grid tile = 4 mesh units,
-1 HEIGHT level = 1 unit, DIRECTION = 90-degree yaw steps, Y is up — already
-glTF's axis convention, so every piece becomes a node with a translation and a
+1 HEIGHT level = 1 unit, DIRECTION = 90-degree yaw steps, Y is up. RCT3 is
+left-handed and the OBJ meshes come out of ovlextract mirrored on Z into
+glTF's right-handed frame, so placements are mirrored the same way (POSZ → -Z,
+yaw → -yaw); every piece becomes a node with a translation and a
 90-degree-step rotation quaternion. POSX/POSZ name the SW corner of the
 footprint, so even-tile-span pieces are shifted half a tile to re-centre. The
 ride hangs under one root node scaled to `--tile-size` metres per tile and
@@ -226,7 +228,10 @@ def flat_color(base: str) -> list[float]:
 # GLB assembly
 # --------------------------------------------------------------------------- #
 def quat_y(direction: int) -> list[float]:
-    a = math.radians(90.0 * direction) / 2.0
+    # ovlextract writes OBJ already converted from RCT3's left-handed (D3D)
+    # frame by mirroring Z, so placements are mirrored too: a D3D yaw of +a
+    # becomes -a, and POSZ maps to -Z.
+    a = -math.radians(90.0 * direction) / 2.0
     return [0.0, math.sin(a), 0.0, math.cos(a)]
 
 
@@ -338,7 +343,7 @@ def build_glb(pieces, meshes: dict, out: Path, tile_size: float,
         nodes.append({
             "name": f"{p['name']}@{p['posx']},{p['height']},{p['posz']}",
             "mesh": gltf_meshes[p["name"]],
-            "translation": [p["posx"] * TILE + ox, p["height"] * HUNIT, p["posz"] * TILE + oz],
+            "translation": [p["posx"] * TILE + ox, p["height"] * HUNIT, -(p["posz"] * TILE + oz)],
             "rotation": quat_y(p["direction"]),
         })
     sf = tile_size / TILE

@@ -54,66 +54,16 @@ void write_tga(const std::filesystem::path& path,
             static_cast<std::streamsize>(bgra.size()));
 }
 
-// Read the FTX-style header (76 bytes) at file_pos. The actual indexed8
-// palette starts immediately at file_pos + 64. Returns false on failure.
+// Decode the FTX whose header lives at `internal_offset` (shared decoder, docs
+// §3). Transparency comes from the FTX alpha plane when there is one (the old
+// "index 0 = transparent" chroma-key is gone: it was a stand-in for it).
 bool decode_ftx_at(const OvlParser& parser,
-                   OvlSide side,
-                   std::uint64_t file_pos,
+                   OvlSide /*side*/,
+                   std::uint64_t /*file_pos*/,
                    std::uint32_t internal_offset,
                    DecodedTexture& out) {
-    // Determine block size from containing block to bound the header read.
-    std::uint32_t block_size = 0;
-    const auto& sd = parser.side(side);
-    for (const auto& chk : sd.chunks) {
-        for (const auto& blk : chk.blocks) {
-            if (internal_offset >= blk.internal_offset &&
-                internal_offset < blk.internal_offset + blk.size) {
-                block_size = (blk.internal_offset + blk.size) - internal_offset;
-                break;
-            }
-        }
-        if (block_size) break;
-    }
-    if (block_size < 76) return false;
-
-    BinaryReader r(sd.ovlname);
-    r.seek(file_pos);
-    std::uint32_t format = r.read_u32();
-    std::uint32_t width  = r.read_u32();
-    std::uint32_t height = r.read_u32();
-    (void)format;
-    if (width == 0 || width > 8192 || height == 0 || height > 8192) return false;
-    r.seek(file_pos + 60);
-    std::uint32_t pixel_internal_offset = r.read_u32();
-
-    r.seek(file_pos);
-    std::vector<std::uint8_t> raw(block_size);
-    for (std::uint32_t i = 0; i < block_size; ++i) raw[i] = r.read_u8();
-
-    constexpr std::size_t kPaletteOffset = 64;
-    constexpr std::size_t kPaletteSize   = 256 * 4;
-    if (raw.size() < kPaletteOffset + kPaletteSize) return false;
-
-    auto pp = parser.offset_to_position(pixel_internal_offset);
-    if (!pp.found) return false;
-    BinaryReader pr_reader(parser.side(pp.currentOVL).ovlname);
-    pr_reader.seek(pp.position);
-    const std::size_t n = static_cast<std::size_t>(width) * height;
-    std::vector<std::uint8_t> indices(n);
-    for (std::size_t i = 0; i < n; ++i) indices[i] = pr_reader.read_u8();
-
-    const std::uint8_t* pal = raw.data() + kPaletteOffset;
-    out.width = width;
-    out.height = height;
-    out.bgra.resize(n * 4);
-    for (std::size_t i = 0; i < n; ++i) {
-        std::uint8_t idx = indices[i];
-        out.bgra[i*4+0] = pal[idx*4+0];
-        out.bgra[i*4+1] = pal[idx*4+1];
-        out.bgra[i*4+2] = pal[idx*4+2];
-        out.bgra[i*4+3] = (idx == 0) ? 0 : 255;
-    }
-    return true;
+    return TextureExtractor::decode_ftx_bgra(parser, internal_offset, out.width,
+                                             out.height, out.bgra);
 }
 
 // Decode any texture loader (ftx / tex / fts / ftt) to BGRA pixels.

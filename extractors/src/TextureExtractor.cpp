@@ -20,45 +20,60 @@ namespace ovl {
 
 namespace {
 
-// Layout discovered empirically (Arrows.common.ovl + others):
-// At loaderreference.datapointer for ftx loaders (76-byte header):
-//   off  0:  u32 format         (8 = indexed8, 7/6/5 = other variants)
-//   off  4:  u32 width
-//   off  8:  u32 height
-//   off 12:  u32 unk_a          (0)
-//   off 16:  u32 unk_b          (0)
-//   off 20:  u32 unk_c          (7 commonly)
-//   off 24:  u32 mipmap_count   (1)
-//   off 28:  u32 metadata_off1
-//   off 32:  u32 unk_e          (1)
-//   off 36:  u32 metadata_off2
-//   off 40:  u32 zero
-//   off 44:  u32 format_repeat  (same as offset 0)
-//   off 48:  u32 width_repeat
-//   off 52:  u32 height_repeat
-//   off 56:  u32 unk_c_repeat   (7)
-//   off 60:  u32 metadata_off3
-//   off 64:  u32 pixel_internal_offset  <-- this points into chunk 1 block N
-//   off 68:  u32 zero
-//   off 72:  u32 zero
-// Then for format=8 a 256-entry RGBA palette follows (1024 bytes).
+// FlexiTexture layout at loaderreference.datapointer (docs §3.1). This is the
+// on-disk form of rct3dump's FlexiTextureInfoStruct + FlexiTextureStruct;
+// every "ptr" field is an internal offset fixed up by the relocation table.
+//   FlexiTextureInfoStruct (36 B)
+//   +0x00 u32 scale          log2 of the size class (8 = arbitrary dims)
+//   +0x04 u32 width
+//   +0x08 u32 height
+//   +0x0C u32 fps            animation rate (0 = static)
+//   +0x10 u32 recolorable    bit 0/1/2 = 1st/2nd/3rd remap colour
+//   +0x14 u32 offset_count   (1)
+//   +0x18 ptr offsets        -> u32[offset_count] frame sequence
+//   +0x1C u32 frame_count    (1)
+//   +0x20 ptr frames         -> FlexiTextureStruct[frame_count]
+//   FlexiTextureStruct (28 B each, normally right after the offsets array)
+//   +0x00 u32 scale, +0x04 width, +0x08 height, +0x0C recolorable
+//   +0x10 ptr palette        -> 256 × BGRA (normally inline right after)
+//   +0x14 ptr texture        -> width*height u8 palette indices
+//   +0x18 ptr alpha          -> width*height u8 alpha, or 0 if none
+// For a single-frame texture this puts the palette at +0x44 — earlier
+// versions of this extractor read it at +0x40 (the alpha pointer) and every
+// colour came out shifted by one palette entry.
 struct FtxHeader {
-    std::uint32_t format;
-    std::uint32_t width;
-    std::uint32_t height;
-    std::uint32_t mipmap_count;
-    std::uint32_t pixel_internal_offset;
+    std::uint32_t format = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t recolorable = 0;
+    std::uint32_t frame_count = 0;
+    std::uint32_t frames_ptr = 0;
+    std::uint32_t palette_ptr = 0;
+    std::uint32_t pixel_internal_offset = 0;   // index plane
+    std::uint32_t alpha_ptr = 0;
 };
 
-bool read_ftx_header(BinaryReader& r, FtxHeader& h, std::uint64_t base_pos) {
-    h.format = r.read_u32();
-    h.width  = r.read_u32();
-    h.height = r.read_u32();
-    r.seek(base_pos + 24);
-    h.mipmap_count = r.read_u32();
-    // Pixel pointer is at offset 60 within the header block.
-    r.seek(base_pos + 60);
-    h.pixel_internal_offset = r.read_u32();
+bool read_ftx_header(const OvlParser& parser, std::uint32_t datapointer, FtxHeader& h) {
+    auto pr = parser.offset_to_position(datapointer);
+    if (!pr.found) return false;
+    BinaryReader r(parser.side(pr.currentOVL).ovlname);
+    r.seek(pr.position);
+    h.format      = r.read_u32();
+    h.width       = r.read_u32();
+    h.height      = r.read_u32();
+    r.read_u32();                       // fps
+    h.recolorable = r.read_u32();
+    r.read_u32();                       // offset_count
+    r.read_u32();                       // offsets ptr
+    h.frame_count = r.read_u32();
+    h.frames_ptr  = r.read_u32();
+    auto fp = parser.offset_to_position(h.frames_ptr);
+    if (!fp.found) return false;
+    BinaryReader fr(parser.side(fp.currentOVL).ovlname);
+    fr.seek(fp.position + 0x10);
+    h.palette_ptr           = fr.read_u32();
+    h.pixel_internal_offset = fr.read_u32();
+    h.alpha_ptr             = fr.read_u32();
     return true;
 }
 
@@ -84,7 +99,9 @@ void write_json_sidecar(const std::filesystem::path& path,
       << "  \"format_code\": " << h.format << ",\n"
       << "  \"width\": " << h.width << ",\n"
       << "  \"height\": " << h.height << ",\n"
-      << "  \"mipmap_count\": " << h.mipmap_count << ",\n"
+      << "  \"recolorable\": " << h.recolorable << ",\n"
+      << "  \"frame_count\": " << h.frame_count << ",\n"
+      << "  \"has_alpha_plane\": " << (h.alpha_ptr ? "true" : "false") << ",\n"
       << "  \"pixel_internal_offset\": " << h.pixel_internal_offset << ",\n"
       << "  \"raw_block_size\": " << raw_block_size << "\n"
       << "}\n";
@@ -112,51 +129,36 @@ void write_tga(const std::filesystem::path& path,
             static_cast<std::streamsize>(bgra.size()));
 }
 
-// Decode format=8 (indexed8 + palette) into BGRA pixels.
-// Palette is 256 entries × 4 bytes. Byte order: B G R A (matches TGA pixel
-// order, so we copy through directly). Empirically validated against
-// Carcass.common.ovl — earlier RGB-first reading produced blue-tinted output
-// because brown (139,69,19) was rendered as (19,69,139).
-bool decode_indexed8(const OvlParser& parser,
-                     const FtxHeader& h,
-                     const std::vector<std::byte>& raw_header_block,
-                     std::vector<std::uint8_t>& bgra_out) {
-    constexpr std::size_t kPaletteOffset = 64;
-    constexpr std::size_t kPaletteSize   = 256 * 4;
-    if (raw_header_block.size() < kPaletteOffset + kPaletteSize) return false;
+// Read `n` bytes at internal offset `ptr`.
+bool read_plane(const OvlParser& parser, std::uint32_t ptr, std::size_t n,
+                std::vector<std::uint8_t>& out) {
+    auto p = parser.offset_to_position(ptr);
+    if (!p.found) return false;
+    BinaryReader r(parser.side(p.currentOVL).ovlname);
+    r.seek(p.position);
+    out.resize(n);
+    for (std::size_t i = 0; i < n; ++i) out[i] = r.read_u8();
+    return true;
+}
+
+// Decode an FTX frame: BGRA palette[index], alpha from the alpha plane when
+// the texture has one (cut-outs: leaves, railings, signs…), else 255. The
+// palette's 4th byte is not alpha (always 0) and is ignored.
+bool decode_indexed8(const OvlParser& parser, const FtxHeader& h,
+                     std::vector<std::uint8_t>& bgra_out, bool& has_alpha) {
     std::size_t pixels = static_cast<std::size_t>(h.width) * h.height;
     if (pixels == 0) return false;
-
-    // Read pixel indices from the pointer in the header.
-    auto pr = parser.offset_to_position(h.pixel_internal_offset);
-    if (!pr.found) return false;
-    BinaryReader pr_reader(parser.side(pr.currentOVL).ovlname);
-    pr_reader.seek(pr.position);
-    std::vector<std::uint8_t> indices(pixels);
-    for (std::size_t i = 0; i < pixels; ++i) {
-        indices[i] = pr_reader.read_u8();
-    }
-
-    // Palette starts at offset 64 in the header block. Byte order: B G R A,
-    // but empirically the 4th byte is NOT a per-entry alpha (mostly 0 or
-    // small values across 256 entries on every palette inspected — see the
-    // 4th-byte distribution check on Dice and gigacoaster palettes). So we
-    // emit fully opaque alpha; whether a pixel should be transparent is a
-    // *material* property, encoded by the txs shader (`SIAlphaMask*`) and
-    // not by the texture itself. An earlier version hardcoded index 0 to
-    // alpha=0 (chroma-key heuristic) — that broke SIOpaque models like the
-    // Dice cube, where palette index 0 is a real color used inside the mesh
-    // (the dot/edge fill). Restoring alpha for the alpha-masked subset of
-    // sub-meshes (chains, leaves, fences…) is a follow-up that needs txs
-    // semantics; see §10 of the format notes.
-    const std::byte* pal = raw_header_block.data() + kPaletteOffset;
+    std::vector<std::uint8_t> pal, indices, alpha;
+    if (!read_plane(parser, h.palette_ptr, 256 * 4, pal)) return false;
+    if (!read_plane(parser, h.pixel_internal_offset, pixels, indices)) return false;
+    has_alpha = h.alpha_ptr != 0 && read_plane(parser, h.alpha_ptr, pixels, alpha);
     bgra_out.resize(pixels * 4);
     for (std::size_t i = 0; i < pixels; ++i) {
         std::uint8_t idx = indices[i];
-        bgra_out[i * 4 + 0] = std::to_integer<std::uint8_t>(pal[idx * 4 + 0]);
-        bgra_out[i * 4 + 1] = std::to_integer<std::uint8_t>(pal[idx * 4 + 1]);
-        bgra_out[i * 4 + 2] = std::to_integer<std::uint8_t>(pal[idx * 4 + 2]);
-        bgra_out[i * 4 + 3] = 255;
+        bgra_out[i * 4 + 0] = pal[idx * 4 + 0];
+        bgra_out[i * 4 + 1] = pal[idx * 4 + 1];
+        bgra_out[i * 4 + 2] = pal[idx * 4 + 2];
+        bgra_out[i * 4 + 3] = has_alpha ? alpha[i] : 255;
     }
     return true;
 }
@@ -677,11 +679,11 @@ bool extract_one(const OvlParser& parser,
         }
     }
 
-    BinaryReader r(parser.side(pr.currentOVL).ovlname);
-    r.seek(pr.position);
-
     FtxHeader h{};
-    if (!read_ftx_header(r, h, pr.position)) return false;
+    if (!read_ftx_header(parser, lf.loaderreference.datapointer, h)) {
+        ctx.log("skip (ftx header unresolved): " + symbol);
+        return false;
+    }
 
     if (!sane_dimensions(h.width, h.height)) {
         ctx.log("skip (bad dims " + std::to_string(h.width) + "x" +
@@ -689,7 +691,9 @@ bool extract_one(const OvlParser& parser,
         return false;
     }
 
-    // Read the entire header block (header + palette + small metadata).
+    // Keep the raw header block (header + palette + small metadata) for
+    // offline RE.
+    BinaryReader r(parser.side(pr.currentOVL).ovlname);
     r.seek(pr.position);
     std::vector<std::byte> raw(block_size);
     for (std::uint32_t i = 0; i < block_size; ++i) {
@@ -699,13 +703,18 @@ bool extract_one(const OvlParser& parser,
     rawf.write(reinterpret_cast<const char*>(raw.data()),
                static_cast<std::streamsize>(raw.size()));
 
-    // All FTX textures (format codes 3-9) share the same on-disk layout:
-    //   - 256-entry × 4-byte BGRA palette at offset 64 in the header block
-    //   - 1-byte index per pixel at pixel_internal_offset (different chunk)
-    // The format_code is a size class (2^code × 2^code); format=8 happens to
-    // be the only one with non-power-of-2 dimensions allowed.
+    // All FTX textures (format codes 3-9) share the same layout: indexed8 +
+    // BGRA palette (+ optional alpha plane), reached through the frame
+    // struct's pointers. Only frame 0 is decoded for animated flexitextures.
     std::vector<std::uint8_t> bgra;
-    if (decode_indexed8(parser, h, raw, bgra)) {
+    bool has_alpha = false;
+    if (decode_indexed8(parser, h, bgra, has_alpha)) {
+        // <name>.tga is opaque: the alpha plane is only meaningful where an
+        // alpha-tested material samples the texture (elsewhere it is often 0),
+        // so baking it in would punch holes in opaque surfaces for any viewer
+        // that honours alpha. The alpha-carrying copy goes to <name>_rgba.tga.
+        if (has_alpha) write_tga(out_dir / (base + "_rgba.tga"), h.width, h.height, bgra);
+        for (std::size_t i = 3; i < bgra.size(); i += 4) bgra[i] = 255;
         write_tga(out_dir / (base + ".tga"), h.width, h.height, bgra);
     } else {
         ctx.log("skip (palette decode failed): " + symbol);
@@ -778,6 +787,51 @@ bool TextureExtractor::extract_symbol(const OvlParser& parser,
             return extract_one(parser, side, i, ctx.output_dir,
                                ctx.overwrite, ctx);
         }
+    }
+    return false;
+}
+
+bool TextureExtractor::decode_ftx_bgra(const OvlParser& parser,
+                                       std::uint32_t datapointer,
+                                       std::uint32_t& width,
+                                       std::uint32_t& height,
+                                       std::vector<std::uint8_t>& bgra,
+                                       bool* has_alpha,
+                                       std::uint32_t* recolorable) {
+    FtxHeader h{};
+    if (!read_ftx_header(parser, datapointer, h)) return false;
+    if (!sane_dimensions(h.width, h.height)) return false;
+    bool alpha = false;
+    if (!decode_indexed8(parser, h, bgra, alpha)) return false;
+    width = h.width;
+    height = h.height;
+    if (has_alpha) *has_alpha = alpha;
+    if (recolorable) *recolorable = h.recolorable;
+    return true;
+}
+
+bool TextureExtractor::decode_linked_bgra(const OvlParser& parser, OvlSide side,
+                                          std::size_t lf_index,
+                                          std::uint32_t& width,
+                                          std::uint32_t& height,
+                                          std::vector<std::uint8_t>& bgra,
+                                          bool* has_alpha,
+                                          std::uint32_t* recolorable) {
+    const auto& lf = parser.side(side).linkedfiles[lf_index];
+    Loader ldr = parser.loader_by_id(lf.loaderreference.loadernumber, side);
+    if (has_alpha) *has_alpha = false;
+    if (recolorable) *recolorable = 0;
+    if (ldr.tag == "ftx")
+        return decode_ftx_bgra(parser, lf.loaderreference.datapointer, width,
+                               height, bgra, has_alpha, recolorable);
+    if (ldr.tag == "tex") {
+        if (!decode_tex_bgra(parser, side, width, height, bgra)) return false;
+        // DXT3/DXT5 carry real alpha; DXT1 decodes to opaque 255.
+        if (has_alpha) {
+            for (std::size_t i = 3; i < bgra.size(); i += 4)
+                if (bgra[i] != 255) { *has_alpha = true; break; }
+        }
+        return true;
     }
     return false;
 }

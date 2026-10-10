@@ -37,12 +37,20 @@ This project addresses both:
 - ✅ **Sound extractor** (`snd` loader → standard PCM WAV, with a `smpl`
   loop chunk for the 58 / 334 ambient-SFX entries that are looping).
 - ✅ **Texture extractor** (`ftx` FlexiTexture, all format codes 3–9):
-  indexed8 + BGRA palette → TGA, with raw `.ovltex` + `.json` sidecar.
+  indexed8 + BGRA palette + 8-bit alpha plane → opaque `.tga` and
+  `_rgba.tga`, with raw `.ovltex` + `.json` sidecar (recolor flags, frames).
+  1594 / 1594 ftx of a full install decode.
 - 🚧 **Texture extractor** (`tex` DXT compressed): 110 / 121 single-tex
   OVLs decode to TGA via the trailing-data DXT1 layout (≈ 17 % of all 665
   `tex` symbols). DXT3/5 + multi-`tex` OVL v5 layouts still open
   (see `docs/RCT3_OVL_FORMAT.md` §4).
-- ✅ **Static mesh extractor** (`shs` → `.obj` + `.mtl` + `.tga`): full
+- ✅ **Scenery packager** (`--types scenery`: `svd` → `.glb`): one
+  self-contained glTF 2.0 per scenery item — most detailed LOD, embedded
+  PNG textures, opaque / alpha-mask / blend materials, skeleton and
+  animations for skinned (`bsh` + `ban`) items, plus a JSON manifest of all
+  LODs. All 71 shops, stalls, restaurants and utilities (toilets, ATM, first
+  aid) export and pass the Khronos glTF validator with 0 errors.
+- ✅ **Static mesh extractor** (`shs`/`bsh` → `.obj` + `.mtl` + `.tga`): full
   multi-material sub-mesh decoding, 99 % success on a 40-OVL random sample.
   Cross-OVL texture binding resolves via the global symbol index built by
   `--build-index`; `--auto-textures` pulls referenced `.tga` files into the
@@ -98,6 +106,11 @@ ctest --test-dir build --output-on-failure
     --assets-root /path/to/Assets \
     /path/to/Assets/Scenery/Dice/Dice.unique.ovl
 
+# Package a whole stall (mesh + textures + skeleton + animations) as .glb
+./build/cli/ovlextract --types scenery \
+    --texture-index ovl_index.json --assets-root /path/to/Assets \
+    /path/to/Assets/Style/Vanilla/ShopsAndStalls/IceCreamStall/IceCreamStall.common.ovl
+
 # Inspect an OVL: list its loaders and linked files
 ./build/cli/ovlextract --list-loaders path/to/Main.common.ovl
 
@@ -128,6 +141,7 @@ The `input` argument accepts:
 | `--types sound` | `<symbol>.wav` per `snd` loader (mono or stereo PCM, plus `smpl` chunk if loop=1) |
 | `--types texture` | `<symbol>.ovltex` (raw block), `<symbol>.json` (metadata), and `<symbol>.tga` (decoded indexed8+palette — all format codes 3–9 supported) |
 | `--types atlas` | `<symbol>.tga` per `gsi`, cropped from parent texture (most parents are `tex` → blocked until `tex` decode lands) |
+| `--types scenery` | `<svd>.glb` (best LOD, textures embedded, skin + animations) + `<svd>.json` manifest per scenery item; `--all-lods` adds the other LODs |
 | `--types model`   | `<symbol>.obj` + `<symbol>.mtl` per `shs` static mesh, sub-meshes as `g`/`usemtl` groups; with `--texture-index` the `.mtl` gets `map_Kd` lines, with `--auto-textures` the referenced `.tga` files are pulled in too |
 | `--build-index`   | A JSON file mapping every linked-file symbol (lowercased) to its defining OVL path, side, and loader tag — used for cross-OVL texture lookups |
 
