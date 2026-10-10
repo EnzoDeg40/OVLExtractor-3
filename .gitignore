@@ -83,3 +83,6 @@ venv/
 *.log
 *.bak
 .cache/
+
+# Extraction map: the scan cache is rebuilt from the install, data.js is committed
+site/inventory.json

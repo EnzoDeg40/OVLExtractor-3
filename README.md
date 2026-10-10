@@ -211,6 +211,28 @@ python3 scripts/rct3_track.py layout out/track ride.trk --glb-dir out/glb --cars
 blender -b --python scripts/blender_ride.py -- ride.layout.json out/glb --glb ride.glb --render ride.png
 ```
 
+## Extraction map (`site/`)
+
+`site/index.html` is a static page (open it directly, no server needed) that
+shows every OVL pair of an install as one cell, and for each of its resources
+what the extractor does with it today: written as a standard file, partial,
+documented but not extracted, or untouched. A per-tag table gives the counts
+and the evidence (doc section, extractor source line) behind each verdict.
+
+Nothing in the page is typed in by hand. `site/build.py` lists each pair with
+`ovlextract --list-loaders`, then classifies each loader tag from three
+sources: the loader registry in `docs/RCT3_OVL_FORMAT.md` §2 and the section
+headings that name a tag, the tags quoted in `extractors/src/*Extractor.cpp`,
+and `site/annotations.json` for what the registry has not caught up with.
+
+```bash
+python3 site/build.py "$ASSETS"      # rescan the install (~10 s) and rebuild
+python3 site/build.py --cached       # docs and code changed, install did not
+```
+
+The output is `site/data.js`; the scan cache `site/inventory.json` is not
+versioned.
+
 ## Architecture
 
 ```

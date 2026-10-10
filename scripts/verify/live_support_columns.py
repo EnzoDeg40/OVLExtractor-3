@@ -7,6 +7,7 @@ the part of the park in view, so aim the camera first (rct3_saves look_at).
 
     RCT3_PROBE_DIR=/tmp/rct3probe python3 scripts/verify/live_support_columns.py ROW0 ROW1 COL0 COL1 out.json
 """
+import sys, struct, collections, json
 sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parents[3] / 'rct3_saves' / 'tools' / 'mac')); import probe
 # columns = several matrices sharing (x, z) whose y include ground-level stacking
 z0, z1, x0, x1 = map(int, sys.argv[1:5]); out = sys.argv[5]
