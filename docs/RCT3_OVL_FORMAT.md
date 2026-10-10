@@ -1056,6 +1056,9 @@ in [EXTRACTORS.md](EXTRACTORS.md).
   Reading dimensions from offset 4 + 8 gives 128 × 128 (matches what's
   in `format_repeat` block at +0x2C). Not investigated further; likely
   a non-square aspect applied at render time.
+- **A relocated `char*` of 0 is a real string** (the first entry of the
+  string table), not null. Check the slot against the relocation table
+  before treating 0 as null (§15.8: support style names).
 - **Header version 6 is deferred.** Both this rewrite and the legacy
   OVLExtractor-2 stop at v5; v6 OVLs are flagged as `parser.valid() == false`
   with a warning but the parser doesn't throw.
@@ -1576,10 +1579,29 @@ names over different track sets (Corkscrew / LoopingRC / Twister…), pick
 the type whose geometry connects the most joints, or read
 `TrackedRideInstance.TrackedRideSymbolName`.
 
-Supports are not part of the piece mesh on most sets (`sid.supports` names
-a style: `Supports/ts1…ts5`, built from 1H/4H/8H column, top, bottom and
-girder pieces). They are generated at runtime (`TrackPiece_BuildSupports`
-in rerct3's notes) and not reconstructed here yet.
+**Supports** are not part of the piece meshes. They are generated at runtime
+(`TrackPiece_BuildSupports` → `SupportGrid_PlaceColumns` →
+`ScenerySupportManager_RebuildCellVisuals` in rerct3's notes). Each piece's
+`sid.supports` names its style (`ts1` for Track3/Corkscrew and most steel
+sets, `ts2` for Track20/wooden, `ts6` for Track32–34, `ts3` lift bases…).
+The style's pieces are `sid`s in the central `Supports/Supports.ovl` (257
+of them) with meshes in `Supports/<style>/`, by type: **12** middle
+(`<style>_support_1H/2H/4H/8H`, height = mesh height), **13** top, **14**
+bottom (footing), **15** bottom-extra, **16** girder (`_girder_1L/2L/3L`),
+**17** cap. A column goes on every footprint cell whose `sid` cell flags
+have bit 1 (Supports), from the terrain up to the structure. The game
+then stacks cap pieces and middles largest-first, and adds girders
+between cells linked by the `sid` connection entries (`+0x34` count,
+`+0x38` 88-byte records). `rct3_track.py layout --supports` builds an
+approximation: one column per flagged cell, from height 0 to the track
+base over that cell (lowest rail point − the set's rail height), footing +
+middles largest-first + top, coloured with the track triple. No girders, no
+terrain, inverted track not handled.
+
+⚠ **The style string is usually at offset 0 of the OVL's string table**, so
+`sid +0x4C` holds a *relocated 0*. Reading it as a null pointer loses it
+(every Track3 piece would have no style). A zero `char*` is null only when
+its slot is not in the relocation table.
 
 ### 15.9 Putting a ride together
 

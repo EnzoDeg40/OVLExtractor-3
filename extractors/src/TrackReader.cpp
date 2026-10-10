@@ -36,11 +36,15 @@ float as_f32(std::uint32_t u) {
 }
 
 // A char* stored in a struct: either a string-table entry (the usual case) or
-// a plain string somewhere in the data. A zero, unrelocated pointer is null.
-std::string cstr(const OvlParser& parser, std::uint32_t ptr) {
-    if (ptr == 0) return {};
+// a plain string somewhere in the data. 0 is a valid pointer when the slot is
+// relocated (the first string of the table sits at offset 0 — e.g. the "ts1"
+// support style every Track3 piece points to); an unrelocated 0 is null.
+// `slot` is the internal offset of the pointer field (0 = unknown → 0 is null).
+std::string cstr(const OvlParser& parser, std::uint32_t ptr, std::uint32_t slot = 0) {
+    if (ptr == 0 && (slot == 0 || !parser.is_relocation(slot))) return {};
     std::string s = parser.string_from_offset(ptr);
     if (s != "STRINGNOTFOUND") return s;
+    if (ptr == 0) return {};
     if (auto r = open_at(parser, ptr)) return r->read_cstring(1024);
     return {};
 }
@@ -49,8 +53,9 @@ std::string cstr(const OvlParser& parser, std::uint32_t ptr) {
 std::vector<std::string> cstr_array(const OvlParser& parser, std::uint32_t arr, std::uint32_t count) {
     std::vector<std::string> out;
     if (count == 0 || count > 1024) return out;
-    for (std::uint32_t p : u32s_at(parser, arr, count)) {
-        std::string s = cstr(parser, p);
+    auto ptrs = u32s_at(parser, arr, count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        std::string s = cstr(parser, ptrs[i], arr + 4 * i);
         if (!s.empty()) out.push_back(s);
     }
     return out;
@@ -388,7 +393,7 @@ bool read_track_section(const OvlParser& parser, OvlSide side, std::size_t lf_in
     if (!open_at(parser, b)) { err = "datapointer unresolved"; return false; }
     auto sym = [&](std::uint32_t off) { return resolved_symbol_at(parser, b + off); };
 
-    out.internal_name = cstr(parser, v[0]);
+    out.internal_name = cstr(parser, v[0], b);
     out.sid = sym(0x04);
     out.entry_curve = v[0x08 / 4];
     out.exit_curve = v[0x0C / 4];
@@ -405,11 +410,11 @@ bool read_track_section(const OvlParser& parser, OvlSide side, std::size_t lf_in
     out.unk18 = v[0x44 / 4];
     out.entry_slope = v[0x48 / 4];
     out.entry_bank = v[0x4C / 4];
-    out.entry_group = cstr(parser, v[0x50 / 4]);
+    out.entry_group = cstr(parser, v[0x50 / 4], b + 0x50);
     out.unk25 = v[0x60 / 4];
     out.exit_slope = v[0x64 / 4];
     out.exit_bank = v[0x68 / 4];
-    out.exit_group = cstr(parser, v[0x6C / 4]);
+    out.exit_group = cstr(parser, v[0x6C / 4], b + 0x6C);
 
     const bool ext = (out.entry_flags & 0x00400000u) != 0;
     std::uint32_t speed_count = v[0x70 / 4];
@@ -445,7 +450,7 @@ bool read_track_section(const OvlParser& parser, OvlSide side, std::size_t lf_in
         const std::uint32_t s = b + 0xE4;
         auto x = u32s_at(parser, s, 0x88 / 4);
         out.version = x[0];
-        out.auto_group = cstr(parser, x[0x20 / 4]);
+        out.auto_group = cstr(parser, x[0x20 / 4], s + 0x20);
         out.entry_wide = x[0x30 / 4];
         out.exit_wide = x[0x34 / 4];
         out.soaked_options = x[0x44 / 4];
@@ -491,7 +496,7 @@ bool read_scenery_item(const OvlParser& parser, OvlSide side, std::size_t lf_ind
     out.cost = static_cast<std::int32_t>(v[0x3C / 4]);
     out.removal_cost = static_cast<std::int32_t>(v[0x40 / 4]);
     out.type = v[0x48 / 4];
-    out.supports = cstr(parser, v[0x4C / 4]);
+    out.supports = cstr(parser, v[0x4C / 4], b + 0x4C);
     std::uint32_t svd_count = v[0x50 / 4];
     out.svds = symbol_array(parser, v[0x54 / 4], svd_count);
     for (int k = 0; k < 3; ++k) out.default_colours[k] = v[0x8C / 4 + k];
@@ -499,7 +504,8 @@ bool read_scenery_item(const OvlParser& parser, OvlSide side, std::size_t lf_ind
     if (pc > 0 && pc < 64) {
         auto pr = u32s_at(parser, v[0x6C / 4], pc * 2);
         for (std::uint32_t i = 0; i < pc; ++i)
-            out.params.emplace_back(cstr(parser, pr[i * 2]), cstr(parser, pr[i * 2 + 1]));
+            out.params.emplace_back(cstr(parser, pr[i * 2], v[0x6C / 4] + i * 8),
+                                    cstr(parser, pr[i * 2 + 1], v[0x6C / 4] + i * 8 + 4));
     }
     auto x = u32s_at(parser, b + 0xB8, 7);
     if (x[0] > 0 && x[0] < 64) out.individual_animations = cstr_array(parser, x[1], x[0]);
@@ -545,9 +551,9 @@ bool read_tracked_ride(const OvlParser& parser, OvlSide side, std::size_t lf_ind
     // (the "// 10", "// 20"… comments in trackedride.h count from 1).
     std::uint32_t section_count = v[0];
     out.train_names = cstr_array(parser, v[3], v[2]);
-    out.cable_lift = cstr(parser, v[4]);
-    out.lift_car = cstr(parser, v[9]);
-    out.station_name = cstr(parser, v[14]);
+    out.cable_lift = cstr(parser, v[4], c + 4 * 4);
+    out.lift_car = cstr(parser, v[9], c + 9 * 4);
+    out.station_name = cstr(parser, v[14], c + 14 * 4);
     out.platform_height_over_track = v[15];
     out.only_on_water = v[16];
     out.start_preset = v[18];
@@ -563,7 +569,7 @@ bool read_tracked_ride(const OvlParser& parser, OvlSide side, std::size_t lf_ind
     out.car_rotation = v[44];
     out.loop_not_allowed = v[47];
     out.cost_per_4h_height = v[51];
-    std::string path = cstr(parser, v[52]);
+    std::string path = cstr(parser, v[52], c + 52 * 4);
     if (!path.empty()) out.track_paths.push_back(path);
     out.other_top = resolved_symbol_at(parser, c + 53 * 4);
     out.other_mid = resolved_symbol_at(parser, c + 54 * 4);
@@ -611,7 +617,7 @@ bool read_tracked_ride(const OvlParser& parser, OvlSide side, std::size_t lf_ind
                         TrackGroupRef& r = h ? gp.b : gp.a;
                         r.flags = fl;
                         if ((fl & 0xFF) == 1) r.value = resolved_symbol_at(parser, p + (k * 4 + h * 2 + 1) * 4);
-                        else if ((fl & 0xFF) == 0) r.value = cstr(parser, ptr);
+                        else if ((fl & 0xFF) == 0) r.value = cstr(parser, ptr, p + (k * 4 + h * 2 + 1) * 4);
                     }
                     group.push_back(gp);
                 }
@@ -624,7 +630,7 @@ bool read_tracked_ride(const OvlParser& parser, OvlSide side, std::size_t lf_ind
     if (struct_count > 0 && struct_count < 4096) {
         auto s = u32s_at(parser, structs_ptr, struct_count * 2);
         for (std::uint32_t i = 0; i < struct_count; ++i) {
-            TrackedRideSectionCost sc{cstr(parser, s[i * 2]), s[i * 2 + 1]};
+            TrackedRideSectionCost sc{cstr(parser, s[i * 2], structs_ptr + i * 8), s[i * 2 + 1]};
             if (!sc.name.empty()) out.section_costs.push_back(sc);
         }
     }
@@ -653,7 +659,7 @@ bool read_flat_ride(const OvlParser& parser, OvlSide side, std::size_t lf_index,
         if (n > 0 && n < 256) {
             auto si = u32s_at(parser, v[10], n * 2);
             for (std::uint32_t i = 0; i < n; ++i)
-                out.show_items.emplace_back(si[i * 2], cstr(parser, si[i * 2 + 1]));
+                out.show_items.emplace_back(si[i * 2], cstr(parser, si[i * 2 + 1], v[10] + i * 8 + 4));
         }
     }
     return true;
@@ -670,8 +676,8 @@ bool read_ride_car(const OvlParser& parser, OvlSide side, std::size_t lf_index,
     if (!open_at(parser, b)) { err = "datapointer unresolved"; return false; }
     auto v = u32s_at(parser, b, 240 / 4);
     auto sym = [&](std::uint32_t off) { return resolved_symbol_at(parser, b + off); };
-    out.name = cstr(parser, v[0]);
-    out.username = cstr(parser, v[1]);
+    out.name = cstr(parser, v[0], b);
+    out.username = cstr(parser, v[1], b + 4);
     out.seating = static_cast<std::uint8_t>(v[2] & 0xFF);
     out.version = static_cast<std::uint8_t>((v[2] >> 8) & 0xFF);
     out.svd = sym(12);
@@ -705,8 +711,8 @@ bool read_ride_train(const OvlParser& parser, OvlSide side, std::size_t lf_index
     const std::uint32_t b = lf.loaderreference.datapointer;
     if (!open_at(parser, b)) { err = "datapointer unresolved"; return false; }
     auto v = u32s_at(parser, b, 188 / 4);
-    if (v[0] != 0xFFFFFFFFu) out.name = cstr(parser, v[0]);
-    out.description = cstr(parser, v[1]);
+    if (v[0] != 0xFFFFFFFFu) out.name = cstr(parser, v[0], b);
+    out.description = cstr(parser, v[1], b + 4);
     for (int k = 0; k < 6; ++k) out.cars[k] = ref_at(parser, b + 8 + 4 * k);
     out.car_count_min = v[8];
     out.car_count_max = v[9];
@@ -718,14 +724,14 @@ bool read_ride_train(const OvlParser& parser, OvlSide side, std::size_t lf_index
     out.overtake = v[35];
     out.liftcar_left = resolved_symbol_at(parser, b + 176);
     out.liftcar_right = resolved_symbol_at(parser, b + 180);
-    out.station = cstr(parser, v[46]);
+    out.station = cstr(parser, v[46], b + 184);
     // The extension is present when the name slot is the 0xFFFFFFFF marker
     // (RideTrainB/C); its first u32 is the version.
     if (v[0] == 0xFFFFFFFFu) {
         auto x = u32s_at(parser, b + 188, 4);
         if (x[0] == 2 || x[0] == 3) {
             out.version = x[0];
-            out.sext_name = cstr(parser, x[1]);
+            out.sext_name = cstr(parser, x[1], b + 188 + 4);
             out.icon = x[2];
         }
     }

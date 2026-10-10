@@ -691,6 +691,95 @@ def sid_matrix(sid: dict | None, x: int, z: int, height: int, direction: int, co
     return game_to_gltf_matrix(cols, ((x + dx) * TILE, height, (z + dz) * TILE))
 
 
+def set_support_style(cat: "Catalog", sec: Section) -> str:
+    """Fallback support style for a piece whose sid names none: the most
+    common style of its track set."""
+    for setname, secs in cat.sets.items():
+        if secs.get(sec.name.lower()) is sec:
+            if not hasattr(cat, "_set_style"):
+                cat._set_style = {}
+            if setname not in cat._set_style:
+                from collections import Counter
+                c = Counter((x.data.get("sid") or {}).get("supports", "") for x in secs.values())
+                c.pop("", None)
+                cat._set_style[setname] = c.most_common(1)[0][0] if c else ""
+            return cat._set_style[setname]
+    return ""
+
+
+def _rail_height(cat: "Catalog", sec: Section) -> float:
+    """Rail height above a piece's base in its set: the entry height of the
+    set's flat straight (1.25 on Track20)."""
+    for secs in cat.sets.values():
+        if secs.get(sec.name.lower()) is sec:
+            for name in ("straight", "stationmiddle", "invstraight"):
+                st = secs.get(name)
+                if st:
+                    return st.joint("entry")["pos"][1]
+    return sec.joint("entry")["pos"][1]
+
+
+def support_columns(cat: "Catalog", sec: Section, p: Placed, ground: float = 0.0):
+    """Approximate support columns under a placed piece: one per footprint
+    cell flagged for supports (sid cell flags bit 1), from the ground to the
+    track base over that cell (lowest rail point − the set's rail height),
+    stacked from the style's pieces. Returns [(asset, glTF matrix)].
+
+    The game's builder (TrackPiece_BuildSupports → SupportGrid_PlaceColumns →
+    ScenerySupportManager_RebuildCellVisuals) also lays girders between cells
+    from the sid connection entries and handles inverted track; this does
+    neither."""
+    style = (sec.data.get("sid") or {}).get("supports") or set_support_style(cat, sec)
+    if not style:
+        return []
+    pieces = {}
+    for name in ("support_1H", "support_2H", "support_4H", "support_8H", "supportbot_1H", "supporttop_1H"):
+        sid = cat.sid(f"{style}_{name}")
+        if sid:
+            pieces[name] = (_svd(sid, f"{style}_{name}"), float((sid.get("size") or [0, 1, 0])[1]))
+    middles = sorted(((h, a) for n, (a, h) in pieces.items() if n.startswith("support_")), reverse=True)
+    if not middles:
+        return []
+    sid = sec.data.get("sid") or {}
+    sx, sz = sec.squares
+    cells = sid.get("cells") or []
+    line = CentreLine(cat, sec)
+    rail_h = _rail_height(cat, sec)
+    f = piece_transform(sec, p)
+    out = []
+    for cz in range(sz):
+        for cx in range(sx):
+            k = cz * sx + cx
+            if k < len(cells) and not (cells[k][0] & 2):
+                continue
+            # local cell bounds (piece modelled centred on its footprint)
+            x0, z0 = -sx * 2 + cx * 4, -sz * 2 + cz * 4
+            ys = [q[1] for q in line.pts if x0 <= q[0] <= x0 + 4 and z0 <= q[2] <= z0 + 4]
+            if not ys:
+                continue
+            top = math.floor(min(ys) - rail_h + 1e-3) + p.height
+            if top - ground < 1:
+                continue
+            wx, _, wz = f((x0 + 2, 0, z0 + 2))
+            y = ground
+            stack = []
+            if "supportbot_1H" in pieces:
+                stack.append(pieces["supportbot_1H"]); y += pieces["supportbot_1H"][1]
+            want_top = pieces.get("supporttop_1H")
+            limit = top - (want_top[1] if want_top else 0)
+            for h, a in middles:
+                while y + h <= limit + 1e-6:
+                    stack.append((a, h)); y += h
+            if want_top and y + want_top[1] <= top + 1e-6:
+                stack.append(want_top)
+            y = ground
+            ident = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+            for a, h in stack:
+                out.append((a, game_to_gltf_matrix(ident, (wx, y, wz))))
+                y += h
+    return out
+
+
 def _svd(sid: dict | None, fallback: str) -> str:
     svds = (sid or {}).get("svds") or []
     return svds[0].split(":")[0] if svds else fallback
@@ -698,7 +787,8 @@ def _svd(sid: dict | None, fallback: str) -> str:
 
 def ride_layout(cat: "Catalog", ride: Ride, pieces: list[Placed], cars: int = 0,
                 train: dict | None = None, car_length: float | None = None,
-                platform_style: str | None = None, design: dict | None = None) -> dict:
+                platform_style: str | None = None, design: dict | None = None,
+                supports: bool = False) -> dict:
     """Everything needed to draw the ride: track pieces, station platforms,
     entrance / exit and one train parked in the station, as glTF-space
     matrices, each with the FlexiColour triple it is drawn with.
@@ -726,6 +816,15 @@ def ride_layout(cat: "Catalog", ride: Ride, pieces: list[Placed], cars: int = 0,
             items.append({"kind": "track", "piece": sec.name, "asset": svds[0].split(":")[0],
                           "matrix": piece_matrix(sec, p), "colours": col,
                           "ovl_dir": str(Path(sec.source).parent) if sec.source else ""})
+
+    if supports:
+        for p, col in zip(pieces, piece_colours):
+            sec = ride.section(p.name)
+            if not sec:
+                continue
+            for asset, m in support_columns(cat, sec, p):
+                items.append({"kind": "support", "piece": sec.name, "asset": asset, "matrix": m,
+                              "colours": col})
 
     # station runs in travel order
     runs, cur = [], []
@@ -945,7 +1044,8 @@ def cmd_layout(cat: Catalog, args) -> int:
         if lens:
             print("car lengths (from the car meshes):", {k: round(v, 3) for k, v in lens.items()})
     lay = ride_layout(cat, ride, pieces, cars=(args.cars or 3) if train else 0, train=train,
-                      car_length=car_length, platform_style=args.platform, design=design)
+                      car_length=car_length, platform_style=args.platform, design=design,
+                      supports=args.supports)
     lay["train"] = train_name if train else None
     out = Path(args.output) if args.output else Path(args.trk).with_suffix(".layout.json")
     out.write_text(json.dumps(lay, indent=1))
@@ -1062,6 +1162,8 @@ def main(argv=None) -> int:
     l.add_argument("--train", help="train (rit) name, default: the ride's first")
     l.add_argument("--cars", type=int, default=None,
                    help="cars in the parked train (default: the design's, else 3)")
+    l.add_argument("--supports", action="store_true",
+                   help="add approximate support columns (ground at height 0)")
     l.add_argument("--infer", action="store_true",
                    help="ignore the design's stored objects (direction, platforms, colours) "
                         "and infer them from the geometry")
