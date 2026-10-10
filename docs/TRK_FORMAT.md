@@ -36,46 +36,59 @@ One packed record per placed piece:
 ```
 ef ef ef ef                      marker
 <UTF-16LE> "<name>:tks"          piece symbol (track section), e.g. "straight:tks"
-... <int32 CORNER>    @ symEnd+8
-    <int32 DIRECTION> @ symEnd+12   0..3  → 90° yaw steps
-    <int32 HEIGHT>    @ symEnd+16   vertical grid level
-    <int32 POSX>      @ symEnd+20   grid tile X
-    <int32 POSZ>      @ symEnd+24   grid tile Z
+... <int32 CORNER>    @ symEnd+8    always 0 for track
+    <int32 DIRECTION> @ symEnd+12   0..3 quarter turns
+    <int32 HEIGHT>    @ symEnd+16   height step (1 unit)
+    <int32 POSX>      @ symEnd+20   footprint min-corner tile X
+    <int32 POSZ>      @ symEnd+24   footprint min-corner tile Z
+    <int32>           @ symEnd+28   constant per design (8029 in MR_compact)
+    <int32>           @ symEnd+36   4
+    <f32 -1, f32 -1>  @ symEnd+40
+    <f32 StartDistance> @ symEnd+48 cumulative distance along the circuit
 ```
 
-(`symEnd` = first byte after the UTF-16 symbol.) The ride type appears as
-`<name>:trr` (e.g. `WoodenRC:trr`); each piece's **visual mesh OVL** is named by
-the `Tracks\Coasters\<set>\<set>…` references in the same file (e.g. `Track20`,
-the wooden-coaster piece set) — extract that set with `ovlextract --types model`
-and the meshes land in `out/models/tracks/coasters/<set>/<name>_data/`.
+(`symEnd` = first byte after the UTF-16 symbol.) Records are **not** stored
+in travel order; sort them by `StartDistance`. An untested design stores 0
+for every piece, so the order then has to be recovered by following the
+joints (`scripts/rct3_track.py` does both). The ride type is the UTF-16
+`<Ride>:trr` symbol in the file (e.g. `WoodenRC:trr`, `BallCoaster:trr`
+for the `[CoasterBall]` designs). Each piece's **visual mesh OVL** is named
+by the `Tracks\Coasters\<set>\<set>…` references in the same file (e.g.
+`Track20`). The set is also the ride's `trr` track path, see
+[RCT3_OVL_FORMAT.md §15](RCT3_OVL_FORMAT.md).
 
-### World convention (calibrated from the extracted meshes)
+The file does not say whether a piece is driven forwards or backwards. That
+falls out of the geometry: a `medslope` driven backwards is a down slope,
+a `tightcurve` driven backwards is a right turn (§15.4).
+
+### World convention (exact)
 
 | quantity | value |
 |---|---|
-| grid tile | **4 mesh units** → world X/Z = `POSX*4`, `POSZ*4` |
-| height level | **1 mesh unit** → world Y = `HEIGHT*1` |
-| rotation | `DIRECTION * 90°` about **Y** (Y is up — matches glTF) |
+| grid tile | **4 units** |
+| height step | **1 unit** |
+| footprint | the piece's `sid` squares (`ovlextract -t track` → `<set>.tracks.json`), swapped on odd DIRECTION |
+| centre | `((POSX + sx/2)·4, HEIGHT, (POSZ + sz/2)·4)` |
+| rotation | `a = −(DIRECTION + 2)·90°` about Y: `x' = x·cos a − z·sin a`, `z' = x·sin a + z·cos a` (game, left-handed) |
 
-Sanity checks on `[WoodenRC]MR_compact.trk`: a `straight` mesh is 4×4;
-`tightcurve` is 8×8 (a 2×2-tile 90° turn); `medslope` rises ~2 units (ΔHEIGHT=2),
-`steepslope` ~8 (ΔHEIGHT=8); station pieces sit flat at HEIGHT=6 and the
-`medslopechain` lift climbs HEIGHT 1→3→5…→30. So every piece becomes a glTF node
-= a translation + a 90°-step rotation quaternion, no per-vertex math required.
-
-**Anchor offset.** `POSX/POSZ` name the SW corner of a piece's tile footprint,
-but each mesh is modelled centred on its block. A piece spanning an *even*
-number of tiles on an axis (e.g. `tightcurve`, 2×2) therefore has its centre
-half a tile off the anchor — shift it back by `TILE/2` in world X/Z on each
-even axis so curves meet the straights they bridge. (Asymmetric pieces —
-`loosecurve`, `sbend`, the slope+curve combos — are only approximate this way;
-exact placement would need RCT3's per-piece connection metadata.)
+The game frame is left-handed; for glTF mirror Z (positions, translation),
+and the rotation keeps the same angle in glTF's `R_y`. With this transform
+every joint of the 179 closed circuits among the game's 208 shipped designs
+meets its neighbour. The old "even footprint → shift half a tile"
+heuristic is no longer needed.
 
 ## Reconstructing the ride
 
 ```bash
-python3 scripts/trk_to_gltf.py '[WoodenRC]MR_compact.trk' -o MR_compact.glb
+python3 scripts/trk_to_gltf.py '[WoodenRC]MR_compact.trk' -o MR_compact.glb \
+    --track-json out/track          # exact footprints from `ovlextract -t track`
+python3 scripts/rct3_track.py show  out/track '[WoodenRC]MR_compact.trk'   # piece list, reversed flags
+python3 scripts/rct3_track.py check out/track "$ASSETS/Coaster Designs"/*.trk
 ```
+
+The OBJ meshes must come from a current `ovlextract -t model` (OBJ export
+mirrors Z since `ebf95a0`; meshes from older builds are in the game frame and
+come out scrambled).
 
 The script reads the pieces, auto-detects the set, reuses one mesh per piece
 type across all placements, and writes a `.glb`. Textures are embedded as PNG
@@ -88,4 +101,4 @@ not applied here.
 
 What it does **not** do yet: tint the FlexiColour regions; place the station
 platforms / entrance / exit (those are not `:tks` pieces); resolve the
-`managedobjectptr` object graph from part 1.
+`managedobjectptr` object graph from part 1; supports.

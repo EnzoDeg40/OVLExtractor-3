@@ -228,16 +228,20 @@ def flat_color(base: str) -> list[float]:
 # GLB assembly
 # --------------------------------------------------------------------------- #
 def quat_y(direction: int) -> list[float]:
-    # ovlextract writes OBJ already converted from RCT3's left-handed (D3D)
-    # frame by mirroring Z, so placements are mirrored too: a D3D yaw of +a
-    # becomes -a, and POSZ maps to -Z.
-    a = -math.radians(90.0 * direction) / 2.0
+    # The game turns a placed piece by a = -(direction + 2)·90° about Y
+    # (SceneryItem_InitRotationMatrix; x' = x·cos a − z·sin a,
+    # z' = x·sin a + z·cos a in its left-handed frame). ovlextract's OBJ is
+    # already mirrored on Z into glTF's right-handed frame, and conjugating
+    # that rotation by the mirror gives glTF's own R_y(a) — same angle.
+    a = -math.radians(90.0 * (direction + 2)) / 2.0
     return [0.0, math.sin(a), 0.0, math.cos(a)]
 
 
 def build_glb(pieces, meshes: dict, out: Path, tile_size: float,
               models: Path, setname: str | None,
-              tex_dir: Path | None, want_textures: bool) -> dict:
+              tex_dir: Path | None, want_textures: bool,
+              squares: dict[str, tuple[int, int]] | None = None) -> dict:
+    squares = squares or {}
     blob = bytearray()
     views: list[dict] = []
     accessors: list[dict] = []
@@ -299,20 +303,23 @@ def build_glb(pieces, meshes: dict, out: Path, tile_size: float,
         materials.append({"name": mat, "pbrMetallicRoughness": pbr, "doubleSided": True})
 
     # ---- one glTF mesh per piece type (sub-meshes -> primitives) ----
-    def footprint_offset(subs) -> tuple[float, float]:
+    def footprint(name, subs) -> tuple[int, int]:
+        # SceneryItem squares (exact, from `ovlextract -t track` JSON), else
+        # the mesh's extent in whole tiles.
+        if name.lower() in squares:
+            return squares[name.lower()]
         xs = [v for sm in subs for v in sm["pos"][0::3]]
         zs = [v for sm in subs for v in sm["pos"][2::3]]
         if not xs:
-            return 0.0, 0.0
-        ox = TILE / 2 if round((max(xs) - min(xs)) / TILE) % 2 == 0 else 0.0
-        oz = TILE / 2 if round((max(zs) - min(zs)) / TILE) % 2 == 0 else 0.0
-        return ox, oz
+            return 1, 1
+        return (max(1, round((max(xs) - min(xs)) / TILE)),
+                max(1, round((max(zs) - min(zs)) / TILE)))
 
     gltf_meshes: dict[str, int] = {}
-    anchor: dict[str, tuple[float, float]] = {}
+    anchor: dict[str, tuple[int, int]] = {}
     mesh_list: list[dict] = []
     for name, subs in meshes.items():
-        anchor[name] = footprint_offset(subs)
+        anchor[name] = footprint(name, subs)
         prims = []
         for sm in subs:
             npos = len(sm["pos"]) // 3
@@ -339,11 +346,16 @@ def build_glb(pieces, meshes: dict, out: Path, tile_size: float,
     for p in pieces:
         if p["name"] not in gltf_meshes:
             continue
-        ox, oz = anchor[p["name"]]
+        # The mesh is modelled centred on its footprint; POSX/POSZ is the
+        # footprint's min corner, and the footprint turns with the piece.
+        sx, sz = anchor[p["name"]]
+        if p["direction"] % 2:
+            sx, sz = sz, sx
         nodes.append({
             "name": f"{p['name']}@{p['posx']},{p['height']},{p['posz']}",
             "mesh": gltf_meshes[p["name"]],
-            "translation": [p["posx"] * TILE + ox, p["height"] * HUNIT, -(p["posz"] * TILE + oz)],
+            "translation": [(p["posx"] + sx / 2) * TILE, p["height"] * HUNIT,
+                            -(p["posz"] + sz / 2) * TILE],
             "rotation": quat_y(p["direction"]),
         })
     sf = tile_size / TILE
@@ -401,6 +413,9 @@ def main() -> None:
                     help="texture folder (default: auto-locate <set>_Textures)")
     ap.add_argument("--no-textures", action="store_true", help="flat colours, stdlib only")
     ap.add_argument("--report", action="store_true", help="print piece histogram")
+    ap.add_argument("--track-json", type=Path, default=None,
+                    help="directory of `ovlextract -t track` output; gives the exact "
+                         "piece footprints (default: estimated from the meshes)")
     args = ap.parse_args()
 
     if not args.trk.is_file():
@@ -437,9 +452,20 @@ def main() -> None:
         ap.error("none of the pieces matched a mesh under "
                  f"{args.models}/tracks/coasters/ — check --set / --models")
 
+    squares: dict[str, tuple[int, int]] = {}
+    if args.track_json:
+        for f in sorted(args.track_json.rglob("*.tracks.json")):
+            t = json.loads(f.read_text())
+            if setname and t["track_set"].lower() != setname.lower():
+                continue
+            for sec in t["sections"]:
+                sq = (sec.get("sid") or {}).get("squares")
+                if sq:
+                    squares.setdefault(sec["name"].lower(), (int(sq[0]), int(sq[1])))
+
     out = args.output or args.trk.with_suffix(".glb")
     info = build_glb(pieces, meshes, out, args.tile_size,
-                     args.models, setname, args.textures, not args.no_textures)
+                     args.models, setname, args.textures, not args.no_textures, squares)
     placed = sum(1 for p in pieces if p["name"] in meshes)
     extra = (f", {len(missing)} piece type(s) missing" if missing else "")
     tex = f", {info['textures']} textures" if info["textures"] else ", flat colours"

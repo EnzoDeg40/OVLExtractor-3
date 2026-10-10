@@ -4,6 +4,7 @@
 #include "ovl/extract/DumpExtractor.hpp"
 #include "ovl/extract/ModelExtractor.hpp"
 #include "ovl/extract/SceneryExtractor.hpp"
+#include "ovl/extract/TrackExtractor.hpp"
 #include "ovl/extract/SoundExtractor.hpp"
 #include "ovl/extract/TextureExtractor.hpp"
 #include "ovl/extract/TextureIndex.hpp"
@@ -164,6 +165,25 @@ int do_extract_scenery(const ovl::OvlParser& p,
     return r.errors == 0 ? 0 : 2;
 }
 
+int do_extract_track(const ovl::OvlParser& p,
+                     const std::filesystem::path& out_dir,
+                     bool overwrite,
+                     bool verbose) {
+    ovl::TrackExtractor x;
+    ovl::ExtractContext ctx;
+    ctx.output_dir = out_dir;
+    ctx.overwrite = overwrite;
+    if (verbose) {
+        ctx.log = [](std::string_view m) { std::cerr << "[track] " << m << "\n"; };
+    }
+    auto r = x.extract(p, ctx);
+    if (r.files_written > 0 || r.errors > 0) {
+        std::cout << "track: " << r.files_written << " json(s) written, "
+                  << r.errors << " error(s)\n";
+    }
+    return r.errors == 0 ? 0 : 2;
+}
+
 struct Actions {
     bool dump = false;
     bool list = false;
@@ -172,6 +192,7 @@ struct Actions {
     bool atlas = false;
     bool model = false;
     bool scenery = false;
+    bool track = false;
     bool all_lods = false;
     bool overwrite = false;
     bool verbose = false;
@@ -269,6 +290,10 @@ int process_one(const std::filesystem::path& input,
     if (a.scenery) {
         rc |= do_extract_scenery(parser, out_dir, a.overwrite, a.verbose,
                                  a.texture_index, a.all_lods);
+        did_anything = true;
+    }
+    if (a.track) {
+        rc |= do_extract_track(parser, out_dir, a.overwrite, a.verbose);
         did_anything = true;
     }
     if (!did_anything) {
@@ -451,10 +476,11 @@ int main(int argc, char** argv) {
                  "model's output directory so .mtl map_Kd paths resolve. "
                  "Requires --assets-root.");
     app.add_option("-t,--types", types,
-                   "Resource types to extract: sound, texture, atlas, model, scenery, dump, all (repeatable). "
+                   "Resource types to extract: sound, texture, atlas, model, scenery, track, dump, all (repeatable). "
                    "`scenery` packages each scenery item (svd: stalls, shops, decorations…) "
-                   "as a self-contained .glb — mesh, textures, materials, skeleton, animations.")
-        ->check(CLI::IsMember({"sound", "texture", "atlas", "model", "scenery", "dump", "all"}));
+                   "as a self-contained .glb — mesh, textures, materials, skeleton, animations. "
+                   "`track` exports track sections (tks), tracked rides (trr) and splines as JSON.")
+        ->check(CLI::IsMember({"sound", "texture", "atlas", "model", "scenery", "track", "dump", "all"}));
     app.add_flag("--all-lods", a.all_lods,
                  "With --types scenery, also write a .glb for every lower level of detail "
                  "(the most detailed one is always written).");
@@ -476,6 +502,7 @@ int main(int argc, char** argv) {
     a.atlas = wants("atlas");
     a.model = wants("model");
     a.scenery = wants("scenery");
+    a.track = wants("track");
 
     try {
         std::filesystem::path input_path(input);

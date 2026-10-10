@@ -93,6 +93,10 @@ struct SceneryVisual {
 std::string linked_symbol(const OvlParser& parser, OvlSide side,
                           std::size_t lf_index, bool keep_tag = false);
 
+// The symbol resolve (on either side of the pair) that patches the pointer
+// slot at internal offset `slot`, as its full "name:tag" symbol; "" if none.
+std::string resolved_symbol_at(const OvlParser& parser, std::uint32_t slot);
+
 // Find a linked file by full symbol ("name:tag", case-insensitive) on either
 // side of the pair.
 struct LinkedRef { OvlSide side = OvlSide::Common; std::size_t index = 0; };

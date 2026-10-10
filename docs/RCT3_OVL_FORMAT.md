@@ -67,13 +67,16 @@ complete RCT3 installation (Main + all expansions) — zero parse errors.
 | `gsi`  | Graphic Sprite Info (atlas rect) | Fully understood (§5)                   |
 | `psi`  | Particle Sprite Info             | Pre-resolved only, not extracted        |
 | `snd`  | Sound (.wav)                     | Fully decoded (§6)                      |
-| `sid`  | SceneryItemData (placement/size/flags) | Struct known via rct3dump (§13); not extracted |
+| `sid`  | SceneryItemData (placement/size/flags) | Footprint / svd / cost subset decoded for track pieces (§15.3) |
+| `spl`  | Spline (Bézier rail / profile)   | Fully decoded (§15.1)                   |
+| `tks`  | TrackSection (one track piece)   | Fully decoded incl. Soaked/Wild ext (§15.2); connection rules §15.4 |
+| `trr`  | TrackedRide                      | Decoded: pieces, trains, track set path, speeds, groups (§15.5) |
 | `mms`  | Morphable Mesh                   | Topology + UVs OK, positions broken (§7)|
 | `shs`  | Static Shape (rigid mesh)        | Fully decoded (§8)                      |
 | `bsh`  | Bone Shape (skinned mesh)        | Rest-pose mesh decoded (§8.6); skeletal animation open |
 | `ban`  | Bone Animation (keyframes)       | Tracks decoded → JSON sidecar (§8.7); skinned render open |
 | `svd`  | SceneryItemVisual (LOD + mesh refs) | Struct known via rct3dump (§13); not extracted |
-| `was`, `asd`, `vwg`, `ent`, `mdl`, `ptd`, `qtd`, `ter`, `sta`, `trr` | Various game data | Structs partly known via rct3dump (§13); not extracted |
+| `was`, `asd`, `vwg`, `ent`, `mdl`, `ptd`, `qtd`, `ter`, `sta` | Various game data | Structs partly known via rct3dump (§13); not extracted |
 
 What "fully decoded" buys you, per loader, is documented in
 [EXTRACTORS.md](EXTRACTORS.md).
@@ -1292,3 +1295,189 @@ spin on the ice-cream stall, door animations on the toilets). The only
 unresolved textures are engine-side: `chrome:ftx` / `two:ftx` (reflection
 maps) and `UseAdTexture:ftx` (advert placeholder).
 
+
+
+## 15. Tracked rides: `trr`, `tks`, `spl`, `sid` (`--types track`)
+
+A tracked ride (coaster, flume, transport ride, slide…) is spread over three
+places:
+
+| where | holds |
+|---|---|
+| `Tracks/Coasters/<Ride>/<Ride>.ovl`, `tracks/TrackedRides/<Ride>/…` | the `trr` (TrackedRide): ride parameters, the list of pieces it may use, its trains, the **relative path of the track set** holding the pieces (`../Track20/Track20`), plus profile `spl`s |
+| `…/<Set>/<Set>.ovl` (e.g. `Track20`) | one `tks` (TrackSection) + one `sid` (SceneryItem) + two `spl` (left/right rail splines) **per piece** |
+| `…/<Set>/<piece>_data.ovl` | the piece's `svd` + `shs` LODs (meshes, `--types scenery` / `model`) |
+| `…/<Set>/<Set>_Textures.ovl`, `tracks/SharedTextures` | the textures |
+
+The layouts below come from rct3-importer's `tracksection.h`,
+`trackedride.h`, `spline.h`, `rct3constants.h` (Jonathan Wilson / Belgabor,
+mirrored at github.com/chances/rct3-importer) and the rerct3 Ghidra notes
+(`rerct3/research/re/track.md`). Each was checked against the data, and
+corrected where the data disagreed. `ovlextract -t track` decodes every
+`trr`/`tks` of the Complete Edition (99 rides, 101 track sets, 3 805
+sections) with 0 errors.
+
+### 15.1 Spline (`spl`)
+
+```
++0x00 u32  nodecount            +0x04 ptr  SplineNode[nodecount]
++0x08 u32  cyclic               +0x0C f32  total length    +0x10 f32 1/length
++0x14 ptr  f32 lengths[seg]     +0x18 ptr  SplineData[seg] (14 B, opaque)
++0x1C f32  max_y
+SplineNode (36 B) = pos, cp1, cp2 (f32×3 each); cp1/cp2 are RELATIVE to pos
+segment i = cubic Bézier  pos[i], pos[i]+cp2[i], pos[i+1]+cp1[i+1], pos[i+1]
+```
+
+### 15.2 TrackSection (`tks`) — the piece definition
+
+`TrackSection_V` is 228 B; when `entry_flags & 0x00400000` (Extended) a
+136 B Soaked extension follows (version 2), and a 28 B Wild one (version 3).
+Most retail sets are version 3; Vanilla-only sets are version 1.
+
+| off | field | notes |
+|---|---|---|
+| +0x00 | char* internal name | = symbol |
+| +0x04 | `sid` ref | footprint + mesh, §15.3 |
+| +0x08 / +0x0C | entry / exit **curve** | 0 Straight, 1/2/3 Gentle/Medium/Sharp **Left**, 4/5/6 Gentle/Medium/Sharp **Right**, 7 Special. The curve-slider value that selects the piece: entry = building forwards, exit = building backwards, so a left curve has (1,4), (2,5), (3,6) |
+| +0x10 | special type | the "special pieces" menu entry: 1 Brakes, 2 BlockBrakes, 3 Station, 12 Loop, 7 Corkscrew… (`tks_special_name`; values are reused by later sets) |
+| +0x14 | direction | 0 symmetric/straight, 1 left, 2 right. A curve with direction 0 (`tightcurve`) is the left version; the right turn is the **same piece driven backwards** (§15.4) |
+| +0x18 / +0x1C | entry / exit flags | `StartSection 0x1, Chain 0x2, ForwardOnly 0x4, Capped 0x8, Transfer 0x10, CableLift 0x20, Station 0x40, TowerRideBase 0x80, Hold 0x100, LiftBottom/Middle/Top 0x200/0x400/0x800, WaterOption 0x1000, Accelerating 0x4000, Reverser 0x10000, AlternateSpline 0x20000, Extended 0x400000, Booster 0x1000000…` |
+| +0x20 / +0x24 | left / right rail `spl` | **R is the geometric right rail** in the game's left-handed frame |
+| +0x28…+0x34 | join L/R, extra L/R `spl` | join = same as main on most pieces; extra = reverser / alternate car path |
+| +0x48 / +0x4C | entry **slope** / **bank** | slope 0 Flat, 1 MediumUp, 2 MediumDown, 3 SteepUp, 4 SteepDown, 5 VerticalUp, 6 VerticalDown, 7 AutoEnd |
+| +0x50 | char* entry track group | rarely set |
+| +0x64 / +0x68 | exit slope / bank | |
+| +0x6C | char* exit track group | |
+| +0x70 / +0x74 | speed count / ptr | 3 f32 (Vanilla) / 5 f32 (Extended) per entry, e.g. station `[-99999, 8, 10000, -1, -1]` |
+| +0x8C | animations | Vanilla: 9 inline i32 (stopped, starting, running, stopping, hold…); Extended: count + ptr |
+| +0xD4…+0xDC | water-spline flag + L/R `spl` | |
+| Sext +0x20 | char* auto group | auto start/mid/end selection |
+| Sext +0x30/+0x34 | entry / exit wide | wide-track rides |
+| Sext +0x58…+0x84 | 6 × (count, char**) | group is-at / must-have / must-not-be at entry / exit |
+| Wext +0x00 / +0x08 | splitter half / rotator type | Splitting coaster, rotating tower |
+
+**Bank.** The enum is the **roll in 45° steps, positive = banked right**
+(right rail lower): 0 flat, 1 right 45°, 2 right 90°, 3 right 135°, 4
+inverted, 5 left 135°, 6 left 90°, 7 left 45°. Measured on the rail
+splines of all 3 805 sections. rct3-importer's names (`Half_Left = 1`, …)
+are **mirrored** left/right.
+
+**Slope** checks out as named: measured pitch 27° (medium, 2 height
+units per tile) or 19° on diagonal pieces, 63° / 54° (steep), 90°.
+
+### 15.3 SceneryItem (`sid`) — footprint
+
+The subset a ride needs (full struct: rerct3 `scenery-item.ts`):
+`+0x08 u16 position type` (0 for track: footprint-centred),
+`+0x10/+0x14 squares x/z`, `+0x18 ptr cells[x·z]` (20 B: flags, height
+adjust, height span, ·, direction type), `+0x1C f32[3] position`,
+`+0x28 f32[3] size` (metres), `+0x3C cost`, `+0x48 type` (18 = ride track),
+`+0x4C char* supports` (support style, e.g. `ts1`), `+0x50/+0x54 svd count/refs`,
+`+0x8C u32[3] default colours`.
+
+### 15.4 Piece frame, placement and the connection rules
+
+**Local frame.** A piece is modelled centred on its footprint
+(`squares × 4` units) and travels along **local −X**. The rail spline
+mid-points give the joints: the flat straight goes from (2, 1.25, 0) to
+(−2, 1.25, 0), the 2×2 `tightcurve` from (4, 1.25, 2) to (−2, 1.25, −4).
+The rail height above the piece's HEIGHT level is a per-set constant
+(1.25 on Track20, 0.13 on the monster trucks…). Gauge is 1.45 on Track20.
+
+**Placement.** A placed piece (`.trk` record, park save) stores its
+footprint's min-corner tile `(X, Z)`, a height step `H` and a quarter-turn
+`D`. Its world transform is
+
+```
+squares (sx, sz) swapped when D is odd
+centre = ((X + sx/2)·4, H, (Z + sz/2)·4)
+a      = -(D + 2)·90°            x' = x·cos a − z·sin a,  z' = x·sin a + z·cos a
+```
+
+which is rerct3's `SceneryItem_InitRotationMatrix` (`(dir+2)·π·−0.5`).
+Verified exactly: with it, every joint of every closed circuit of the 208
+shipped designs meets its neighbour (≤ 0.2 units, the MonsterTrucks
+splines are authored that loosely).
+
+**Reversal.** A piece may be driven backwards: the train enters at its exit
+joint. The file does **not** store this. It falls out of the geometry,
+and 30–45 % of a typical layout is reversed: every down slope (`medslope`
+backwards), every right turn of a symmetric curve (`tightcurve`
+backwards). Driving backwards maps
+`slope: Up ↔ Down` (1↔2, 3↔4, 5↔6) and `bank: b → (8 − b) mod 8`.
+
+**What may follow a piece** — rules that hold on the shipped designs
+(`scripts/rct3_track.py check`):
+
+1. **Same (slope, bank)** on both sides of the joint, in travel direction:
+   `out(A) == in(B)`, where for a forward piece out = exit, in = entry,
+   and for a reversed one the reversal mapping applies. So after a
+   `straight2medslope` (out = MediumUp/Flat) only pieces entering
+   MediumUp/Flat fit: `medslope`, `medslope2straight`,
+   `medslope2steepslope`, `medslopetightcurveleft`, the chain versions…,
+   or any piece whose *exit* is MediumDown/Flat driven backwards. To turn
+   on a slope you need a `medslope…curve` piece. On the flat you cannot
+   bank without a `straight2tilt…` transition. Bank and slope transitions
+   are separate pieces, and the joint state is exactly (slope, bank).
+2. **Grid heading**: joints are either axis-aligned or on a 45° diagonal
+   (`45*` pieces, reached through `loosecurve`s). A diagonal joint only
+   meets a diagonal one. The quarter turns D cover the rest.
+3. **ForwardOnly** pieces (most stations, block brakes, some specials) are
+   meant to be driven forwards only. The shipped designs break this 7 times,
+   always with a station or a tower cap as the start piece, so it is a
+   building-UI rule rather than a hard one.
+4. **Groups**: entry/exit track groups and the Soaked/Wild
+   is-at / must-have / must-not-be lists constrain special sequences
+   (lift tops, tower bases, slide ends).
+5. The piece must be in the ride's `trr` section list (§15.5).
+
+Result on the 208 `Assets/Coaster Designs/*.trk`: 179 closed circuits fully
+connected, 22 open layouts (slides, shuttles, launchers) with exactly the
+one expected gap, the 3 Splitting-coaster designs (two parallel tracks)
+not handled; 14 506 / 15 014 joints connected overall, and only 12
+connected joints outside rules 1–3 (the 7 ForwardOnly starts above + 5
+white-water-rapids joints whose water splines meander off the grid
+heading).
+
+### 15.5 TrackedRide (`trr`)
+
+Vanilla `TrackedRide_V` = `Attraction_V` (56 B) + `Ride_V` (24 B) +
+`TrackedRide_Common` (300 B). Soaked/Wild rides (most of the retail set,
+`WoodenRC` included) start directly with Common, whose first u32 is then
+`0xFFFFFFFF`, followed by an extension. Common, by **0-based** u32 slot (the
+`// 10`, `// 20` comments in trackedride.h count from 1, and reading them as
+0-based shifts everything after `lift_car` by one):
+
+| slot | field | | slot | field |
+|---|---|---|---|---|
+| 0 | section count (V) / 0xFFFFFFFF | | 41–43 | upkeep per train / car / station |
+| 1 | `tks*[]` the ride's pieces | | 44 | car rotation step |
+| 2, 3 | train name count, `char*[]` | | 47 | loop not allowed |
+| 4 | char* cable lift | | 51 | cost per 4 height units |
+| 9 | char* lift car | | 52 | char* track path (Vanilla) |
+| 14 | char* station name (platform style) | | 53–56 | other top/mid, tower top/mid `tks` |
+| 15, 16 | platform height over track, only on water | | 57 | auto complete |
+| 18–20 | start preset, start possibilities, blocks possible | | 60, 61 | chain speed min / max |
+| 21 | station roll speed | | 64, 65 | section-cost count, `{char* name; u32 cost}[]` |
+| 23, 25 | launched / chain speed preset | | 66, 67 | launched speed min / max |
+| 31 | constant speed preset (< 0 = none) | | 69–72 | track, track-big, car, car-swing profile `spl` |
+
+Soaked/Wild extension (after the 300 B): `+0x04` section count, `+0x1C/+0x20`
+group-definition count / arrays (`{u32 n; {flags, char* group | tks ref}×2 [n]}`,
+the auto start/mid/end rules), `+0x3C/+0x40` track-path count / `char*[]`.
+
+E.g. `WoodenRC`: track path `../Track20/Track20`, 85 pieces, trains
+`WoodenCoaster, WagonCoaster, 6PeepWoodenRC, …`, station `Wooden`, chain
+speed 4 m/s (2.24–6.26), upkeep 1100/300/1000.
+
+### 15.6 Output of `--types track`
+
+`<set>.tracks.json`: per section — name, version, special (+name),
+direction, flags (+names), `entry`/`exit` `{slope, slope_name, bank,
+bank_name, curve, group, wide}`, groups, speeds, animations, spline symbols,
+**`geometry`** (length + entry/exit `{pos, dir, up, yaw, pitch, roll,
+gauge}` measured on the rails, local frame) and the **`sid`** (squares,
+size, cost, supports, svds, cells); then every referenced spline (nodes +
+lengths). `<ride>.ride.json`: the §15.5 fields, the piece list and costs,
+group definitions and the profile splines. `scripts/rct3_track.py`
+implements §15.4 on top of these files.

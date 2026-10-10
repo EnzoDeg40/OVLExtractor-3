@@ -44,6 +44,10 @@ std::string resolve_at(const OvlParser& parser, std::uint32_t slot) {
 
 }  // namespace
 
+std::string resolved_symbol_at(const OvlParser& parser, std::uint32_t slot) {
+    return resolve_at(parser, slot);
+}
+
 std::string linked_symbol(const OvlParser& parser, OvlSide side,
                           std::size_t lf_index, bool keep_tag) {
     const auto& lf = parser.side(side).linkedfiles[lf_index];

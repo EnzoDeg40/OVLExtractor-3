@@ -298,6 +298,38 @@ signs bind the runtime advert placeholder `UseAdTexture:ftx`; recolorable
 textures keep their mask colours.
 
 
+### 5.5 TrackExtractor — `trr` / `tks` / `spl` / `sid` → JSON
+
+The ride-logic path (format docs §15). For an OVL pair it writes:
+
+- `<set>.tracks.json` for a track set (`Tracks/Coasters/Track20`…): every
+  piece with its connection state (slope / bank / curve / groups at entry
+  and exit), flags, special type, speeds, animations, the `sid` footprint +
+  svd names, and the entry / exit **poses measured on the rail splines**,
+  plus those splines;
+- `<ride>.ride.json` for a ride (`Tracks/Coasters/WoodenRC`…): its piece
+  list and costs, trains, station/lift names, speed presets, upkeep, group
+  definitions, the relative path of the track set, the profile splines.
+
+```bash
+# every ride and track set of the game (≈4 s):
+find "$ASSETS/Tracks" "$ASSETS/tracks" -name '*.common.ovl' ! -name '*_data.*' ! -name '*_Textures.*' |
+  while read f; do ovlextract -t track -o out/track "$f"; done
+```
+
+`scripts/rct3_track.py` (stdlib only) builds on these files:
+
+```bash
+python3 scripts/rct3_track.py next  out/track WoodenRC straight2medslope   # what may follow
+python3 scripts/rct3_track.py show  out/track ride.trk                     # pieces, travel order, reversal
+python3 scripts/rct3_track.py check out/track "$ASSETS/Coaster Designs"/*.trk
+```
+
+and exposes `Catalog`, `piece_transform`, `can_follow`, `successors`,
+`next_placement` (grid placement that attaches a piece to a joint) for
+other tools. `scripts/trk_to_gltf.py --track-json out/track` uses the exact
+footprints.
+
 ## 6. Cross-OVL texture resolution
 
 A `shs` mesh and the `:ftx` it references usually live in **different**
