@@ -223,6 +223,37 @@ bool read_bone_animation(const OvlParser& parser, OvlSide side,
     return true;
 }
 
+std::string read_text(const OvlParser& parser, OvlSide side, std::size_t lf_index) {
+    const auto& lf = parser.side(side).linkedfiles[lf_index];
+    auto r = open_at(parser, lf.loaderreference.datapointer);
+    if (!r) return {};
+    std::string out;
+    for (int i = 0; i < 4096; ++i) {
+        std::uint32_t c = r->read_u16();
+        if (c == 0) break;
+        if (c >= 0xD800 && c < 0xDC00) {   // surrogate pair
+            std::uint32_t lo = r->read_u16();
+            c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00);
+        }
+        if (c < 0x80) {
+            out += static_cast<char>(c);
+        } else if (c < 0x800) {
+            out += static_cast<char>(0xC0 | (c >> 6));
+            out += static_cast<char>(0x80 | (c & 0x3F));
+        } else if (c < 0x10000) {
+            out += static_cast<char>(0xE0 | (c >> 12));
+            out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (c & 0x3F));
+        } else {
+            out += static_cast<char>(0xF0 | (c >> 18));
+            out += static_cast<char>(0x80 | ((c >> 12) & 0x3F));
+            out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (c & 0x3F));
+        }
+    }
+    return out;
+}
+
 // SceneryItemVisual (svd), at datapointer:
 //   +0x00 u32 flags  +0x04 u32  +0x08 f32 (1.0)  +0x0C f32 (1.0)  +0x10 u32
 //   +0x14 u32 LODCount   +0x18 ptr → LODCount × ptr → SceneryItemVisualLOD

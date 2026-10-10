@@ -267,7 +267,9 @@ OVL pair:
    `ban` for skinned LODs.
 4. Write `<svd>.glb`, plus `<svd>_<mesh>.glb` for each other LOD with
    `--all-lods`, and the `<svd>.json` manifest (LODs, distances, counts,
-   animations, materials, texture sources, unresolved textures).
+   animations, materials, texture sources, unresolved textures, and the shop
+   record — display name, description, items sold — from the `sta`/`sat`
+   found in the pair or, by svd name, through the index).
 
 Meshes that no `svd` references are written standalone as `<mesh>.glb`.
 Format details of the mapping: format docs §14.

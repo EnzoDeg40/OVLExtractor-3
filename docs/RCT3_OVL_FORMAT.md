@@ -1048,7 +1048,7 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 | `txs` specular/reflection | Alpha is solved (ftx alpha plane §3.5 + txs class). Still approximate: `*Specular*` → glTF roughness 0.5, `*Chrome*` / `*Reflection*` → metallic 0.8. The environment maps they sample (`chrome:ftx`, `two:ftx`) are not in any OVL — presumably built into the engine — so chrome parts export untextured. |
 | Recolor | Recolorable ftx export with their blue/magenta/yellow mask ramps (§3.8). Applying player/default colours needs the item's default colours (probably in `sid`). |
 | `UseAdTexture:ftx` | Placeholder the generic stall signs bind; the game substitutes the chosen advert at runtime. Exported untextured. |
-| `svd` → `sid` / `sta` metadata | Stall display name/description (`…Name:txt`), sold items (`cid`), footprint and cost live in `sta`/`sid` (§13.4); not yet surfaced in the glTF manifest. |
+| `sid` / `sta` gameplay fields | Name, description and sold items are surfaced (§13.4). Prices, footprint, default colours (for recolor) and the `sid` placement data are not decoded yet. |
 | Animated ftx | Only frame 0 is decoded (§3.9). |
 | OVL header v6 | Currently parser warns and continues; some Wild! / Soaked! OVLs may be affected. |
 | Dice vertical stretch | Minor cosmetic question, not investigated. |
@@ -1203,6 +1203,28 @@ the last LOD samples a shared low-detail atlas
 (`VanillaShopsUltraLowPage01:ftx`). `distance` is the far switch distance in
 metres.
 
+#### Shop metadata: `sta` (Stall) / `sat` (SpecialAttraction) and `txt`
+
+A shop's gameplay record is a `sta` (stalls) or `sat` (toilets, ATM, first
+aid, information kiosk…). Only 4 stalls ship it in their own OVL pair; the
+rest live in the theme's `Style/<Theme>/Style.unique.ovl`, **named after the
+svd** (`HotDogStall:svd` ↔ `HotDogStall:sta`). Its symbol resolves are the
+useful part:
+
+| resolve | meaning | example (IceCream:sta) |
+|---|---|---|
+| `…Name:txt` / `…Description:txt` | display name / description | "Ice Cream" / "A stall selling various flavors of ice cream." |
+| `…:cid` (×n) | carried items sold | `IceCream`, `IceCreamDouble`, `IceCreamChoc`, `IceCreamChocDouble` |
+| `…:sid` | the scenery item placed in the park | `IceCreamStall:sid` |
+| `:gsi`, `:spl` | icon and (empty-named) spline slots | |
+
+`txt` resources live in `gui/<Language>.common.ovl` (English, French,
+German…): the datapointer holds a **null-terminated UTF-16LE** string.
+`--types scenery` writes the name, description, `sid` and items into the
+manifest's `shops` array and the name into the glTF scene `extras.name`
+(66 of the 71 shop/stall/utility visuals resolve; the 5 restaurants have no
+`sta`/`sat`).
+
 `sid` (`SceneryItem`) is large (~50 fields): 64 placement flags, `size` class,
 `xsquares`/`ysquares`, world `xpos/ypos/zpos` + `xsize/ysize/zsize`, `cost`,
 `refund`, `type` (see the 47 `TypeNames`: tree, fence, ride track, stall …),
@@ -1247,12 +1269,13 @@ self-contained glTF 2.0 binary per item:
 | images | ftx (§3) / tex (§4) decoded and embedded as PNG — opaque copy for opaque materials, RGBA copy (alpha plane) for MASK/BLEND |
 | skin | bsh bone table (§8.6): joints = bones, hierarchy from `parent`, TRS from `local`, IBM = inverse(`world`) |
 | animations | one per `ban` on the LOD, tracks matched by bone name; translations Z-mirrored, axis-angle → quaternion with `(-x,-y,z)` axis, hemisphere-continuous, `LINEAR` |
-| scene `extras` | `{rct3_svd, lod, lod_distance}` |
+| scene `extras` | `{rct3_svd, lod, lod_distance, name}` (name from the shop's `txt`, §13.4) |
 
 The most detailed LOD (most triangles) goes to `<svd>.glb`; `--all-lods`
 adds `<svd>_<mesh>.glb` for the others. A `<svd>.json` manifest lists every
 LOD (mesh, type, distance, vertex/triangle/bone counts, animations), the
-materials with their alpha mode and the OVL each texture came from, and any
+materials with their alpha mode and the OVL each texture came from, the shop
+record (`sta`/`sat`: display name, description, sold items, `sid`) and any
 unresolved texture.
 
 Validation (Oct 2026): every `ShopsAndStalls`, `Resturants` and `Utilities`

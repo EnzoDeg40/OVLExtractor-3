@@ -104,6 +104,11 @@ bool read_bone_animation(const OvlParser& parser, OvlSide side,
                          std::size_t lf_index, BoneAnimation& out,
                          std::string& err);
 
+// A `txt` resource: null-terminated UTF-16LE at the datapointer, returned as
+// UTF-8 ("" on failure). Display names and descriptions live in
+// gui/<Language>.common.ovl.
+std::string read_text(const OvlParser& parser, OvlSide side, std::size_t lf_index);
+
 bool read_scenery_visual(const OvlParser& parser, OvlSide side,
                          std::size_t lf_index, SceneryVisual& out,
                          std::string& err);

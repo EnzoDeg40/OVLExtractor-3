@@ -151,38 +151,68 @@ struct DecodedTex {
     std::string               source;   // OVL it came from
 };
 
-class TextureSource {
+// Finds linked files by symbol — in the OVL pair being extracted first, then
+// anywhere in the install through the global index — and decodes textures
+// and texts from them, with per-extract caches.
+class AssetSource {
 public:
-    TextureSource(const OvlParser& local, const TextureIndex* index)
+    AssetSource(const OvlParser& local, const TextureIndex* index)
         : local_(local), index_(index) {}
 
-    const DecodedTex& get(const std::string& symbol_with_tag) {
+    const DecodedTex& texture(const std::string& symbol_with_tag) {
         std::string key = lower(symbol_with_tag);
-        auto it = cache_.find(key);
-        if (it != cache_.end()) return it->second;
-        DecodedTex& t = cache_[key];
-        if (auto ref = find_linked(local_, symbol_with_tag)) {
-            t.ok = TextureExtractor::decode_linked_bgra(local_, ref->side, ref->index, t.w, t.h,
+        auto it = textures_.find(key);
+        if (it != textures_.end()) return it->second;
+        DecodedTex& t = textures_[key];
+        locate(symbol_with_tag, [&](const OvlParser& p, const LinkedRef& ref, const std::string& where) {
+            t.ok = TextureExtractor::decode_linked_bgra(p, ref.side, ref.index, t.w, t.h,
                                                         t.bgra, &t.has_alpha, &t.recolorable);
-            t.source = std::filesystem::path(local_.side(ref->side).ovlname).filename().string();
-            if (t.ok) return t;
-        }
-        if (index_ && !index_->assets_root().empty()) {
-            if (const auto* e = index_->lookup(key)) {
-                auto path = index_->resolve_ovl_path(*e);
-                if (OvlParser* p = parser_for(path)) {
-                    if (auto ref = find_linked(*p, symbol_with_tag)) {
-                        t.ok = TextureExtractor::decode_linked_bgra(*p, ref->side, ref->index, t.w, t.h,
-                                                                    t.bgra, &t.has_alpha, &t.recolorable);
-                        t.source = e->ovl;
-                    }
-                }
-            }
-        }
+            t.source = where;
+            return t.ok;
+        });
         return t;
     }
 
+    // Most stalls' `sta` lives in the theme's Style OVL, named after the svd
+    // ("HotDogStall:sta"); look it up through the index.
+    template <class ReadFn>
+    bool find_and_read(const std::string& symbol_with_tag, ReadFn&& fn) {
+        bool ok = false;
+        locate(symbol_with_tag, [&](const OvlParser& p, const LinkedRef& ref, const std::string&) {
+            ok = fn(p, ref);
+            return ok;
+        });
+        return ok;
+    }
+
+    // A `txt` resource as UTF-8 ("" if not found).
+    std::string text(const std::string& symbol_with_tag) {
+        std::string key = lower(symbol_with_tag);
+        auto it = texts_.find(key);
+        if (it != texts_.end()) return it->second;
+        std::string& out = texts_[key];
+        locate(symbol_with_tag, [&](const OvlParser& p, const LinkedRef& ref, const std::string&) {
+            out = read_text(p, ref.side, ref.index);
+            return !out.empty();
+        });
+        return out;
+    }
+
 private:
+    template <class Fn>
+    void locate(const std::string& symbol_with_tag, Fn&& fn) {
+        if (auto ref = find_linked(local_, symbol_with_tag)) {
+            auto where = std::filesystem::path(local_.side(ref->side).ovlname).filename().string();
+            if (fn(local_, *ref, where)) return;
+        }
+        if (!index_ || index_->assets_root().empty()) return;
+        const auto* e = index_->lookup(lower(symbol_with_tag));
+        if (!e) return;
+        OvlParser* p = parser_for(index_->resolve_ovl_path(*e));
+        if (!p) return;
+        if (auto ref = find_linked(*p, symbol_with_tag)) fn(*p, *ref, e->ovl);
+    }
+
     OvlParser* parser_for(const std::filesystem::path& path) {
         auto key = path.string();
         auto it = parsers_.find(key);
@@ -200,8 +230,55 @@ private:
     const OvlParser&                                  local_;
     const TextureIndex*                               index_;
     std::map<std::string, std::unique_ptr<OvlParser>> parsers_;
-    std::map<std::string, DecodedTex>                 cache_;
+    std::map<std::string, DecodedTex>                 textures_;
+    std::map<std::string, std::string>                texts_;
 };
+
+// Shop metadata from the pair's `sta` (Stall) or `sat` (SpecialAttraction:
+// toilets, ATM, first aid): its symbol resolves name the display name and
+// description texts, the items sold (`cid`) and the scenery item (`sid`).
+struct ShopInfo {
+    std::string              symbol;      // "IceCream:sta"
+    std::string              name, description;
+    std::vector<std::string> items;       // "IceCream:cid", …
+    std::string              sid;
+};
+
+ShopInfo read_shop(const OvlParser& parser, OvlSide side, std::size_t i, AssetSource& assets) {
+    const auto& d = parser.side(side);
+    const auto& lf = d.linkedfiles[i];
+    ShopInfo shop;
+    shop.symbol = linked_symbol(parser, side, i, true);
+    for (const auto& sr : d.symbolresolves) {
+        if (sr.loadpointer != lf.loaderreference.internal_offset) continue;
+        std::string sym = parser.string_from_offset(sr.stringpointer);
+        std::string t = tag_of(sym);
+        std::string base = lower(strip_tag(sym));
+        if (t == "txt") {
+            bool desc = base.size() >= 11 && base.compare(base.size() - 11, 11, "description") == 0;
+            (desc ? shop.description : shop.name) = assets.text(sym);
+        } else if (t == "cid") {
+            shop.items.push_back(sym);
+        } else if (t == "sid") {
+            shop.sid = sym;
+        }
+    }
+    return shop;
+}
+
+// Shops declared in the pair itself (a few stalls ship their own `sta`).
+std::vector<ShopInfo> read_shops(const OvlParser& parser, AssetSource& assets) {
+    std::vector<ShopInfo> out;
+    for (std::size_t s = 0; s < (parser.has_unique() ? 2u : 1u); ++s) {
+        auto side = static_cast<OvlSide>(s);
+        const auto& d = parser.side(side);
+        for (std::size_t i = 0; i < d.linkedfiles.size(); ++i) {
+            std::string tag = parser.loader_by_id(d.linkedfiles[i].loaderreference.loadernumber, side).tag;
+            if (tag == "sta" || tag == "sat") out.push_back(read_shop(parser, side, i, assets));
+        }
+    }
+    return out;
+}
 
 // ------------------------------------------------------------ scene builder
 
@@ -218,7 +295,7 @@ TxsClass classify_txs(const std::string& txs_symbol) {
 
 class SceneBuilder {
 public:
-    SceneBuilder(std::string name, TextureSource& tex) : tex_(tex) { sc_.name = std::move(name); }
+    SceneBuilder(std::string name, AssetSource& tex) : tex_(tex) { sc_.name = std::move(name); }
 
     gltf::Scene& scene() { return sc_; }
     const std::set<std::string>& unresolved() const { return unresolved_; }
@@ -339,7 +416,7 @@ private:
         std::string key = lower(ftx) + (with_alpha ? "#rgba" : "");
         auto it = images_.find(key);
         if (it != images_.end()) return it->second;
-        const DecodedTex& t = tex_.get(ftx);
+        const DecodedTex& t = tex_.texture(ftx);
         int id = -1;
         if (t.ok) {
             gltf::Image im;
@@ -370,7 +447,7 @@ private:
         std::string txs_name = strip_tag(txs);
         m.name = strip_tag(ftx) + (txs_name.empty() ? "" : "__" + txs_name);
         TxsClass cls = txs.empty() ? TxsClass::Opaque : classify_txs(txs);
-        const DecodedTex* t = ftx.empty() ? nullptr : &tex_.get(ftx);
+        const DecodedTex* t = ftx.empty() ? nullptr : &tex_.texture(ftx);
         bool alpha = cls != TxsClass::Opaque;
         if (alpha && t && t->ok && !t->has_alpha) alpha = false;   // nothing to cut out
         if (!ftx.empty()) m.image = image(ftx, alpha);
@@ -406,7 +483,7 @@ private:
     }
 
     gltf::Scene                 sc_;
-    TextureSource&              tex_;
+    AssetSource&                tex_;
     std::map<std::string, int>  images_;
     std::map<std::string, int>  materials_;
     std::set<std::string>       unresolved_;
@@ -440,7 +517,8 @@ bool load_shape_by_symbol(const OvlParser& parser, const std::string& sym, Shape
 
 ExtractResult SceneryExtractor::extract(const OvlParser& parser, const ExtractContext& ctx) {
     ExtractResult res{};
-    TextureSource textures(parser, ctx.texture_index);
+    AssetSource textures(parser, ctx.texture_index);
+    const auto shops = read_shops(parser, textures);
     std::set<std::string> used_meshes;   // lowercased "name:tag"
     std::filesystem::create_directories(ctx.output_dir);
 
@@ -472,6 +550,17 @@ ExtractResult SceneryExtractor::extract(const OvlParser& parser, const ExtractCo
                 ctx.log("svd " + linked_symbol(parser, side, i) + ": " + err);
                 ++res.errors;
                 continue;
+            }
+
+            auto svd_shops = shops;
+            if (svd_shops.empty()) {
+                for (const char* tag : {":sta", ":sat"}) {
+                    textures.find_and_read(svd.symbol + tag, [&](const OvlParser& p, const LinkedRef& ref) {
+                        svd_shops.push_back(read_shop(p, ref.side, ref.index, textures));
+                        return true;
+                    });
+                    if (!svd_shops.empty()) break;
+                }
             }
 
             std::vector<LoadedLod> lods;
@@ -518,7 +607,10 @@ ExtractResult SceneryExtractor::extract(const OvlParser& parser, const ExtractCo
                 b.add_shape(lods[k].shape, lods[k].anims);
                 std::ostringstream ex;
                 ex << "{\"rct3_svd\":" << jstr(svd.symbol) << ",\"lod\":" << jstr(lods[k].lod.name)
-                   << ",\"lod_distance\":" << lods[k].lod.distance << "}";
+                   << ",\"lod_distance\":" << lods[k].lod.distance;
+                if (!svd_shops.empty() && !svd_shops[0].name.empty())
+                    ex << ",\"name\":" << jstr(svd_shops[0].name);
+                ex << "}";
                 b.scene().extras_json = ex.str();
                 auto path = ctx.output_dir /
                     (is_best ? base + ".glb" : base + "_" + sanitize(strip_tag(lods[k].lod.mesh_symbol)) + ".glb");
@@ -552,7 +644,17 @@ ExtractResult SceneryExtractor::extract(const OvlParser& parser, const ExtractCo
             j << "  ],\n  \"materials\": [\n";
             for (std::size_t m = 0; m < mat_info.size(); ++m)
                 j << "    " << mat_info[m] << (m + 1 < mat_info.size() ? "," : "") << "\n";
-            j << "  ],\n  \"unresolved_textures\": [";
+            j << "  ],\n  \"shops\": [";
+            for (std::size_t m = 0; m < svd_shops.size(); ++m) {
+                const auto& sh = svd_shops[m];
+                j << (m ? "," : "") << "\n    {\"symbol\": " << jstr(sh.symbol)
+                  << ", \"name\": " << jstr(sh.name) << ", \"description\": " << jstr(sh.description)
+                  << ", \"sid\": " << jstr(sh.sid) << ", \"items\": [";
+                for (std::size_t q = 0; q < sh.items.size(); ++q)
+                    j << (q ? ", " : "") << jstr(sh.items[q]);
+                j << "]}";
+            }
+            j << (svd_shops.empty() ? "" : "\n  ") << "],\n  \"unresolved_textures\": [";
             std::size_t u = 0;
             for (const auto& x : unresolved) j << (u++ ? ", " : "") << jstr(x);
             j << "]\n}\n";
