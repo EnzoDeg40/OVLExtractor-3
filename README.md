@@ -50,6 +50,15 @@ This project addresses both:
   animations for skinned (`bsh` + `ban`) items, plus a JSON manifest of all
   LODs. All 71 shops, stalls, restaurants and utilities (toilets, ATM, first
   aid) export and pass the Khronos glTF validator with 0 errors.
+- ✅ **Ride logic** (`--types track`: `trr`/`tks`/`spl`/`sid`/`rit`/`ric`/`anr`
+  → JSON): every tracked ride (121), track set (79 sets, 3 805 pieces),
+  train (186) and flat ride (86) with 0 errors — piece connection states
+  (slope / bank / curve / groups), rail splines, footprints, train
+  composition, guest / mechanic paths, ratings, entrance limits.
+  `scripts/rct3_track.py` gives the exact placement transform and the
+  "what may follow this piece" rules (validated on the 208 shipped designs
+  and the 42 campaign parks), and `scripts/blender_ride.py` assembles a whole
+  ride (track + station platforms + train). See docs §15–16.
 - ✅ **Static mesh extractor** (`shs`/`bsh` → `.obj` + `.mtl` + `.tga`): full
   multi-material sub-mesh decoding, 99 % success on a 40-OVL random sample.
   Cross-OVL texture binding resolves via the global symbol index built by
@@ -142,6 +151,7 @@ The `input` argument accepts:
 | `--types texture` | `<symbol>.ovltex` (raw block), `<symbol>.json` (metadata), and `<symbol>.tga` (decoded indexed8+palette — all format codes 3–9 supported) |
 | `--types atlas` | `<symbol>.tga` per `gsi`, cropped from parent texture (most parents are `tex` → blocked until `tex` decode lands) |
 | `--types scenery` | `<svd>.glb` (best LOD, textures embedded, skin + animations) + `<svd>.json` manifest per scenery item; `--all-lods` adds the other LODs |
+| `--types track`   | `<set>.tracks.json`, `<ride>.ride.json`, `<train>.train.json`, `<anr>.flatride.json`, `<ovl>.sids.json` / `.splines.json` (docs §15–16) |
 | `--types model`   | `<symbol>.obj` + `<symbol>.mtl` per `shs` static mesh, sub-meshes as `g`/`usemtl` groups; with `--texture-index` the `.mtl` gets `map_Kd` lines, with `--auto-textures` the referenced `.tga` files are pulled in too |
 | `--build-index`   | A JSON file mapping every linked-file symbol (lowercased) to its defining OVL path, side, and loader tag — used for cross-OVL texture lookups |
 
@@ -177,8 +187,9 @@ it falls back to flat colours and needs only the standard library.
 # Prerequisite: extract the coaster's track-piece set with --types model, so
 # that out/models/tracks/coasters/<set>/ exists (e.g. Track20 = wooden coaster).
 
-# The piece set is auto-detected from the .trk's Tracks\Coasters\<set>\ refs.
-python3 scripts/trk_to_gltf.py '[WoodenRC]MR_compact.trk' -o MR_compact.glb
+# The piece set is auto-detected from the .trk's Tracks\Coasters\<set>\ refs;
+# --track-json (output of `ovlextract -t track`) gives the exact footprints.
+python3 scripts/trk_to_gltf.py '[WoodenRC]MR_compact.trk' -o MR_compact.glb --track-json out/track
 #   110 pieces, coaster set = Track20
 #   wrote MR_compact.glb  (110 pieces placed, 22 unique meshes, 4 textures)
 ```
@@ -189,6 +200,16 @@ recentred on the origin and scaled to `--tile-size` metres per tile (default
 `out/models`), `--set NAME`, `--lod HI|ME|LO`, `--textures DIR`,
 `--no-textures`, `--report`. See [docs/TRK_FORMAT.md](docs/TRK_FORMAT.md) for
 the `.trk` layout.
+
+For the full ride with the textured scenery meshes, station platforms and a
+train, and for the piece-connection rules:
+
+```bash
+python3 scripts/rct3_track.py next   out/track WoodenRC straight2medslope   # what may follow
+python3 scripts/rct3_track.py check  out/track "$ASSETS/Coaster Designs"/*.trk
+python3 scripts/rct3_track.py layout out/track ride.trk --glb-dir out/glb --cars 4
+blender -b --python scripts/blender_ride.py -- ride.layout.json out/glb --glb ride.glb --render ride.png
+```
 
 ## Architecture
 

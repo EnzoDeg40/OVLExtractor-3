@@ -1314,7 +1314,7 @@ The layouts below come from rct3-importer's `tracksection.h`,
 mirrored at github.com/chances/rct3-importer) and the rerct3 Ghidra notes
 (`rerct3/research/re/track.md`). Each was checked against the data, and
 corrected where the data disagreed. `ovlextract -t track` decodes every
-`trr`/`tks` of the Complete Edition (99 rides, 101 track sets, 3 805
+`trr`/`tks` of the Complete Edition (121 rides, 79 track sets, 3 805
 sections) with 0 errors.
 
 ### 15.1 Spline (`spl`)
