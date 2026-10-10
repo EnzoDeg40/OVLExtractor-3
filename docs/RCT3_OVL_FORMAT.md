@@ -1596,7 +1596,11 @@ between cells linked by the `sid` connection entries (`+0x34` count,
 approximation: one column per flagged cell, from height 0 to the track
 base over that cell (lowest rail point − the set's rail height), footing +
 middles largest-first + top, coloured with the track triple. No girders, no
-terrain, inverted track not handled.
+terrain, inverted track not handled. Compared in game (FrightNight, LayDown
+coaster, `ts1`): the style, the colour (the track's 3rd channel) and the
+column shape match, but the game puts a column only every 2–3 tiles, so
+the per-cell selection rule (in `TrackPiece_BuildSupports`) is still to be
+found.
 
 ⚠ **The style string is usually at offset 0 of the OVL's string table**, so
 `sid +0x4C` holds a *relocated 0*. Reading it as a null pointer loses it

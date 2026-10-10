@@ -448,7 +448,14 @@ def read_design(path: Path) -> dict | None:
                           "piece": v["TrackPiece"].id if v.get("TrackPiece") else None,
                           "colours": col(v.get("FlexiColourField"))})
     singles = []
+    # in a park save every ride's entrance / exit is a SceneryItemPlacementSingle:
+    # keep the ones owned by this ride's objects
+    tri_all = objs("TrackedRideInstance")
+    tri_id = next(iter(tri_all), None)
+    own = {tri_id} | {r.id for r in (tri.get("RideStationsObj"),) if r}
     for v in objs("SceneryItemPlacementSingle").values():
+        if len(tri_all) > 1 and v.get("Owner") and v["Owner"].id not in own:
+            continue
         d = v["SceneryItemDataField"]
         name, ovl = sid_name(v.get("SIDDatabaseEntry"))
         singles.append({"sid": name, "ovl": ovl, "x": d["POSX"], "z": d["POSZ"], "height": d["HEIGHT"],
