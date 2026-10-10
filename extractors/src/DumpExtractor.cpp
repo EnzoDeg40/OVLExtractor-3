@@ -97,6 +97,22 @@ void dump_side(std::ostream& out, const OvlParser& parser, OvlSide side) {
     }
     out << "\n";
 
+    {
+        std::size_t total = 0;
+        for (const auto& chunks : d.extradata) total += chunks.size();
+        out << "-- Extra data (" << total << " chunk(s), stream at file offset "
+            << hex(static_cast<std::uint32_t>(d.extradata_start)) << ") --\n";
+        for (std::size_t i = 0; i < d.extradata.size(); ++i) {
+            for (std::size_t c = 0; c < d.extradata[i].size(); ++c) {
+                const auto& ch = d.extradata[i][c];
+                out << "  loader ref [" << i << "] chunk " << c
+                    << ": filepos=" << hex(static_cast<std::uint32_t>(ch.position))
+                    << "  size=" << ch.size << "\n";
+            }
+        }
+        out << "\n";
+    }
+
     if (d.hassymbolresolves) {
         out << "-- Symbol resolves (" << d.symbolresolves.size() << ") --\n";
         for (std::size_t i = 0; i < d.symbolresolves.size(); ++i) {

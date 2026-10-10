@@ -82,9 +82,10 @@ of them looping (ambient SFX: water, hums, lava, gears, hydraulics).
 ## 3. TextureExtractor — `ftx/tex/fts/ftt` → `.tga` + `.ovltex` + `.json`
 
 Per §3 of the format doc, all FTX format codes (3–9) share the same
-indexed8 + BGRA palette layout, so a single decode path handles them all.
+indexed8 + BGRA palette layout, so a single decode path handles them all;
+`tex` pages go through the bitmap-table chain instead (§3.1 below).
 
-What the extractor does for each linked file with tag `ftx`, `tex`, `fts`,
+What the extractor does for each linked file with tag `ftx`, `fts`,
 or `ftt`:
 
 1. Locate the data block, read its full size (header + palette + small
@@ -131,14 +132,22 @@ bool TextureExtractor::extract_symbol(const OvlParser&,
 It case-insensitively matches the requested symbol against every
 linkedfile and extracts just that one.
 
-### 3.1 `tex` limitation
+### 3.1 `tex` pages
 
-Despite being accepted by the tag filter, `tex`-wrapper texture decode is
-**not implemented** — the wrapper's pointer chain to actual pixel data is
-not yet RE'd. Running with `--types texture` on a `tex`-heavy OVL produces
-the `.ovltex` raw dump + `.json` sidecar but no `.tga`. See §4 of the
-format doc for the wrapper layout.
+A `tex` symbol is one page of the pair's bitmap table (format docs §4.1):
+`resolve_tex_page` follows the wrapper's `FlicStruct**` to the `flic` loader
+reference, reads the page index from that loader's extra-data record, and
+takes the `FlicHeader` + packed mip chain of that slot from the preceding
+`btbl`'s two records (or, for a version-2 `flic`, the inline per-mip layout
+with its row pitch). Level 0 is decoded — DXT1 / DXT3 / DXT5 blocks or raw
+A8R8G8B8 — and written as `<symbol>.tga` (32-bit BGRA, top-left origin, as
+stored: some pages are authored bottom-up, format docs §4.3). No `.ovltex` /
+`.json` sidecar for `tex`.
 
+Full-install check: 766 of the 783 `tex` symbols decode; the 17 others are
+render targets with no page (`DrawSolidColour`, `GUIRenderer*`, `WaterSurface`
+…) and are logged as skipped. `--verbose` prints the page's size, format, mip
+count and table slot for each.
 
 ## 4. AtlasExtractor — `gsi` + parent `ftx`/`tex` → cropped `.tga`
 
@@ -148,33 +157,75 @@ texture (referenced symbolically through the symbol-resolves table).
 What the extractor does:
 
 1. **Pass 1**: walk both sides of the OVL pair; for every texture loader
-   (`ftx`/`tex`/`fts`/`ftt`), call `decode_ftx_at` to produce a
-   `DecodedTexture { width, height, BGRA pixels }`. Tag `tex` is currently
-   skipped (returns false), see §3.1 above. Store decoded textures in a
-   map keyed by symbol.
+   (`ftx`/`tex`/`fts`/`ftt`), decode it to a `DecodedTexture { width, height,
+   BGRA pixels }` — ftx through `TextureExtractor::decode_ftx_bgra`, tex
+   through `TextureExtractor::decode_tex_bgra` (the bitmap-table chain,
+   §3.1). Store decoded textures in a map keyed by lower-cased symbol
+   (symbols are case-insensitive: `Gui2LargeIcons2` and `GUI2LargeIcons2`
+   are the same page).
 2. **Pass 2**: walk both sides for `gsi` linked files. For each:
    - Read the texture-ref slot via `symbolresolves` (`gsi+4` then `gsi+0`).
    - Read the four-u32 rectangle at the coord-block offset (gsi+8).
-   - Look up the parent texture in the map; skip with a log line if absent
-     (this is the common case for `tex`-backed atlases).
+   - Look up the parent texture in the map; skip with a log line if absent.
    - Crop the rectangle (clamped to the texture's bounds) and write
-     `<gsi_symbol>.tga`.
+     `<gsi_symbol>.tga`. A degenerate rect (zero area, a few of `Main`'s)
+     is skipped, not counted as an error.
 
-`AtlasExtractor` decodes ftx through the shared `TextureExtractor::decode_ftx_bgra`,
-so sprite transparency comes from the ftx alpha plane (the old
-"index 0 = transparent" chroma-key was a stand-in for it and is gone).
+Sprite transparency comes from the ftx alpha plane or the DXT3 / A8R8G8B8
+alpha of the page. Sprites are cropped from the page as stored, so the
+career-map images of `gui/FrontScreen` come out bottom-up like their page
+(format docs §4.3).
 
 Output: one `<sprite>.tga` per resolvable `gsi` linked file.
 
 CLI:
 ```bash
-ovlextract --types atlas --output-dir /tmp/sprites Extras.common.ovl
+ovlextract --types atlas --output-dir /tmp/sprites Main.common.ovl
 ```
 
-**Practical yield is low** until `tex` is decoded. Every atlas in the
-shipping game uses `tex`, so the extractor mostly logs `gsi: texture 'X:tex'
-not decoded` and produces a handful of sprites from rare `ftx`-backed
-atlases.
+Full-install check: 3 651 sprites from the 3 679 `gsi` of the game (17 pairs  0 errors); the 28 left are 20 degenerate rects and gsi whose page is `RCT1_icons` (defined by no OVL) or a render target.
+
+### 4.1 FontExtractor — `fct` → `.font.json` + glyph page
+
+Format docs §17. For each `fct` (the six fonts of `Main` and the four
+resolution-scaled ones of each `gui/<800|1024|1280>/Resolution`):
+
+1. Read the 112-byte font: face name, weight, line gap / ascent / descent
+   (em), glyph count, the code-point table flag, the glyph and code tables.
+2. Decode its `<name>:tex` page through the bitmap-table chain and flip it
+   upright (font pages are stored bottom-up) → `<name>.tga`.
+3. Write `<name>.font.json`: the face, metrics, `page`, `page_size` and a
+   `glyphs` array with, per glyph, `code`, `advance_em`, `spacing_em`,
+   `offset` (x right of the pen, y up from the baseline to the bitmap's
+   bottom edge, pixels), and for the glyphs the page pre-renders, `uv`
+   (stored orientation) and `rect` (upright pixel rect in the `.tga`).
+
+To draw a string: `x += advance_em × size` per glyph, each bitmap at
+`(pen_x + offset_x, baseline − height − offset_y)`; the size is the font's
+`<name>:flt` symbol (Tiny 9, Small 12, Medium 16, Large 21).
+
+```bash
+ovlextract --types font -o /tmp/fonts gui/1024/Resolution.common.ovl
+# → GUIFontScaledTiny/Small/Medium/Large.font.json + .tga (Tahoma 9, Verdana 12, Arial 16, Arial bold 21)
+```
+
+All 18 fonts of the install decode (`LucidaConsole` keeps uv only: its page
+is declared by no OVL).
+
+### 4.2 TextExtractor — `txt` → `.txt.json`
+
+Format docs §18. Every `txt` of the pair (null-terminated UTF-16LE) is read
+through `read_text` and written as UTF-8 into one `<ovl>.txt.json`,
+`{"Symbol": "string", …}` sorted by symbol.
+
+```bash
+ovlextract --types text -o /tmp/text gui/French.common.ovl
+# → French.txt.json (12 388 strings)
+```
+
+The 16 pairs that carry text (the three language files, `Main`, the
+`Style` packs, the content packs, the staff-uniform icons) give 38 726
+strings, 0 errors.
 
 
 ## 5. ModelExtractor — `shs`/`mms` → `.obj` + `.mtl`
@@ -439,7 +490,7 @@ ovlextract [options] <input>
 | `--texture-index FILE` | Load the JSON map from a previous `--build-index` run (enables `map_Kd` emission) |
 | `--assets-root DIR` | Root directory the texture index was built against (required with `--auto-textures`) |
 | `--auto-textures` | When extracting models with `--texture-index`, also extract each referenced texture from its source OVL |
-| `-t,--types TYPE` | Resource type to extract (`sound`, `texture`, `atlas`, `model`, `scenery`, `dump`, `all`). Repeatable. |
+| `-t,--types TYPE` | Resource type to extract (`sound`, `texture`, `atlas`, `font`, `text`, `model`, `scenery`, `track`, `dump`, `all`). Repeatable. |
 | `--all-lods` | With `scenery`: also write a `.glb` per lower LOD |
 | `-o,--output-dir DIR` | Output directory (default: `./extracted/<basename>/` for single file, `./extracted/` for directory input) |
 | `--overwrite` | Overwrite existing output files (default skip) |
@@ -452,8 +503,10 @@ ovlextract [options] <input>
 |---|---|
 | `--dump` | `OverlayDump_<name>_common.txt` and `_unique.txt` |
 | `--types sound` | `<symbol>.wav` per `snd` loader (mono or stereo PCM, optional `smpl` loop chunk) |
-| `--types texture` | `<symbol>.ovltex` (raw block) + `<symbol>.json` (metadata) + `<symbol>.tga` if decode succeeds |
-| `--types atlas` | `<symbol>.tga` per resolvable `gsi` (parent must be `ftx`, not `tex`) |
+| `--types texture` | ftx: `<symbol>.ovltex` (raw block) + `<symbol>.json` (metadata) + `<symbol>.tga` / `_rgba.tga`; tex: `<symbol>.tga` (page level 0) |
+| `--types atlas` | `<symbol>.tga` per resolvable `gsi` (ftx- or tex-backed) |
+| `--types font` | `<fct>.font.json` (face, metrics, glyph table) + `<fct>.tga` (glyph page, upright) |
+| `--types text` | `<ovl>.txt.json` — every `txt` string of the pair, UTF-8 |
 | `--types model` | `<symbol>.obj` + `<symbol>.mtl` per `shs`/`bsh`, `<symbol>.anim.json` per `ban`. With `--auto-textures`, also each referenced `<ftx>.tga` / `_rgba.tga` |
 | `--types scenery` | `<svd>.glb` (best LOD, textures embedded, skin + animations) + `<svd>.json` manifest per `svd`; `<mesh>.glb` for orphan meshes |
 | `--build-index` | One JSON file mapping every lowercased symbol → `{symbol, ovl, side, tag}` |

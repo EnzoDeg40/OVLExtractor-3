@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Carte de l'extraction OVL</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div>
+      <p class="eyebrow">RollerCoaster Tycoon 3 · fichiers <code>.ovl</code></p>
+      <h1>Carte de l'extraction</h1>
+      <p class="lede">Chaque paire d'OVL de l'installation, et pour chacune de ses ressources, ce que l'extracteur en tire aujourd'hui : un fichier standard, une sortie partielle, une structure seulement documentée, ou rien.</p>
+    </div>
+    <div class="masthead-side">
+      <dl class="facts" id="facts"></dl>
+    </div>
+  </header>
+
+  <section aria-labelledby="h-bilan">
+    <h2 id="h-bilan">Bilan</h2>
+    <div class="figures" id="figures"></div>
+    <div class="stack" id="stack" role="img"></div>
+    <div class="scroll-x">
+      <table class="legend" id="legend">
+        <thead><tr><th>État</th><th>Ce que cela veut dire</th><th class="num">Ressources</th><th class="num">Part</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-carte">
+    <div class="section-head">
+      <h2 id="h-carte">L'installation, une case par paire d'OVL</h2>
+      <p class="hint" id="map-scale"></p>
+    </div>
+    <div class="filters" id="filters" role="group" aria-label="Filtrer la carte"></div>
+    <div class="map-wrap" id="map-wrap">
+      <div class="map-gutter" id="map-gutter" aria-hidden="true"></div>
+      <div class="map-stage" id="map-stage">
+        <canvas id="map" aria-label="Carte des paires d'OVL"></canvas>
+        <div class="map-labels" id="map-labels" aria-hidden="true"></div>
+        <div class="tip" id="tip" hidden></div>
+      </div>
+    </div>
+    <p class="readout" id="readout">Survolez la carte pour lire un fichier ; cliquez pour l'ouvrir dans la liste.</p>
+  </section>
+
+  <section aria-labelledby="h-types">
+    <div class="section-head">
+      <h2 id="h-types">Types de ressources</h2>
+      <p class="hint">Cliquer une ligne isole sur la carte les fichiers qui en contiennent.</p>
+    </div>
+    <div class="scroll-x">
+      <table class="grid tags" id="tags">
+        <thead><tr>
+          <th><button type="button" data-sort="tag">Tag</button></th>
+          <th>Nom</th>
+          <th><button type="button" data-sort="state">État</button></th>
+          <th class="num"><button type="button" data-sort="n">Ressources</button></th>
+          <th class="num"><button type="button" data-sort="files">Fichiers</button></th>
+          <th>Source</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-dossiers">
+    <div class="section-head">
+      <h2 id="h-dossiers">Dossiers et fichiers</h2>
+      <label class="search">
+        <span class="sr">Chercher un fichier</span>
+        <input type="search" id="pair-filter" placeholder="Chercher : Dice, Track20, IceCream…" autocomplete="off">
+      </label>
+    </div>
+    <p class="hint" id="search-hint"></p>
+    <div class="scroll-x">
+      <table class="grid tree" id="tree">
+        <thead><tr><th>Dossier ou paire</th><th class="num">Paires</th><th class="num">Ressources</th><th class="num">Octets</th><th>Composition</th><th class="num">Non traité</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer class="colophon">
+    <h2>Mettre cette carte à jour</h2>
+    <p>La page ne contient aucune connaissance en dur. <code>site/build.py</code> inventorie chaque paire d'OVL avec <code>ovlextract --list-loaders</code>, puis décide de l'état de chaque type de ressource à partir de trois sources : le registre des loaders de <code>docs/RCT3_OVL_FORMAT.md</code> (§2) et les titres de section qui nomment un tag, le code de <code>extractors/src/</code> (un tag cité dans un extracteur est un tag qu'il traite), et <code>site/annotations.json</code> pour ce que le registre ne dit pas encore.</p>
+    <p>Après une avancée : la noter dans la doc ou l'écrire dans un extracteur, puis relancer</p>
+    <pre><code>python3 site/build.py "$ASSETS"      # rescanne l'installation (≈ 10 s)
+python3 site/build.py --cached       # docs et code seulement</code></pre>
+    <p class="hint" id="stamp"></p>
+  </footer>
+
+</div>
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

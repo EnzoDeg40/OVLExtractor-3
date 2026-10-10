@@ -194,44 +194,44 @@ bool sane_dimensions(std::uint32_t w, std::uint32_t h) {
     return w > 0 && w <= 8192 && h > 0 && h <= 8192;
 }
 
-// Trailing-section header for `tex` loaders. The OVL parser exposes the file
-// position right after its parsed structures as `OvlData.dataend`. For OVL
-// pairs that hold a tex linkedfile (typically on the unique side), the
-// COMMON side's trailing data is the actual pixel payload. The header sits
-// exactly at common's dataend; pixel data starts 0x30 bytes later.
+// A `tex` page, located through the tex → flic → btbl chain (docs §4.1).
 //
-// Layout (relative to common's dataend):
-//   +0x00 .. +0x0F  u32×4   relocation offsets (copy of parsed relocations)
-//   +0x10           u32     0x18 (constant — block 3 size in bytes?)
-//   +0x14 .. +0x1B  zero
-//   +0x1C           u32     format_code  (D3D format: 0x12 DXT1, 0x13 DXT3,
-//                           0x14 DXT5 — see docs §4.4). +0x1C..+0x28 is exactly
-//                           rct3dump's FlicHeader {Format,Width,Height,Mipcount}.
-//   +0x20           u32     width
-//   +0x24           u32     height
-//   +0x28           u32     mipmap_count
-//   +0x2C           u32     total_pixel_data_size (DXT-compressed)
-//   +0x30           bytes   first mip level (largest), then each successive
-//                           level concatenated, DXT1/DXT3/DXT5-compressed.
+// The `tex` wrapper (TextureStruct, 96 B) carries at +0x34 a `FlicStruct**`:
+// the internal offset of the pointer slot that precedes a FlicStruct inside
+// the `btbl` block ({unk, count} then count × {ptr, FlicStruct{Texture*,
+// 1, 1.0f}}). The FlicStruct is the data pointer of a `flic` loader
+// reference, and that loader's single extra-data chunk is a u32 index into the
+// bitmap table — the `btbl` loader that precedes it in loader order. The
+// btbl's data block is BmpTbl{unk, count} followed by the count pointer +
+// FlicStruct pairs; its first extra chunk is {0, 0, count × FlicHeader{format,
+// width, height, mips}}, its second chunk the count payloads back to back,
+// each a contiguous mip chain sized from its header.
 //
-// Mipmap layout uses the standard rule: each level is half the width and half
-// the height of the previous, with each 4×4 block padded to one full block
-// (8 B DXT1, 16 B DXT3/5) even when the level is smaller than 4×4.
-struct TexTrailingHeader {
-    std::uint32_t format_code;
-    std::uint32_t width;
-    std::uint32_t height;
-    std::uint32_t mipmap_count;
-    std::uint32_t data_size;
-    std::uint64_t pixel_data_pos;  // absolute file offset
+// `flic` loaders of version 2 carry their pixels inline instead: one chunk
+// holding a FlicHeader, then per level a FlicMipHeader{w, h, pitch, blocks}
+// and pitch × blocks bytes (rct3dump's ReadTexture).
+struct TexPage {
+    std::uint32_t format_code = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t mipmap_count = 0;
+    OvlSide       side = OvlSide::Common;  // side whose file holds the bytes
+    std::uint64_t mip0_pos = 0;            // absolute file offset of level 0
+    std::uint32_t mip0_size = 0;           // bytes of level 0 as stored
+    std::uint32_t pitch = 0;               // stored row stride (0 = packed)
+    std::uint32_t table_index = 0;         // slot in the btbl (inline: 0)
+    bool          inline_layout = false;   // flic v2 per-mip headers
 };
 
-// RCT3 reuses Direct3D format codes; these are the BC/DXT ones that occur in
-// tex trailing sections (docs §4.4). The field lives at header +0x1C.
-enum : std::uint32_t { kFmtDXT1 = 0x12, kFmtDXT3 = 0x13, kFmtDXT5 = 0x14 };
+// RCT3 reuses Direct3D format codes (docs §4.4). These are the ones the game's
+// bitmap tables use: the DXT family for scenery and GUI pages, A8R8G8B8 for a
+// few uncompressed ones.
+enum : std::uint32_t {
+    kFmtA8R8G8B8 = 0x02, kFmtDXT1 = 0x12, kFmtDXT3 = 0x13, kFmtDXT5 = 0x14
+};
 
-// Bytes per 4×4 block for a format code: 8 for DXT1 (BC1, 4 bpp), 16 for
-// DXT3/DXT5 (BC2/BC3, 8 bpp), 0 if it isn't a DXT format we decode.
+// Bytes per 4×4 block for a DXT format code: 8 for DXT1 (BC1, 4 bpp), 16 for
+// DXT3/DXT5 (BC2/BC3, 8 bpp), 0 for anything that is not block-compressed.
 std::uint32_t dxt_block_bytes(std::uint32_t format_code) {
     switch (format_code) {
         case kFmtDXT1: return 8;
@@ -241,12 +241,17 @@ std::uint32_t dxt_block_bytes(std::uint32_t format_code) {
     }
 }
 
-const char* dxt_name(std::uint32_t format_code) {
+bool format_supported(std::uint32_t format_code) {
+    return dxt_block_bytes(format_code) != 0 || format_code == kFmtA8R8G8B8;
+}
+
+const char* format_name(std::uint32_t format_code) {
     switch (format_code) {
-        case kFmtDXT1: return "DXT1";
-        case kFmtDXT3: return "DXT3";
-        case kFmtDXT5: return "DXT5";
-        default:       return "fmt?";
+        case kFmtDXT1:     return "DXT1";
+        case kFmtDXT3:     return "DXT3";
+        case kFmtDXT5:     return "DXT5";
+        case kFmtA8R8G8B8: return "A8R8G8B8";
+        default:           return "fmt?";
     }
 }
 
@@ -256,94 +261,150 @@ std::string hex_u32(std::uint32_t v) {
     return os.str();
 }
 
-// Total bytes a DXT/BC compressed mipmap chain occupies. `block_bytes` is 8 for
-// DXT1 (4 bpp) and 16 for DXT3/DXT5 (8 bpp). Levels smaller than 4×4 still
-// occupy one full block.
-std::uint64_t expected_dxt_size(std::uint32_t w, std::uint32_t h,
-                                std::uint32_t mips, std::uint32_t block_bytes) {
+// Bytes one mip level occupies when tightly packed: whole 4×4 blocks for the
+// DXT formats (levels smaller than 4×4 still take one block), 4 B/px for
+// A8R8G8B8. 0 for an unsupported format.
+std::uint64_t level_size(std::uint32_t format_code, std::uint32_t w, std::uint32_t h) {
+    if (std::uint32_t bb = dxt_block_bytes(format_code))
+        return static_cast<std::uint64_t>((w + 3) / 4) * ((h + 3) / 4) * bb;
+    if (format_code == kFmtA8R8G8B8) return static_cast<std::uint64_t>(w) * h * 4;
+    return 0;
+}
+
+// Total bytes of a packed mip chain (rct3dump's ReadTextures sizing).
+std::uint64_t chain_size(std::uint32_t format_code, std::uint32_t w, std::uint32_t h,
+                         std::uint32_t mips) {
     std::uint64_t total = 0;
-    for (std::uint32_t i = 0; i < mips; ++i) {
-        std::uint32_t lw = std::max(1u, w >> i);
-        std::uint32_t lh = std::max(1u, h >> i);
-        std::uint64_t blocks = ((lw + 3) / 4) * ((lh + 3) / 4);
-        total += blocks * block_bytes;
-    }
+    for (std::uint32_t i = 0; i < mips; ++i)
+        total += level_size(format_code, std::max(1u, w >> i), std::max(1u, h >> i));
     return total;
 }
 
-// Collect every DXT texture header in a side's trailing section (the region
-// after `dataend`). Most OVLs have exactly one; only Main.common.ovl carries
-// several (its 3 GUI atlas pages). Returned in file order.
-//
-// `dataend` lands before the trailing section by a variable margin depending
-// on which sub-parsers touched the file pointer last, so we can't seek
-// straight to it. Instead, scan forward from `dataend` for the
-// {format, width, height, mip, size} signature at +0x1C..+0x2F. The header is
-// rigid in shape — a recognised DXT format_code, both dims powers of two in
-// [16, 4096], a sane mip count, and pixel_size matching that format's
-// mipmap-chain size exactly — so false positives are negligible. After a hit
-// we skip past the whole payload so bytes inside the compressed data can't
-// trip the signature. Buffering the whole side into memory avoids per-u32 file
-// seeks; OVLs are at most a few MB and this runs once per pair.
-std::vector<TexTrailingHeader> collect_tex_trailing_headers(const OvlData& side_data) {
-    std::vector<TexTrailingHeader> out;
-    std::uint64_t file_size = 0;
-    std::vector<std::uint8_t> buf;
-    {
-        std::ifstream fs(side_data.ovlname, std::ios::binary | std::ios::ate);
-        if (!fs) return out;
-        file_size = static_cast<std::uint64_t>(fs.tellg());
-        fs.seekg(0);
-        buf.resize(static_cast<std::size_t>(file_size));
-        if (!fs.read(reinterpret_cast<char*>(buf.data()),
-                     static_cast<std::streamsize>(file_size))) return {};
-    }
-    auto u32 = [&](std::size_t at) -> std::uint32_t {
-        return  static_cast<std::uint32_t>(buf[at]) |
-               (static_cast<std::uint32_t>(buf[at + 1]) << 8) |
-               (static_cast<std::uint32_t>(buf[at + 2]) << 16) |
-               (static_cast<std::uint32_t>(buf[at + 3]) << 24);
-    };
-
-    const std::uint64_t lo = side_data.dataend > 0 ? side_data.dataend : 0x100;
-    if (file_size < lo + 0x30) return out;
-    for (std::uint64_t off = lo; off + 0x30 < file_size; ++off) {
-        std::uint32_t fmt = u32(static_cast<std::size_t>(off + 0x1c));
-        std::uint32_t block_bytes = dxt_block_bytes(fmt);
-        if (block_bytes == 0) continue;  // not a DXT format we recognise
-        std::uint32_t w   = u32(static_cast<std::size_t>(off + 0x20));
-        std::uint32_t hh  = u32(static_cast<std::size_t>(off + 0x24));
-        std::uint32_t mip = u32(static_cast<std::size_t>(off + 0x28));
-        std::uint32_t sz  = u32(static_cast<std::size_t>(off + 0x2c));
-        // Both dims power-of-two in [16, 4096]; rectangular is allowed now that
-        // the format code carries the discrimination (was: w == h only).
-        if (w < 16 || w > 4096 || hh < 16 || hh > 4096) continue;
-        if ((w & (w - 1)) != 0 || (hh & (hh - 1)) != 0) continue;
-        if (mip == 0 || mip > 16) continue;
-        if (sz == 0 || off + 0x30 + sz > file_size) continue;
-        // Exact match against the mip-chain size for THIS format. A recognised
-        // format code (3 valid values) + exact size + two pow2 dims make false
-        // positives negligible — verified across a full RCT3 install that the
-        // only positives inside random mms / prt / snd payloads are real tex
-        // headers.
-        if (sz != expected_dxt_size(w, hh, mip, block_bytes)) continue;
-        TexTrailingHeader h{};
-        h.format_code    = fmt;
-        h.width          = w;
-        h.height         = hh;
-        h.mipmap_count   = mip;
-        h.data_size      = sz;
-        h.pixel_data_pos = off + 0x30;
-        out.push_back(h);
-        off += 0x30 + sz - 1;  // skip the payload (-1: the loop's ++off re-adds)
-    }
-    return out;
+std::uint32_t read_u32_at(const OvlParser& parser, OvlSide side, std::uint64_t pos) {
+    BinaryReader r(parser.side(side).ovlname);
+    r.seek(pos);
+    return r.read_u32();
 }
 
-bool read_tex_trailing_header(const OvlData& side_data, TexTrailingHeader& h) {
-    auto all = collect_tex_trailing_headers(side_data);
-    if (all.empty()) return false;
-    h = all.front();
+// Loader reference (side, index) whose tag is `tag` and whose data pointer is
+// `datapointer`, searched on both sides. Returns false if none.
+bool find_loader_ref(const OvlParser& parser, const char* tag, std::uint32_t datapointer,
+                     OvlSide& side_out, std::size_t& index_out) {
+    for (std::size_t s = 0; s < (parser.has_unique() ? 2u : 1u); ++s) {
+        auto side = static_cast<OvlSide>(s);
+        const auto& d = parser.side(side);
+        for (std::size_t i = 0; i < d.loaderreference.size(); ++i) {
+            if (d.loaderreference[i].datapointer != datapointer) continue;
+            if (parser.loader_by_id(d.loaderreference[i].loadernumber, side).tag != tag) continue;
+            side_out = side;
+            index_out = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Follow the chain from the `tex` linked file `lf_index` declared on `side`
+// to the page that holds its pixels. `why` receives the reason on failure.
+bool resolve_tex_page(const OvlParser& parser, OvlSide side, std::size_t lf_index,
+                      TexPage& page, std::string& why) {
+    const auto& lf = parser.side(side).linkedfiles[lf_index];
+    auto pr = parser.offset_to_position(lf.loaderreference.datapointer);
+    if (!pr.found) { why = "tex wrapper unresolved"; return false; }
+    std::uint32_t flicpp = read_u32_at(parser, pr.currentOVL, pr.position + 0x34);
+    if (flicpp == 0 || !parser.offset_to_position(flicpp).found) {
+        why = "no FlicStruct pointer at +0x34";
+        return false;
+    }
+
+    // The slot holds the FlicStruct's offset on disk (the relocation table
+    // only marks it); normally that is the next word, but a few tables pad
+    // an entry (Sky's CloudsB), so follow the value and keep +4 as fallback.
+    auto sp = parser.offset_to_position(flicpp);
+    std::uint32_t flic_off = read_u32_at(parser, sp.currentOVL, sp.position);
+    if (flic_off == 0) flic_off = flicpp + 4;
+
+    OvlSide fside{};
+    std::size_t fidx = 0;
+    if (!find_loader_ref(parser, "flic", flic_off, fside, fidx) &&
+        !find_loader_ref(parser, "flic", flicpp + 4, fside, fidx)) {
+        why = "no flic loader at " + hex_u32(flic_off);
+        return false;
+    }
+    const auto& fd = parser.side(fside);
+    const auto& fchunks = fd.extradata[fidx];
+    if (fchunks.empty()) { why = "flic has no extra data"; return false; }
+    page.side = fside;
+
+    std::uint32_t flic_version = parser.loader_by_id(fd.loaderreference[fidx].loadernumber, fside).type;
+    if (flic_version == 2) {
+        // Inline layout: FlicHeader, then {FlicMipHeader, pixels} per level.
+        const auto& ch = fchunks[0];
+        if (ch.size < 32) { why = "inline flic chunk too small"; return false; }
+        BinaryReader r(fd.ovlname);
+        r.seek(ch.position);
+        page.format_code  = r.read_u32();
+        page.width        = r.read_u32();
+        page.height       = r.read_u32();
+        page.mipmap_count = r.read_u32();
+        std::uint32_t mw = r.read_u32(), mh = r.read_u32();
+        page.pitch        = r.read_u32();
+        std::uint32_t blocks = r.read_u32();
+        page.inline_layout = true;
+        page.mip0_pos  = ch.position + 32;
+        page.mip0_size = page.pitch * blocks;
+        if (mw != page.width || mh != page.height || page.mip0_size == 0 ||
+            32 + static_cast<std::uint64_t>(page.mip0_size) > ch.size) {
+            why = "inline flic level 0 does not match its header";
+            return false;
+        }
+        return true;
+    }
+
+    // Bitmap-table layout: the flic's chunk is the slot index into the btbl
+    // that precedes it in loader order on the same side.
+    if (fchunks[0].size < 4) { why = "flic index chunk too small"; return false; }
+    page.table_index = read_u32_at(parser, fside, fchunks[0].position);
+    std::size_t bidx = fidx;
+    bool found = false;
+    while (bidx-- > 0) {
+        if (parser.loader_by_id(fd.loaderreference[bidx].loadernumber, fside).tag == "btbl") {
+            found = true;
+            break;
+        }
+    }
+    if (!found) { why = "no btbl before the flic"; return false; }
+    const auto& bchunks = fd.extradata[bidx];
+    if (bchunks.size() < 2) { why = "btbl lacks its two chunks"; return false; }
+    // The slot count is the BmpTbl {unk, count} at the btbl's data pointer;
+    // the chunk repeats the two words (zeroed) before the FlicHeader array.
+    auto bp = parser.offset_to_position(fd.loaderreference[bidx].datapointer);
+    if (!bp.found) { why = "btbl data unresolved"; return false; }
+    std::uint32_t count = read_u32_at(parser, bp.currentOVL, bp.position + 4);
+    BinaryReader r(fd.ovlname);
+    if (page.table_index >= count || 8 + 16ull * count > bchunks[0].size) {
+        why = "btbl index " + std::to_string(page.table_index) + " out of " + std::to_string(count);
+        return false;
+    }
+    std::uint64_t payload = 0;
+    for (std::uint32_t i = 0; i <= page.table_index; ++i) {
+        r.seek(bchunks[0].position + 8 + 16ull * i);
+        std::uint32_t fmt = r.read_u32(), w = r.read_u32(), h = r.read_u32(), mips = r.read_u32();
+        if (!format_supported(fmt)) {
+            why = "unsupported format " + hex_u32(fmt) + " in btbl slot " + std::to_string(i);
+            return false;
+        }
+        if (i == page.table_index) {
+            page.format_code  = fmt;
+            page.width        = w;
+            page.height       = h;
+            page.mipmap_count = mips;
+            page.mip0_pos     = bchunks[1].position + payload;
+            page.mip0_size    = static_cast<std::uint32_t>(level_size(fmt, w, h));
+        }
+        payload += chain_size(fmt, w, h, mips);
+    }
+    if (payload > bchunks[1].size) { why = "btbl payload shorter than its headers claim"; return false; }
     return true;
 }
 
@@ -460,189 +521,70 @@ std::vector<std::uint8_t> read_n(BinaryReader& r, std::size_t n) {
     return out;
 }
 
-// Count `tex` linkedfiles across both sides. The trailing-section scan is
-// symbol-blind — it always returns the FIRST header it finds — so on a
-// multi-tex OVL it would emit one (near-)duplicate file per tex symbol. Until
-// the btbl/flic chain is wired up (docs §4.1.1) we only decode genuine
-// single-tex OVLs and defer the rest rather than ship duplicates.
-std::size_t count_tex_loaders(const OvlParser& parser) {
-    std::size_t n = 0;
-    for (std::size_t s = 0; s < (parser.has_unique() ? 2u : 1u); ++s) {
-        auto side = static_cast<OvlSide>(s);
-        const auto& d = parser.side(side);
-        for (const auto& lf : d.linkedfiles) {
-            Loader ldr = parser.loader_by_id(lf.loaderreference.loadernumber, side);
-            if (ldr.tag == "tex") ++n;
-        }
-    }
-    return n;
-}
+// Decode level 0 of a resolved page to BGRA (row-major, top-down as stored).
+bool decode_page(const OvlParser& parser, const TexPage& page,
+                 std::vector<std::uint8_t>& bgra) {
+    if (!sane_dimensions(page.width, page.height)) return false;
+    BinaryReader r(parser.side(page.side).ovlname);
+    r.seek(page.mip0_pos);
+    auto stored = read_n(r, page.mip0_size);
 
-// Handle a `tex` linkedfile. Returns true if a .tga was produced.
-// `tex_lf_side` is the side that DECLARES the linked file (typically unique);
-// the actual DXT pixel data lives on the OTHER side's trailing section.
-bool extract_tex(const OvlParser& parser,
-                 OvlSide tex_lf_side,
-                 const std::string& symbol,
-                 const std::filesystem::path& out_path,
-                 const ExtractContext& ctx) {
-    if (count_tex_loaders(parser) > 1) {
-        ctx.log("tex: " + symbol + " is in a multi-tex OVL — deferred (the "
-                "trailing scan can't tell textures apart; needs the btbl/flic "
-                "chain, docs §4.1.1)");
+    std::uint32_t bb = dxt_block_bytes(page.format_code);
+    std::uint32_t rows   = bb ? (page.height + 3) / 4 : page.height;
+    std::uint32_t packed = bb ? ((page.width + 3) / 4) * bb : page.width * 4;
+    const std::uint8_t* src = stored.data();
+    std::vector<std::uint8_t> repacked;
+    if (page.inline_layout && page.pitch != packed) {
+        // Pitch-aware copy (rct3dump's ReadTexture): keep the first `packed`
+        // bytes of every stored row.
+        if (page.pitch < packed) return false;
+        repacked.resize(static_cast<std::size_t>(rows) * packed);
+        for (std::uint32_t y = 0; y < rows; ++y)
+            std::copy(src + y * page.pitch, src + y * page.pitch + packed,
+                      repacked.data() + y * packed);
+        src = repacked.data();
+    } else if (stored.size() < static_cast<std::size_t>(rows) * packed) {
         return false;
     }
 
-    // Pick the side whose trailing data section is non-empty. In every sample
-    // we've seen, that's the OPPOSITE side from the tex linkedfile declaration
-    // (the linkedfile sits on unique, the data on common). Fall back to the
-    // declaring side if needed.
-    OvlSide data_side = (tex_lf_side == OvlSide::Unique)
-                      ? OvlSide::Common : OvlSide::Unique;
-    if (!parser.has_unique() && data_side == OvlSide::Unique) {
-        data_side = OvlSide::Common;
+    bgra.assign(static_cast<std::size_t>(page.width) * page.height * 4, 0);
+    if (bb) {
+        decode_dxt_level(src, page.width, page.height, page.format_code, bgra.data());
+    } else {
+        // A8R8G8B8 little-endian is B, G, R, A in memory: already our layout.
+        std::copy(src, src + bgra.size(), bgra.data());
     }
-
-    TexTrailingHeader h{};
-    if (!read_tex_trailing_header(parser.side(data_side), h)) return false;
-
-    if (!sane_dimensions(h.width, h.height) || h.mipmap_count == 0 ||
-        h.mipmap_count > 16 || h.data_size == 0 || h.data_size > 16 * 1024 * 1024) {
-        ctx.log("tex: implausible header for " + symbol +
-                " (w=" + std::to_string(h.width) +
-                " h=" + std::to_string(h.height) +
-                " mip=" + std::to_string(h.mipmap_count) +
-                " sz=" + std::to_string(h.data_size) + ")");
-        return false;
-    }
-
-    std::uint32_t block_bytes = dxt_block_bytes(h.format_code);
-    if (block_bytes == 0) {
-        ctx.log("tex: " + symbol + " unsupported format_code " +
-                hex_u32(h.format_code));
-        return false;
-    }
-    // The trailing-section scan already enforced this, but re-assert so the
-    // decoder never reads past `blocks` if extract_tex is ever called with a
-    // header from another path.
-    if (h.data_size != expected_dxt_size(h.width, h.height, h.mipmap_count, block_bytes)) {
-        ctx.log("tex: " + symbol + " size " + std::to_string(h.data_size) +
-                " ≠ " + dxt_name(h.format_code) + " chain expected for " +
-                std::to_string(h.width) + "x" + std::to_string(h.height));
-        return false;
-    }
-
-    BinaryReader r(parser.side(data_side).ovlname);
-    r.seek(h.pixel_data_pos);
-    auto blocks = read_n(r, h.data_size);
-
-    // Decode only mip level 0 (the full-resolution image) to TGA. Subsequent
-    // mips exist in the stream but consumers can regenerate them on the fly.
-    std::vector<std::uint8_t> bgra(static_cast<std::size_t>(h.width) * h.height * 4);
-    decode_dxt_level(blocks.data(), h.width, h.height, h.format_code, bgra.data());
-    write_tga(out_path, h.width, h.height, bgra);
-    ctx.log("wrote " + out_path.filename().string() + " (" +
-            std::to_string(h.width) + "x" + std::to_string(h.height) +
-            ", " + dxt_name(h.format_code) + ", " +
-            std::to_string(h.mipmap_count) + " mips)");
     return true;
 }
 
-// Emit the distinct atlas pages of a multi-texture OVL (in practice only
-// Main.common.ovl — 3 DXT3 GUI sheets sliced by ~1900 gsi rects). The
-// per-symbol tex path can't map symbol→page (that needs the btbl/flic chain,
-// docs §4.1.1) so it defers; here we decode each distinct trailing header once,
-// named `<stem>__atlas<N>_<W>x<H>.tga`. Returns the number written.
-std::size_t extract_multitex_atlases(const OvlParser& parser,
-                                     const ExtractContext& ctx) {
-    std::vector<TexTrailingHeader> best;
-    OvlSide best_side = OvlSide::Common;
-    for (std::size_t s = 0; s < (parser.has_unique() ? 2u : 1u); ++s) {
-        auto side = static_cast<OvlSide>(s);
-        auto hs = collect_tex_trailing_headers(parser.side(side));
-        if (hs.size() > best.size()) { best = std::move(hs); best_side = side; }
+// Handle a `tex` linkedfile. Returns true if a .tga was produced.
+bool extract_tex(const OvlParser& parser,
+                 OvlSide side,
+                 std::size_t lf_index,
+                 const std::string& symbol,
+                 const std::filesystem::path& out_path,
+                 const ExtractContext& ctx) {
+    TexPage page;
+    std::string why;
+    if (!resolve_tex_page(parser, side, lf_index, page, why)) {
+        ctx.log("tex: " + symbol + " skipped (" + why + ")");
+        return false;
     }
-    if (best.size() < 2) return 0;  // single-header OVLs use the per-symbol path
-
-    auto strip_suffix = [](std::string s) {
-        for (const char* suf : {".common.ovl", ".unique.ovl", ".ovl"}) {
-            std::string suffix(suf);
-            if (s.size() >= suffix.size() &&
-                s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0)
-                return s.substr(0, s.size() - suffix.size());
-        }
-        return s;
-    };
-    std::string stem = strip_suffix(
-        std::filesystem::path(parser.side(best_side).ovlname).filename().string());
-
-    std::filesystem::create_directories(ctx.output_dir);
-    BinaryReader r(parser.side(best_side).ovlname);
-    std::size_t written = 0;
-    for (std::size_t i = 0; i < best.size(); ++i) {
-        const auto& h = best[i];
-        std::string name = stem + "__atlas" + std::to_string(i) + "_" +
-                           std::to_string(h.width) + "x" +
-                           std::to_string(h.height) + ".tga";
-        auto out_path = ctx.output_dir / name;
-        if (!ctx.overwrite && std::filesystem::exists(out_path)) {
-            ctx.log("skip (exists): " + name);
-            ++written;
-            continue;
-        }
-        r.seek(h.pixel_data_pos);
-        auto blocks = read_n(r, h.data_size);
-        std::vector<std::uint8_t> bgra(
-            static_cast<std::size_t>(h.width) * h.height * 4);
-        decode_dxt_level(blocks.data(), h.width, h.height, h.format_code, bgra.data());
-        write_tga(out_path, h.width, h.height, bgra);
-        ctx.log("wrote " + name + " (" + dxt_name(h.format_code) + ", " +
-                std::to_string(h.mipmap_count) + " mips)");
-        ++written;
+    std::vector<std::uint8_t> bgra;
+    if (!decode_page(parser, page, bgra)) {
+        ctx.log("tex: " + symbol + " page unreadable (" +
+                std::to_string(page.width) + "x" + std::to_string(page.height) +
+                " " + format_name(page.format_code) + ")");
+        return false;
     }
-    ctx.log("multi-tex: " + stem + " has " + std::to_string(best.size()) +
-            " atlas page(s); symbol→page mapping needs the btbl/flic chain (§4.1.1)");
-    return written;
-}
-
-// [debug] OVL_TEXDBG: dump each `tex` linkedfile's wrapper (TextureStruct) and
-// follow its pointer fields one level, to reverse-engineer the tex→flic→btbl
-// chain that links a tex symbol to its pixel page (Main GUI routing).
-void dump_tex_wrappers(const OvlParser& parser) {
-    for (std::size_t s = 0; s < (parser.has_unique() ? 2u : 1u); ++s) {
-        auto side = static_cast<OvlSide>(s);
-        const auto& d = parser.side(side);
-        for (const auto& lf : d.linkedfiles) {
-            Loader ldr = parser.loader_by_id(lf.loaderreference.loadernumber, side);
-            if (ldr.tag != "tex") continue;
-            std::string sym = parser.string_from_offset(lf.symbolresolve.stringpointer);
-            std::uint32_t dp = lf.loaderreference.datapointer;
-            auto pr = parser.offset_to_position(dp);
-            if (!pr.found) continue;
-            BinaryReader r(parser.side(pr.currentOVL).ovlname);
-            r.seek(pr.position);
-            std::uint32_t w[24];
-            for (int i = 0; i < 24; ++i) w[i] = r.read_u32();
-            std::cerr << "TEXW " << sym << " dp=" << std::hex << dp << std::dec << ":";
-            for (int i = 0; i < 24; ++i) {
-                std::cerr << " +" << i*4 << "=" << std::hex << w[i] << std::dec;
-                if (w[i] && parser.offset_to_position(w[i]).found) std::cerr << "*";
-            }
-            std::cerr << "\n";
-            // follow each resolvable pointer one level (dump 32 bytes hex)
-            for (int i = 0; i < 24; ++i) {
-                if (!w[i]) continue;
-                auto tp = parser.offset_to_position(w[i]);
-                if (!tp.found) continue;
-                BinaryReader rr(parser.side(tp.currentOVL).ovlname);
-                rr.seek(tp.position);
-                std::cerr << "   ->+" << i*4 << " @" << std::hex << w[i] << ":";
-                for (int b = 0; b < 32; ++b)
-                    std::cerr << " " << std::hex << (int)rr.read_u8() << std::dec;
-                std::cerr << "\n";
-            }
-        }
-    }
+    write_tga(out_path, page.width, page.height, bgra);
+    ctx.log("wrote " + out_path.filename().string() + " (" +
+            std::to_string(page.width) + "x" + std::to_string(page.height) +
+            ", " + format_name(page.format_code) + ", " +
+            std::to_string(page.mipmap_count) + " mips, " +
+            (page.inline_layout ? std::string("inline") :
+                                  "btbl slot " + std::to_string(page.table_index)) + ")");
+    return true;
 }
 
 bool extract_one(const OvlParser& parser,
@@ -663,10 +605,9 @@ bool extract_one(const OvlParser& parser,
     if (suffix_pos != std::string::npos) symbol = symbol.substr(0, suffix_pos);
     std::string base = sanitize(symbol);
 
-    // tex format is structurally different from ftx: pixel data lives in the
-    // opposite side's trailing section, DXT1-compressed with mipmaps. We
-    // dispatch to a dedicated decoder and skip the .ovltex / .json sidecar
-    // emission (the format is now understood — no need to dump raw blocks).
+    // tex is structurally different from ftx: the pixels sit in a bitmap
+    // table reached through the tex → flic → btbl chain (docs §4.1). It gets
+    // a dedicated decoder and no .ovltex / .json sidecar.
     if (ldr.tag == "tex") {
         std::filesystem::create_directories(out_dir);
         auto tga_out = out_dir / (base + ".tga");
@@ -674,7 +615,7 @@ bool extract_one(const OvlParser& parser,
             ctx.log("skip (exists): " + base);
             return true;
         }
-        return extract_tex(parser, side, symbol, tga_out, ctx);
+        return extract_tex(parser, side, lf_index, symbol, tga_out, ctx);
     }
 
     auto raw_out = out_dir / (base + ".ovltex");
@@ -759,7 +700,6 @@ bool extract_one(const OvlParser& parser,
 
 ExtractResult TextureExtractor::extract(const OvlParser& parser, const ExtractContext& ctx) {
     ExtractResult res{};
-    if (std::getenv("OVL_TEXDBG") != nullptr) dump_tex_wrappers(parser);
     std::filesystem::create_directories(ctx.output_dir);
 
     for (std::size_t s = 0; s < (parser.has_unique() ? 2u : 1u); ++s) {
@@ -777,15 +717,6 @@ ExtractResult TextureExtractor::extract(const OvlParser& parser, const ExtractCo
         }
     }
 
-    // Multi-texture atlas pages (Main's GUI sheets): the per-symbol path above
-    // defers them because the trailing scan can't tell pages apart. Emit the
-    // distinct atlas images once, index-named.
-    try {
-        res.files_written += extract_multitex_atlases(parser, ctx);
-    } catch (const std::exception& e) {
-        ++res.errors;
-        ctx.log(std::string("error (multi-tex atlas): ") + e.what());
-    }
     return res;
 }
 
@@ -854,7 +785,7 @@ bool TextureExtractor::decode_linked_bgra(const OvlParser& parser, OvlSide side,
         return decode_ftx_bgra(parser, lf.loaderreference.datapointer, width,
                                height, bgra, has_alpha, recolorable, recolor);
     if (ldr.tag == "tex") {
-        if (!decode_tex_bgra(parser, side, width, height, bgra)) return false;
+        if (!decode_tex_bgra(parser, side, lf_index, width, height, bgra)) return false;
         // DXT3/DXT5 carry real alpha; DXT1 decodes to opaque 255.
         if (has_alpha) {
             for (std::size_t i = 3; i < bgra.size(); i += 4)
@@ -867,33 +798,16 @@ bool TextureExtractor::decode_linked_bgra(const OvlParser& parser, OvlSide side,
 
 bool TextureExtractor::decode_tex_bgra(const OvlParser& parser,
                                        OvlSide declaring_side,
+                                       std::size_t lf_index,
                                        std::uint32_t& width,
                                        std::uint32_t& height,
                                        std::vector<std::uint8_t>& bgra) {
-    // Multi-tex OVLs (only Main in stock RCT3) need a symbol→page mapping the
-    // symbol-blind trailing scan can't provide; bail so the caller skips them.
-    if (count_tex_loaders(parser) > 1) return false;
-
-    OvlSide data_side = (declaring_side == OvlSide::Unique)
-                      ? OvlSide::Common : OvlSide::Unique;
-    if (!parser.has_unique() && data_side == OvlSide::Unique)
-        data_side = OvlSide::Common;
-
-    TexTrailingHeader h{};
-    if (!read_tex_trailing_header(parser.side(data_side), h)) return false;
-    std::uint32_t block_bytes = dxt_block_bytes(h.format_code);
-    if (block_bytes == 0) return false;
-    if (h.data_size !=
-        expected_dxt_size(h.width, h.height, h.mipmap_count, block_bytes))
-        return false;
-
-    BinaryReader r(parser.side(data_side).ovlname);
-    r.seek(h.pixel_data_pos);
-    auto blocks = read_n(r, h.data_size);
-    bgra.assign(static_cast<std::size_t>(h.width) * h.height * 4, 0);
-    decode_dxt_level(blocks.data(), h.width, h.height, h.format_code, bgra.data());
-    width  = h.width;
-    height = h.height;
+    TexPage page;
+    std::string why;
+    if (!resolve_tex_page(parser, declaring_side, lf_index, page, why)) return false;
+    if (!decode_page(parser, page, bgra)) return false;
+    width  = page.width;
+    height = page.height;
     return true;
 }
 

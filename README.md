@@ -40,10 +40,17 @@ This project addresses both:
   indexed8 + BGRA palette + 8-bit alpha plane → opaque `.tga` and
   `_rgba.tga`, with raw `.ovltex` + `.json` sidecar (recolor flags, frames).
   1594 / 1594 ftx of a full install decode.
-- 🚧 **Texture extractor** (`tex` DXT compressed): 110 / 121 single-tex
-  OVLs decode to TGA via the trailing-data DXT1 layout (≈ 17 % of all 665
-  `tex` symbols). DXT3/5 + multi-`tex` OVL v5 layouts still open
-  (see `docs/RCT3_OVL_FORMAT.md` §4).
+- ✅ **Texture extractor** (`tex` bitmap-table pages): every `tex` symbol is
+  followed through the `tex → flic → btbl` chain and the per-loader
+  extra-data stream to its page — DXT1 / DXT3 / DXT5 / A8R8G8B8, including the
+  multi-page GUI sheets of `Main` and the inline (per-mip) layout. 766 / 783
+  `tex` of a full install decode; the other 17 are render targets with no
+  pixels (see `docs/RCT3_OVL_FORMAT.md` §4).
+- ✅ **Atlas extractor** (`gsi` → cropped `.tga`): every sprite of the game,
+  `Main`'s 1 860 interface icons included.
+- ✅ **Fonts** (`--types font`: `fct` → `.font.json` + glyph page) and
+  **text** (`--types text`: `txt` → `.txt.json`, the 12 388 interface strings
+  per language) — the whole `gui/` tree extracts (docs §17–18).
 - ✅ **Scenery packager** (`--types scenery`: `svd` → `.glb`): one
   self-contained glTF 2.0 per scenery item — most detailed LOD, embedded
   PNG textures, opaque / alpha-mask / blend materials, skeleton and
@@ -66,8 +73,6 @@ This project addresses both:
   model's output directory in one pass.
 - 🚧 **Animated mesh extractor** (`mms` → `.obj`): topology + UVs decode
   correctly; vertex positions still broken across all 17 candidate decoders.
-- 🚧 **Atlas extractor** (`gsi` → cropped `.tga`): works for the rare
-  `ftx`-backed atlas; blocked on `tex` decode for the typical case.
 - ✅ **Qt 6 GUI** (`ovlextract_gui`): file picker, tree of resources grouped
   by category (textures / models / sounds / atlas / other), texture preview,
   embedded OpenGL viewer for shs meshes, "open externally" playback for snd
@@ -148,8 +153,10 @@ The `input` argument accepts:
 |---|---|
 | `--dump` | `OverlayDump_<name>_common.txt` and `_unique.txt` |
 | `--types sound` | `<symbol>.wav` per `snd` loader (mono or stereo PCM, plus `smpl` chunk if loop=1) |
-| `--types texture` | `<symbol>.ovltex` (raw block), `<symbol>.json` (metadata), and `<symbol>.tga` (decoded indexed8+palette — all format codes 3–9 supported) |
-| `--types atlas` | `<symbol>.tga` per `gsi`, cropped from parent texture (most parents are `tex` → blocked until `tex` decode lands) |
+| `--types texture` | ftx: `<symbol>.ovltex` (raw block), `<symbol>.json` (metadata), `<symbol>.tga` (+ `_rgba.tga`); tex: `<symbol>.tga`, the page decoded from the bitmap table (DXT1/3/5, A8R8G8B8) |
+| `--types atlas` | `<symbol>.tga` per `gsi`, cropped from its parent texture (`ftx` or `tex` page) |
+| `--types font` | `<fct>.font.json` (face, metrics, glyph table with upright pixel rects) + `<fct>.tga` (glyph page) |
+| `--types text` | `<ovl>.txt.json` — every `txt` string of the pair as UTF-8 |
 | `--types scenery` | `<svd>.glb` (best LOD, textures embedded, skin + animations) + `<svd>.json` manifest per scenery item; `--all-lods` adds the other LODs |
 | `--types track`   | `<set>.tracks.json`, `<ride>.ride.json`, `<train>.train.json`, `<anr>.flatride.json`, `<ovl>.sids.json` / `.splines.json` (docs §15–16) |
 | `--types model`   | `<symbol>.obj` + `<symbol>.mtl` per `shs` static mesh, sub-meshes as `g`/`usemtl` groups; with `--texture-index` the `.mtl` gets `map_Kd` lines, with `--auto-textures` the referenced `.tga` files are pulled in too |

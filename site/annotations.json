@@ -1,0 +1,134 @@
+{
+  "_lisezmoi": [
+    "Ce que ni docs/*.md ni le code des extracteurs ne disent tout seuls au générateur du site.",
+    "status : extracted | partial | decoded | unknown.",
+    "section : début d'un titre de docs/RCT3_OVL_FORMAT.md ou docs/EXTRACTORS.md, pour le lien « source ».",
+    "Après toute modification : python3 site/build.py \"$ASSETS\" (ou --cached pour ne pas rescanner)."
+  ],
+  "tags": {
+    "svd": {
+      "status": "extracted",
+      "section": "14. Packaging scenery as glTF",
+      "note": "Un .glb autonome par objet de décor via --types scenery (maillage, textures, squelette, animations). La ligne du registre (§2) qui le dit « not extracted » est antérieure."
+    },
+    "bsh": {
+      "status": "extracted",
+      "section": "8.6 BoneShape",
+      "note": "Maillage au repos en .obj ; avec le squelette et les animations dans le .glb de --types scenery."
+    },
+    "ban": {
+      "status": "extracted",
+      "section": "8.7 BoneAnim",
+      "note": "Pistes exportées en .anim.json, et en animations glTF dans le .glb."
+    },
+    "tex": {
+      "status": "extracted",
+      "section": "4. TEX texture format",
+      "note": "Chaque symbole tex est suivi jusqu'à sa page de la table de bitmaps (tex → flic → btbl + flux extra-data) : DXT1/3/5 et A8R8G8B8, pages multiples de Main comprises. 766 / 783 décodés ; les 17 autres sont des cibles de rendu sans pixels."
+    },
+    "gsi": {
+      "status": "extracted",
+      "section": "5. GSI",
+      "note": "Rectangle découpé dans la page ftx ou tex ; tous les sprites du jeu, y compris les 1 860 icônes de l'interface de Main."
+    },
+    "mms": {
+      "status": "partial",
+      "section": "7. MMS",
+      "note": "Topologie et UV corrects, positions des sommets toujours fausses (17 décodeurs essayés)."
+    },
+    "sid": {
+      "status": "partial",
+      "section": "13.4 Scenery visual",
+      "note": "Empreinte, svd et coût lus pour les pièces de rail ; prix, couleurs par défaut et placement non décodés."
+    },
+    "txs": {
+      "status": "partial",
+      "section": "12. `txs` shader styles",
+      "note": "Les 40 styles sont connus et appliqués aux matériaux (opaque / découpe / fondu). Spéculaire et réflexion seulement approximés."
+    },
+    "fts": {
+      "status": "partial",
+      "note": "Traité comme un ftx, jamais rencontré dans l'installation : non testé."
+    },
+    "ftt": {
+      "status": "partial",
+      "note": "Traité comme un ftx, jamais rencontré dans l'installation : non testé."
+    },
+    "anr": {
+      "status": "extracted",
+      "section": "16. Flat rides",
+      "note": "Manège : chemins visiteurs / mécanicien, notes, limites de station, en JSON (86 manèges, 0 erreur)."
+    },
+    "rit": {
+      "status": "extracted",
+      "section": "15.7 Trains",
+      "note": "Train : composition, friction, rôle de chaque voiture, en JSON (186 trains, 0 erreur)."
+    },
+    "ric": {
+      "status": "extracted",
+      "section": "15.7 Trains",
+      "note": "Voiture d'un train : svd, pièces mobiles, animations, roues, dans le JSON du train."
+    },
+    "sta": {
+      "status": "partial",
+      "section": "Shop metadata",
+      "note": "Lu comme métadonnées de boutique (nom, description, articles vendus) dans le manifeste .glb ; le reste du bloc n'est pas décodé."
+    },
+    "sat": {
+      "status": "partial",
+      "section": "Shop metadata",
+      "note": "Comme sta, pour les attractions spéciales."
+    },
+    "cid": {
+      "status": "partial",
+      "section": "Shop metadata",
+      "note": "Article porté : seul le nom est lu, pour la liste des articles d'une boutique."
+    },
+    "txt": {
+      "status": "extracted",
+      "section": "18. Text",
+      "note": "Chaîne UTF-16LE → .txt.json par OVL (--types text) : 12 388 chaînes par langue, 38 726 au total."
+    },
+    "psi": {
+      "status": "decoded",
+      "note": "Pré-résolu seulement, aucune sortie."
+    },
+    "btbl": {
+      "status": "decoded",
+      "section": "4.1 The chain",
+      "note": "Table de bitmaps : en-têtes FlicHeader et pixels dans le flux extra-data. Lue par l'extracteur tex ; pas de symbole propre, donc rien à écrire en tant que tel."
+    },
+    "flic": {
+      "status": "decoded",
+      "section": "4.1 The chain",
+      "note": "Index de page dans la btbl (ou pixels en ligne par mip pour la version 2). Lu par l'extracteur tex ; pas de symbole propre."
+    },
+    "fct": {
+      "status": "extracted",
+      "section": "17. Fonts",
+      "note": "Police : famille, graisse, métriques, table de glyphes (avance, décalages, rect dans la page) en .font.json + page de glyphes remise à l'endroit en .tga. 18 polices, toutes décodées."
+    }
+  },
+  "status_words": {
+    "extracted": [
+      "fully decoded",
+      "fully understood",
+      "decoded:",
+      "decoded incl"
+    ],
+    "partial": [
+      "open",
+      "broken",
+      "untested",
+      "subset",
+      "applied to",
+      "treated as"
+    ],
+    "decoded": [
+      "not extracted",
+      "structure known",
+      "structs partly known",
+      "pre-resolved"
+    ]
+  }
+}

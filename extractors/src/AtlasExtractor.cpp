@@ -6,6 +6,7 @@
 #include "ovl/extract/TextureExtractor.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <fstream>
 #include <map>
@@ -82,12 +83,9 @@ bool decode_texture(const OvlParser& parser,
     if (!pr.found) return false;
 
     if (tag == "tex") {
-        // Single-tex atlas packs (PathIcons, ShopsIcons, EnclosureIcons …) are
-        // one DXT page sliced by gsi rects — decode the page via the shared
-        // tex decoder. Multi-tex OVLs (Main) return false: their symbol→page
-        // mapping isn't resolved yet (the on-disk tex→flic→btbl chain is
-        // pointer-linked, not byte-scannable — docs §4.6).
-        return TextureExtractor::decode_tex_bgra(parser, side, out.width,
+        // The page of the bitmap table this tex symbol maps to (docs §4.1):
+        // one DXT / A8R8G8B8 sheet sliced by the gsi rects.
+        return TextureExtractor::decode_tex_bgra(parser, side, lf_index, out.width,
                                                  out.height, out.bgra);
     }
     return decode_ftx_at(parser, pr.currentOVL, pr.position,
@@ -102,6 +100,11 @@ bool decode_texture(const OvlParser& parser,
 // internal offset. Returns the stripped symbol name (or empty if not found).
 // The texture reference for a gsi is a relocation slot — bytes on disk are 0,
 // so we look it up via the resolves table instead of reading them.
+std::string lower(std::string s) {
+    for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
 std::string symbol_at_pointer(const OvlParser& parser, std::uint32_t off) {
     for (int s = 0; s < 2; ++s) {
         const auto& d = parser.side(static_cast<OvlSide>(s));
@@ -186,7 +189,7 @@ void collect_textures(const OvlParser& parser,
         if (cut != std::string::npos) sym = sym.substr(0, cut);
         DecodedTexture tx;
         if (decode_texture(parser, side, i, ldr.tag, tx)) {
-            textures[sym] = std::move(tx);
+            textures[lower(sym)] = std::move(tx);  // symbols are case-insensitive
             ++decoded;
         }
     }
@@ -218,7 +221,7 @@ bool process_gsi_side(const OvlParser& parser,
             continue;
         }
 
-        auto it = textures.find(tex_name);
+        auto it = textures.find(lower(tex_name));
         if (it == textures.end()) {
             ctx.log("gsi: texture '" + tex_name + "' not decoded (skipping " +
                     gsi_sym + ")");
@@ -229,8 +232,10 @@ bool process_gsi_side(const OvlParser& parser,
         std::uint32_t cw = 0, ch = 0;
         crop_bgra(it->second, rect, cropped, cw, ch);
         if (cw == 0 || ch == 0) {
-            ctx.log("gsi: empty rect for " + gsi_sym);
-            ++res.errors;
+            // A few of Main's gsi are degenerate on disk (right ≤ left or
+            // bottom ≤ top): there is no sprite to write, and it isn't a
+            // decode failure.
+            ctx.log("gsi: empty rect for " + gsi_sym + " (skipped)");
             continue;
         }
 

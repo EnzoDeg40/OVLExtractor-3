@@ -43,6 +43,10 @@ Each side has:
 - A linkedfiles table (the actual data entries, each tied to a loader + symbol)
 - A symbol-resolves table (relocation slots that bind pointers to symbol names)
 - A relocations table (pointer-fixup list)
+- An **extra-data stream** right after the relocations: for every loader
+  reference in order, `hasextradata` records of `{u32 size, bytes}` that are
+  not part of any block (`OvlData::extradata`, §4.1). This is where texture
+  pixels live.
 
 Internal offsets in any of the above are resolved to file positions through
 `OvlParser::offset_to_position(off)`, which walks the chunk/block table to
@@ -58,13 +62,15 @@ complete RCT3 installation (Main + all expansions) — zero parse errors.
 | Tag    | Meaning                          | Status                                  |
 |--------|----------------------------------|-----------------------------------------|
 | `ftx`  | FlexiTexture (palette indexed8)  | Fully decoded (§3)                      |
-| `tex`  | Texture (DXT-compressed)         | DXT1 + DXT3 + DXT5 single-tex decoded (§4); multi-tex v5 open |
-| `btbl` | BmpTbl — array of `FlicHeader` + texture data | Structure known via rct3dump (§4.1); multi-tex anchor |
-| `flic` | Flic — inline texture, or an index into a `btbl` | Structure known via rct3dump (§4.1) |
+| `tex`  | Texture (page of the bitmap table) | Fully decoded (§4): DXT1 / DXT3 / DXT5 / A8R8G8B8, every symbol mapped to its page |
+| `btbl` | BmpTbl — FlicHeader table + pixel payloads (extra data) | Fully decoded (§4.1); no symbol of its own |
+| `flic` | Flic — page index into the `btbl`, or inline per-mip pixels (v2) | Fully decoded (§4.1); no symbol of its own |
 | `txs`  | Texture shader / blend style     | 40 styles known (§12); applied to `.mtl` — opaque/cutout/blend → `d`/`map_d` (§8.5) |
 | `fts`  | TextureSet?                      | Treated as ftx (untested)               |
 | `ftt`  | TextureType?                     | Treated as ftx (untested)               |
-| `gsi`  | Graphic Sprite Info (atlas rect) | Fully understood (§5)                   |
+| `gsi`  | Graphic Sprite Info (atlas rect) | Fully decoded (§5); every sprite of the game crops |
+| `fct`  | Font (face, glyph table, glyph page) | Fully decoded (§17)                 |
+| `txt`  | Text (UTF-16LE string)           | Fully decoded (§18)                     |
 | `psi`  | Particle Sprite Info             | Pre-resolved only, not extracted        |
 | `snd`  | Sound (.wav)                     | Fully decoded (§6)                      |
 | `sid`  | SceneryItemData (placement/size/flags) | Footprint / svd / cost subset decoded for track pieces (§15.3) |
@@ -265,267 +271,113 @@ its own palette / index / alpha pointers) and a frame sequence in `offsets[]`
 played at `fps`. The extractor decodes frame 0 only.
 
 
-## 4. TEX texture format — DXT1 decode
+## 4. TEX texture format — bitmap-table pages
 
-`tex` is the second texture container in RCT3 (alongside `ftx`). Where
-`ftx` stores 8-bit indexed pixels in the same OVL block as its header,
-`tex` puts a small wrapper on one side of the OVL pair and the actual
-DXT-compressed pixel data in a **trailing section after all parsed OVL
-structures** on the other side.
+`tex` is the second texture container in RCT3 (alongside `ftx`). Where `ftx`
+keeps 8-bit indexed pixels inside its own block, a `tex` symbol is a thin
+wrapper that names one **page of the pair's bitmap table**: the pixels are
+DXT-compressed (or raw A8R8G8B8) and live in the **extra-data stream** that
+follows the relocation table, consumed by the `btbl` and `flic` loaders. The
+association is by pointer *and* by load order, which is why the pointer-based
+parser alone could not find them (the earlier "trailing-section scan" of this
+section was reading that stream without knowing it).
 
-### 4.1 Where the pieces live
+### 4.1 The chain: `tex → flic → btbl → extra data`
 
-For each tex linkedfile (always on the side with parsed loaders for it,
-typically `unique`), the OVL pair always contains, on the OPPOSITE side
-(typically `common`):
+Three loaders cooperate (rct3dump `ReadOvl`, OpenCobra `Textures.cs`):
 
-- a `btbl` (BmpTbl) loader  — a count + an array of `FlicHeader`s (see §4.1.1)
-- a `flic` (Flic) loader    — the per-texture data anchor
-- raw DXT-compressed pixel data + mipmaps, sitting in the file AFTER
-  everything the OVL parser enumerates (chunks, relocations, strings,
-  symbol tables …). The file size is much larger than `dataend`.
+- **`tex`** (TextureStruct, 96 B, on the side that declares the symbol —
+  usually unique) carries at **`+0x34` a `FlicStruct**`**: the internal offset
+  of the pointer slot that precedes a FlicStruct inside the btbl block.
+- **`btbl`** (BmpTbl, usually on common, no symbol) has a data block
+  `{u32 unk = 0, u32 count}` followed by `count × {ptr → FlicStruct,
+  FlicStruct{Texture* = 0, u32 1, f32 1.0}}` (16 B per entry — one table pads
+  an entry to 20 B, hence "follow the pointer, don't assume +4"). It owns
+  **two extra-data chunks**: `{u32 0, u32 0, count × FlicHeader}` with
+  `FlicHeader = {u32 format, width, height, mipcount}`, then every page's
+  pixels back to back, each a packed mip chain sized from its header.
+- **`flic`** (one loader reference per page, data pointer = the FlicStruct
+  above) owns **one 4-byte chunk: its slot index** into the btbl that precedes
+  it in loader order. Loader *version* 2 flics are different: no btbl, the
+  single chunk is `FlicHeader` then per level `FlicMipHeader{u32 w, h, pitch,
+  blocks}` + `pitch × blocks` bytes (rct3dump's `ReadTexture`, copied row by
+  row). 44 pages of the install use this inline layout (path ground
+  textures, `test/Shapes`, staff uniforms, rain).
 
-The 76-byte wrapper at `tex`'s `loaderreference.datapointer` (on unique)
-encodes mipmap LOD descriptors and pointers we never had to follow
-once we located the trailing section directly.
+So, for a `tex` symbol: read `+0x34` → the slot's value is the FlicStruct
+offset → the `flic` loader reference with that data pointer → its chunk is
+the page index → the nearest preceding `btbl` on that side → header `index`
+of chunk 0 and payload `index` of chunk 1 (offset = sum of the mip-chain
+sizes of the slots before it). `TextureExtractor::resolve_tex_page` does
+exactly this; nothing is scanned or guessed.
 
-#### 4.1.1 The `tex → flic → btbl` chain (from rct3dump)
+The texture wrapper itself: eight `0x00070007`, then `+0x20 u32 1`,
+`+0x24 u32 8`, `+0x28 u32 0x10` (`0x0D` for a few), `+0x2C` the `:txs` style
+slot (resolved by symbol), `+0x30 u32 0x20001` (`0x10001` on some),
+`+0x34 FlicStruct**`, `+0x38 ptr` → a `{tex*, flic*}` pair, then zeros. The
+`Texture*` inside the FlicStruct is 0 on disk; the game fills it at load.
 
-rct3dump makes the multi-texture relationship explicit, and it's the key to
-the still-open multi-tex v5 case:
+#### 4.1.1 The extra-data stream
 
-- **`tex`** (`TextureStruct`) is a thin wrapper that points at a `flic`.
-- **`flic`** (`FlicStruct`) either decodes its own inline pixel data, **or**
-  (loader version ≠ 2) holds an **index into a `btbl` array** — i.e. several
-  `flic`/`tex` symbols all source their pixels from one shared bitmap table.
-- **`btbl`** (`BmpTbl = {u32 unk, u32 count}`) is followed by `count`
-  `FlicHeader`s and then `count` texture payloads read back-to-back. **This is
-  the per-texture table** that our parser currently sees as
-  `unknownafterfileblocks`; matching each `flic` slot to its `btbl` index is
-  what multi-tex extraction needs (§4.6).
+The stream starts right after the relocation table — after one extra `u32`
+on v4 files and on v5 files whose header subversion is 1 — and holds, for
+every loader reference in on-disk order, `hasextradata` records of
+`{u32 size, bytes}` (on v5 the count is the low 16 bits of that field). The
+parser records each record's file position and size in
+`OvlData::extradata[loader_reference_index]`; `--dump` lists them. Besides
+textures, `txt` loaders of `Main` own two records each.
 
-So a single-tex OVL is just the degenerate `count == 1` case, which is why the
-trailing-section scan (§4.3) works for it without modelling the chain.
+Census over the complete install (184 pairs with `tex` symbols, 783 symbols):
+**766 pages decode** — 404 DXT3, 188 DXT1, 174 A8R8G8B8, 0 DXT5 — and the
+other 17 are render targets and dynamic textures with no FlicStruct pointer
+at all (`DrawSolidColour`, `GUIRenderer*`, `TerrainDebug`, `WaterSurface`,
+`FullscreenFadeToBlack`, `Dummy`, `White`, the `ShapeShadow*` …): nothing to
+extract, by design.
 
-**Empirical correction (this codebase).** A signature census of the full
-install does **not** find the grouped `count × FlicHeader` array that
-rct3dump's sequential reads imply. Of every texture-bearing `.ovl`, **117 hold
-exactly one header**, and the *only* file with more than one is
-**`Main.common.ovl`** — whose **3 DXT3 GUI atlases** appear as three *separate*
-single-style trailing headers (§4.2) scattered across the file, not a
-contiguous table. So rct3dump's `btbl` array is its **in-RAM** view (assembled
-by the loader at runtime), not the on-disk layout. Practically, "multi-tex"
-across the whole game = Main alone. Main's `gsi` reference **31 distinct GUI
-texture symbols** (`GUI2Main`, `GUI2LargeIcons1-4`, `GUI2UniformIcons`,
-`StaffIcons`, `TerrainIcons`, …), but the contiguous-header scan finds only the
-**3 DXT3** ones; the other ~28 are reached through the relocated
-`tex → flic → btbl` pointer chain (not byte-scannable) and are **not yet
-located**. The extractor emits the 3 it can find (§4.6); fully cracking Main's
-GUI needs the parser to surface that pointer chain so each `tex` symbol maps to
-its page.
+### 4.2 Page formats
 
-#### 4.1.2 Two on-disk pixel layouts
+RCT3 reuses the Direct3D format enumeration (rct3dump's
+`RCT3DFormatToD3DFormat`). The bitmap tables of the stock game use four codes:
 
-rct3dump reads texture pixels through **two different code paths** depending on
-the loader, and RCT3 OVLs use both:
+| code   | D3D format     | bytes                | decoded as |
+|--------|----------------|----------------------|------------|
+| `0x02` | A8R8G8B8       | 4 / pixel            | copied — little-endian ARGB is B, G, R, A in memory |
+| `0x12` | **DXT1 (BC1)** | 8 / 4×4 block        | opaque, or punch-through alpha when `c0 ≤ c1` |
+| `0x13` | **DXT3 (BC2)** | 16 / 4×4 block       | explicit 4-bit alpha ×17, colour block always 4-colour |
+| `0x14` | DXT5 (BC3)     | 16 / 4×4 block       | interpolated alpha (implemented to spec, absent from stock assets) |
 
-1. **Contiguous mips** (`ReadTextures`, used after a `btbl`): a `FlicHeader`
-   then every mip level concatenated, each level sized purely from
-   `format`/`width`/`height` (no per-level header). This is the layout our
-   single-tex DXT1/3/5 decoder handles (§4.2).
-2. **Per-mip headers** (`ReadTexture`, used by `flic` loader version 2): each
-   level is preceded by a `FlicMipHeader { u32 MWidth, MHeight, Pitch, Blocks }`
-   and copied **pitch-aware** (`size = Pitch × Blocks`, row stride = `Pitch`).
-   The level loop stops when `MWidth/MHeight/Pitch/Blocks` hit zero. We do not
-   yet emit this layout; it likely explains any tex OVL whose trailing payload
-   doesn't size-match a plain contiguous DXT chain.
+The rest of the table for completeness: `0x01` R8G8B8, `0x03` X8R8G8B8,
+`0x04` R5G6B5, `0x05` X1R5G5B5, `0x07` P8, `0x08` A1R5G5B5, `0x09` X4R4G4B4,
+`0x0A` A4R4G4B4, `0x0B` L8, `0x0C` A8L8, `0x0E` V8U8, `0x10` UYVY, `0x11`
+YUY2, `0x15` R3G3B2, `0x16` A8, `0x100`–`0x103` depth formats.
 
-#### 4.1.3 The on-disk linkage is implicit (load-order), not a pointer chain
+A packed mip chain is the sum over levels of `ceil(w/4) × ceil(h/4) × block`
+bytes (levels below 4×4 still take a block), or `w × h × 4` for A8R8G8B8 —
+e.g. DXT3 256², 4 mips = 65536 + 16384 + 4096 + 1024 = 87040 B. Only level 0
+is decoded to TGA.
 
-Dumping Main's `tex` wrappers (`OVL_TEXDBG=1`) settles why multi-tex is hard.
-The `tex` loader's `datapointer` is a `TextureStruct` (96 bytes): eight
-`0x00070007` constants, then `unk9=1`, `unk10=8`, `unk11=0x10` (the "icon" flag),
-`TextureData=0`, and at **+0x34 the `Flic**`** + **+0x38 `ts2`**. Following the
-`Flic**` on disk yields only self-referential scaffolding — records of
-`{ptr→self+4, 0, 1, 1.0f}` whose `Texture*` field is **0/unset on disk** (rct3dump
-notes "always 0 on disk files"). So **the wrapper carries no pointer to its
-pixels**. The game fills `Texture*` at load time by *executing* the loaders in
-order and consuming the trailing data stream (the `btbl` reads `count`
-`FlicHeader`s + `count` payloads; each `flic` then binds the next). The
-symbol↔page association is therefore **positional/by-load-order**, not a
-followable offset. Recovering it offline means porting rct3dump's sequential
-loader-stream reader (`ReadOvl`'s btbl/flic/tex dispatch), which our pointer-based
-parser doesn't do — the sizeable open task behind Main's GUI sprites (§4.6).
+### 4.3 Orientation
 
-### 4.2 Trailing-section header (48 bytes per texture)
+Pages come out exactly as stored, and the stored orientation is **not
+uniform**: the GUI icon sheets (`GUI2Main`, `GUI2LargeIcons*`, `FrontEndIcons`,
+`FrontEndParts`, scenery icons) are top-down, while the splash logos
+(`gui/Banner`), the loading screen, the career-map images of
+`gui/FrontScreen`, `FrontEndLogo` and every **font page** are stored
+bottom-up — the game draws those elements with a flipped V. Nothing in the
+wrapper, the txs style, the format or the mip count tells the two apart (both
+happen with the same `GUIIcon:txs`), so it is an authoring convention: the
+extractor leaves pages and `gsi` sprites as stored, and only the font
+extractor flips (§17), where the convention is certain.
 
-```
-+0x00 .. +0x0F  u32×4   relocation offsets (echo of parsed table)
-+0x10           u32     0x18 constant (block-3 size hint?)
-+0x14 .. +0x1B  zero
-+0x1C           u32     format_code   ← D3D format (NOT a constant!) — see §4.4
-+0x20           u32     width
-+0x24           u32     height
-+0x28           u32     mipmap_count
-+0x2C           u32     total compressed pixel-data size in bytes
-+0x30           bytes   first mip (largest), then each next level, all
-                        DXT-compressed back-to-back.
-```
+### 4.4 History: the "trailing header"
 
-**Correction (rct3dump):** the `0x12` at `+0x1C` is **not** a constant — it's
-the texture's D3D format code, and `+0x1C .. +0x28` is exactly rct3dump's
-`FlicHeader { u32 Format, Width, Height, Mipcount }`. We only ever saw `0x12`
-because those were all DXT1; DXT3 textures carry `0x13` and DXT5 `0x14` in the
-same slot (§4.4). Reading this field turns format detection from a size
-heuristic into a direct lookup, and is what unlocked DXT3/DXT5 decode.
-
-Verified empirically: sum of per-level compressed sizes (DXT1 = 4 bpp,
-4×4 blocks padded to 8 bytes minimum) exactly matches the size field
-(e.g. 256×256 mip=9 → 32768 + 8192 + 2048 + 512 + 128 + 32 + 8 + 8 + 8
-= 43704 = `0xAAB8`, matching `+0x2C` byte-for-byte on every
-single-tex character/clothing texture sampled).
-
-### 4.3 Locating the header
-
-`dataend` (what `OvlParser` stops at) lies a variable margin before the
-trailing section — when an OVL side has no symbol resolves the parser
-exits earlier than when it does, by 20+ bytes. We therefore scan
-forward from `dataend` for the `{format, width, height, mip, size}`
-signature at `+0x1C .. +0x2F`, requiring:
-
-- `format_code ∈ {0x12, 0x13, 0x14}` (DXT1/DXT3/DXT5),
-- `width` and `height` both powers of two in `[16, 4096]` (rectangular
-  allowed — we no longer require `w == h`),
-- `1 ≤ mip ≤ 16`, and
-- `size` **exactly** equal to the mip-chain size computed from the format's
-  block size (8 B for DXT1, 16 B for DXT3/5).
-
-The format-code constraint (3 valid values out of 2³²) combined with the exact
-size match makes the signature far stricter than the old size-only heuristic —
-mms vertex/index buffers and prt/snd payloads don't trip it.
-
-### 4.4 Format detection
-
-The format is read **directly** from `format_code` at `+0x1C` (§4.2). RCT3
-reuses the Direct3D format enumeration; rct3dump's `RCT3DFormatToD3DFormat`
-gives the full table (only the DXT codes occur in `tex` trailing sections in
-practice, but the rest is documented here for completeness):
-
-| code   | D3D format     | code   | D3D format    | code   | D3D format |
-|--------|----------------|--------|---------------|--------|------------|
-| `0x01` | R8G8B8         | `0x09` | X4R4G4B4      | `0x12` | **DXT1 (BC1)** |
-| `0x02` | A8R8G8B8       | `0x0A` | A4R4G4B4      | `0x13` | **DXT3 (BC2)** |
-| `0x03` | X8R8G8B8       | `0x0B` | L8            | `0x14` | **DXT5 (BC3)** |
-| `0x04` | R5G6B5         | `0x0C` | A8L8          | `0x15` | R3G3B2     |
-| `0x05` | X1R5G5B5       | `0x0E` | V8U8          | `0x16` | A8         |
-| `0x07` | P8 (palette)   | `0x10` | UYVY          | `0x100`–`0x103` | depth (D16/D32/D15S1/D24S8) |
-| `0x08` | A1R5G5B5       | `0x11` | YUY2          |        |            |
-
-What we decode today:
-
-| `format_code` | Format     | bytes / 4×4 block | Status            |
-|---------------|------------|-------------------|-------------------|
-| `0x12`        | DXT1 (BC1) | 8  (4 bpp)        | **Decoded → TGA** |
-| `0x13`        | DXT3 (BC2) | 16 (8 bpp)        | **Decoded → TGA** (explicit 4-bit alpha) |
-| `0x14`        | DXT5 (BC3) | 16 (8 bpp)        | **Decoded → TGA** (interpolated alpha) |
-
-All three decode to a 32-bit BGRA TGA at the largest mip level. Per-format
-alpha handling:
-
-- **DXT1** — opaque (`A = 255`) unless a block uses the `c0 ≤ c1`
-  "punch-through" mode, where colour index 3 is fully transparent.
-- **DXT3** — the leading 8 bytes of each 16-byte block hold 16 explicit 4-bit
-  alpha values (scaled ×17 to 0–255); the trailing 8 bytes are a DXT1-style
-  colour block but **always** in 4-colour mode (no punch-through).
-- **DXT5** — the leading 8 bytes hold two 8-bit alpha endpoints + sixteen 3-bit
-  indices into an 8-entry interpolated alpha ramp; colour block as DXT3.
-
-The `+0x2C` size field is now used only as a **cross-check**: `data_size` must
-equal the mip-chain size computed from `format_code` + `width` + `height` +
-`mipmap_count`, which also keeps the trailing-section scan (§4.3) from
-false-positiving.
-
-**Prevalence in stock RCT3** (raw signature census across all 14 952 `.ovl`
-files, both sides): **110 DXT1** headers, **10 DXT3** headers (8 files), and
-**zero DXT5** anywhere in the shipping game. So the BC3/DXT5 path is implemented
-to spec for completeness and custom content, but never fires on stock assets
-(untested on real data). DXT3 is rare; its single-tex instances (e.g.
-`Mackeral` — a 32×32 cutout, verified: 642 transparent + 382 opaque texels)
-extract correctly, while most DXT3 sits inside multi-tex icon atlases that are
-still gated (§4.6).
-
-### 4.5 Coverage today
-
-Raw signature census across the complete RCT3 Complete Edition install (every
-`.ovl`, both sides) finds **120 distinct DXT texture headers**: 110 DXT1,
-10 DXT3, 0 DXT5. The gated extractor (single-tex only, §4.6) decodes:
-
-| Format | Headers | Decoded | Notes |
-|--------|--------:|--------:|-------|
-| DXT1   | 110     | 110     | all single-tex, symbol-named |
-| DXT3   | 10      | 9       | 6 single-tex + Main's 3 atlas pages; `chimp_data` (1) deferred |
-| DXT5   | 0       | —       | absent from stock RCT3 |
-
-The 6 single-tex DXT3 textures are `Mackeral` (32², the validation case) plus
-five 256²/512² atlases — `PathIcons`, `ShopsIcons`, `EnclosureIcons`,
-`PoolIcons`, and `WildAnimals` — each a single big DXT3 image sliced by `gsi`
-rects, so decoding them makes `gsi` atlas-sprite extraction (§5) viable for
-those packs — and `AtlasExtractor` now wires this decode, so their `gsi` sprites
-crop today (verified: PathIcons → 10, ShopsIcons → 59, EnclosureIcons → 9
-sprites). The only multi-header OVL is `Main`: its `gsi` reference 31 distinct
-GUI texture symbols, of which the contiguous scan finds 3 (emitted as
-index-named atlas pages, §4.6); the other ~28 are pointer-linked and unlocated,
-so Main's `gsi` are skipped for now (§4.1.1). The lone other holdout is
-`chimp_data` (2 `tex` symbols, one findable header), deferred as an edge case.
-
-### 4.6 Open work on `tex`
-
-- **DXT3/DXT5 decode** — ✅ **done.** `format_code` at `+0x1C` selects the
-  decoder (§4.4). **DXT3** (explicit 4-bit alpha) is verified on real assets —
-  6 single-tex textures now decode, including the `EnclosureIcons` / `PathIcons`
-  / `ShopsIcons` / `PoolIcons` atlases and `Mackeral`. **DXT5** (interpolated
-  alpha) is implemented to the BC3 spec but **does not occur anywhere in stock
-  RCT3** (0 of 14 952 files), so it's unverified on real data — it's there for
-  custom content.
-- **Multi-tex layout** — install-wide this is **only `Main.common.ovl`** (3 DXT3
-  GUI atlases; §4.1.1 explains why rct3dump's `btbl` array isn't the on-disk
-  shape). The per-symbol path *defers* multi-tex OVLs — the trailing scan is
-  symbol-blind, so decoding per `tex` symbol would emit one near-duplicate per
-  symbol (Main has 86). Instead a separate pass (`extract_multitex_atlases`)
-  decodes the **distinct** trailing headers once and writes
-  `<stem>__atlas<N>_<W>x<H>.tga`. Result: Main yields its 4 `ftx` textures + 3
-  atlas pages (before, it produced 88 `.tga`, only 4 distinct). What remains is
-  bigger than a mapping: Main's `gsi` reference **31** GUI texture symbols and
-  only the **3** contiguous DXT3 pages are found here — the other ~28 sit behind
-  the `tex → flic → btbl` chain, which (per `OVL_TEXDBG=1`, §4.1.3) is **not a
-  followable on-disk pointer chain** — it's resolved by *load order*. Porting
-  rct3dump's sequential trailing-stream reader is the concrete (sizeable) next
-  step before any `tex` symbol can be tied to its page for `gsi` slicing.
-- **Per-mip `FlicMipHeader` layout** (§4.1.2) — needed if any `flic` v2 texture
-  turns out not to size-match a contiguous chain. Not yet observed in failing
-  cases, but documented so it isn't re-discovered from scratch.
-- **`gsi` atlas extraction** — ✅ **wired for single-tex.** `AtlasExtractor`'s
-  `tex` path now calls `TextureExtractor::decode_tex_bgra` (was a stub), so
-  single-tex atlas packs split into named sprite TGAs today — verified
-  PathIcons → 10, ShopsIcons → 59, EnclosureIcons → 9. `Main`'s ~1900 `gsi`
-  still skip: 28 of its 31 GUI textures are pointer-linked and unlocated (above).
-
-OVLExtractor-2 does not decode `tex` either — its handler is a stub
-that emits a `<tex format='18'>` XML element referencing a `.png`
-that's never written. Cobra-tools has no RCT3 `tex` support.
-
-**Atlas splitting status:** single-`tex` atlas packs (`PathIcons`, `ShopsIcons`,
-`EnclosureIcons`, `PoolIcons`, … — each one `tex` image) now decode **and**
-`AtlasExtractor` crops their `gsi` rects into named sprites (wired + verified).
-`ftx`-backed GSI worked all along. The one atlas that still can't be split is
-`Main`: it holds ~31 GUI textures sliced by ~1900 `gsi`, but only 3 are findable
-by the contiguous scan — the other ~28 sit behind the relocated
-`tex → flic → btbl` pointer chain (§4.1.1), unlocated, so Main's `gsi` are
-skipped (cleanly, no crash).
-
-**NOT a blocker for static meshes:** zero `shs` files in the random-sample
-survey reference a `:tex`. Cracking `tex` is unnecessary for textured
-3D models (see §8.5).
+Earlier revisions of this section described a 48-byte header found by
+scanning forward from the end of the parsed structures. That was the extra-
+data stream seen through a keyhole: `+0x10 = 0x18` was the size of the btbl's
+first chunk (`8 + 1 × FlicHeader`), `+0x1C..+0x28` the FlicHeader of slot 0
+and `+0x2C` the size of the second chunk. It worked for single-page tables
+and found 3 of `Main`'s 88 pages; the chain above finds all 78 that have
+pixels. OVLExtractor-2 never decoded `tex` (its handler is a stub).
 
 
 ## 5. GSI — atlas region descriptor
@@ -559,6 +411,14 @@ in `OVLExtractor-2` was looking up a linkedfile whose `datapointer`
 matched `gsi+4` — which only worked for textures stored as separate
 linkedfiles. For `tex`-backed atlases that's the wrong table; you need
 `symbolresolves` instead.
+
+With every `tex` page reachable (§4.1) the `gsi` of the install crop:
+3 651 sprites of 3 679  `Main` alone yielding 1 860 interface sprites from
+its 31 GUI pages. The rest are 20 degenerate rects (zero area on disk) and
+gsi referencing `RCT1_icons:tex`  a texture no OVL defines  or a render
+target. The rect is
+in the page's stored orientation (§4.3), so a sprite of a bottom-up page
+(career-map images) is itself bottom-up.
 
 
 ## 6. SND — sound (fully decoded)
@@ -1073,7 +933,8 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 
 | Item | Impact when solved |
 |---|---|
-| `Main` GUI textures (`tex → flic → btbl`) | Single-tex DXT1/3/5 is decoded and `AtlasExtractor` slices single-tex packs' `gsi` today. `Main` is the holdout: ~31 GUI textures sliced by ~1900 `gsi`, only 3 byte-scannable. The on-disk wrappers carry **no** pixel pointer (§4.1.3) — the symbol↔page link is by *load order*, so the fix is porting rct3dump's sequential `btbl`/`flic` trailing-stream reader (sizeable parser work). Affects only `Main`'s GUI sprites. Not required for shs/bsh models — none reference tex. |
+| Page orientation | `tex` pages are stored either top-down or bottom-up with no in-OVL marker (§4.3). Fonts are flipped by their extractor; other pages and `gsi` sprites come out as stored. |
+| `RCT1_icons:tex` | Referenced by 20 `gsi` of `Main`, defined by no OVL of the install (an unshipped RCT1 icon sheet). |
 | `mms` position decode | Unlocks readable 3D meshes for animated objects (animals, characters, ride cars). Advanced this session: positions are quantized to a bias+scale found in the morph descriptor (§7.6); exact raw width/remap still TBD. |
 | `txs` specular/reflection | Alpha is solved (ftx alpha plane §3.5 + txs class). Still approximate: `*Specular*` → glTF roughness 0.5, `*Chrome*` / `*Reflection*` → metallic 0.8. The environment maps they sample (`chrome:ftx`, `two:ftx`) are not in any OVL — presumably built into the engine — so chrome parts export untextured. |
 | Recolor | Recolorable ftx export with their blue/magenta/yellow mask ramps (§3.8). Applying player/default colours needs the item's default colours (probably in `sid`). |
@@ -1736,3 +1597,82 @@ blender -b --python scripts/blender_ride.py -- aviator.layout.json out/glb --ren
 Tracked rides carry the same two blocks: `<ride>.ride.json` has
 `attraction` and `ride_info` (Vanilla: at the start of the `trr`;
 Soaked/Wild: behind the extension's `Ride_S*`).
+
+
+## 17. Fonts (`fct`)
+
+The interface fonts live in `Main` (`GUIFontTiny/Small/Medium/Large`,
+`GUIFontSmallNumbers`, `LucidaConsole`) and, per screen resolution, in
+`gui/<800|1024|1280>/Resolution` (`GUIFontScaledTiny/Small/Medium/Large`).
+An `fct` symbol is a Win32-style face description plus a glyph cache: the
+`<name>:tex` page it resolves to (§4) holds the pre-rendered glyphs, and the
+glyph table says where each one is. The point size is a separate float
+symbol declared next to it, `GUIFontSizeScaledTiny:flt` = 9.0 (Small 12,
+Medium 16, Large 21).
+
+Font, 112 bytes at the data pointer (every "ptr" is an internal offset):
+
+```
++0x00 f32 line_gap   in em: 1 or 2 px over the size (1/9, 1/6, 2/16, 1/21)
++0x04 f32 ascent     in em  (9/9, 12/12, 15/16, 19/21)
++0x08 f32 descent    in em  (2/9, 2/12, 3/16, 5/21)
++0x0C u32 0
++0x10 u32 glyph_count    4210 for the Unicode fonts, 59 / 128 for the ASCII ones
++0x14 ptr texture        relocation slot, resolved by symbol to "<name>:tex"
++0x18 u16 has_codes      1: a code-point table follows (sparse font)
+                         0: glyph i is code point i (GUIFontSmallNumbers, LucidaConsole)
++0x1A u16 1
++0x1C u32 1
++0x20 u32 0
++0x24 u32 weight         Win32 FW_NORMAL 400 / FW_BOLD 700
++0x28 char[32] face      "Tahoma", "Verdana", "Arial", "Lucida Console" (NUL-terminated,
+                         the bytes after the NUL are leftovers)
++0x48 u32[8]             runtime scratch — pointers from the authoring machine, ignore
++0x68 ptr glyphs         → glyph_count × Glyph (36 B)
++0x6C ptr codes          → glyph_count × u16 code point, ascending (last = 0 pad)
+```
+
+Glyph, 36 bytes:
+
+```
++0x00 f32 advance    pen advance in em (× size = pixels)
++0x04 f32 spacing    one pixel in em for most rendered glyphs, 0 otherwise (role unconfirmed)
++0x08 f32 0
++0x0C f32 u0  +0x10 f32 v0  +0x14 f32 u1  +0x18 f32 v1
+                     rectangle in the page, 0..1, in the page's STORED orientation
++0x1C f32 offset_x   bitmap offset from the pen, pixels, to the right
++0x20 f32 offset_y   bitmap offset from the baseline to the bitmap's bottom edge,
+                     pixels, UPWARD (negative for descenders: g/j/p/q = -4 in Large;
+                     +10 for the quotes)
+```
+
+A page only caches part of the font: the four 4210-glyph fonts pre-render the
+same 163 glyphs (Latin-1 letters, digits, punctuation); every other code point
+has `u0 = u1 = 0` and is rasterised by the game from the system font at run
+time. Font pages are DXT3 256², white with the glyphs in the alpha plane, and
+are stored bottom-up (§4.3): a glyph's upright pixel rect is
+`[u0·w, (1 − v1)·h, u1·w, (1 − v0)·h]` on the vertically flipped page. Drawing
+a string is then `x += advance × size` per glyph, each bitmap placed at
+`(pen_x + offset_x, baseline − height − offset_y)` — verified by recomposing
+"Hello RCT3! gjpq" from `GUIFontScaledLarge` (Arial bold 21 px).
+
+`--types font` writes `<name>.font.json` (face, weight, metrics, every glyph
+with its code, advance, offsets, uv and — when the page decodes — upright
+`rect`) and `<name>.tga`, the page flipped upright. 18 fonts in the install,
+all decode (`LucidaConsole`'s page `LucidaConsole:tex` is declared by no OVL,
+so its JSON keeps uv only).
+
+
+## 18. Text (`txt`)
+
+A `txt` symbol is a NUL-terminated **UTF-16LE** string at its data pointer,
+nothing else. The three language files `gui/English`, `gui/French` and
+`gui/German` each hold the 12 388 strings of the interface under the same
+symbol names (`AOP_Name_0`, `ResearchName_…`, `TooltipText_…`); `Main` has
+1 523 more and each `Style` / content pack a few (names and descriptions of
+their shops, resolved by `--types scenery` for the manifests, §13.4). In
+`Main` the `txt` loader references also own two extra-data records each
+(§4.1.1), unused here.
+
+`--types text` writes one `<ovl>.txt.json` per pair, `{"Symbol": "string"}`
+in UTF-8, sorted by symbol: 38 726 strings over the 16 pairs that carry any.

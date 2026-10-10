@@ -67,6 +67,16 @@ struct LoadReference {
     std::uint32_t internal_offset;
 };
 
+// One "extra data" chunk of a loader: a {u32 size, bytes} record in the stream
+// that follows the relocation table (docs §4.1). The loader-reference list
+// consumes that stream in order, `hasextradata` chunks per loader; the bytes
+// are not part of any relocatable block, so they are addressed by absolute
+// file position rather than by internal offset.
+struct ExtraChunk {
+    std::uint64_t position;   // absolute file offset of the first byte of data
+    std::uint32_t size;       // byte count
+};
+
 struct SymbolResolve {
     std::uint32_t pointer;
     std::uint32_t stringpointer;

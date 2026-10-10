@@ -55,6 +55,7 @@ private:
     void parse_symbol_references(BinaryReader& r, OvlData& d, std::uint32_t version);
     void parse_loader_references(BinaryReader& r, OvlData& d);
     void parse_symbol_resolves(BinaryReader& r, OvlData& d, std::uint32_t version);
+    void parse_extradata(BinaryReader& r, OvlData& d, std::uint32_t version, std::uint64_t start);
     void link_loader_references(OvlData& d);
     void resolve_relocation_targets(BinaryReader& r, OvlData& d);
     void preresolve_loaders(BinaryReader& r, OvlSide currentSide);

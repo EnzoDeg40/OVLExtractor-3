@@ -13,10 +13,10 @@ namespace ovl {
 //   - ftx: 8-bit palette-indexed pixels (palette in the header block, indices
 //     in a separate chunk reached via an internal offset). Also writes the raw
 //     header block to <name>.ovltex and a <name>.json metadata sidecar.
-//   - tex: DXT-compressed pixel data in a trailing section after the parsed
-//     OVL structures. The format code at header +0x1C selects the decoder —
-//     DXT1 (BC1), DXT3 (BC2, explicit alpha) and DXT5 (BC3, interpolated alpha)
-//     are all supported. Multi-texture (btbl/flic) OVLs are not yet handled.
+//   - tex: a page of the pair's bitmap table (`btbl`), reached through the
+//     tex → flic → btbl chain and the per-loader extra-data stream (docs
+//     §4.1). DXT1 / DXT3 / DXT5 and A8R8G8B8 pages decode; every tex symbol
+//     maps to its own page, so multi-texture OVLs (the GUI) work too.
 class TextureExtractor : public IResourceExtractor {
 public:
     std::string_view name() const override { return "texture"; }
@@ -31,12 +31,6 @@ public:
                                const std::string& symbol_lc,
                                const ExtractContext& ctx);
 
-    // Decode a single-tex `tex` linkedfile (declared on `declaring_side`) to
-    // mip-0 BGRA pixels (row-major, top-down, 4 B/px). Picks the data side
-    // (opposite the declaration) and the trailing DXT page automatically.
-    // Returns false for multi-tex OVLs — the trailing scan is symbol-blind so
-    // it can't tell pages apart (docs §4.6) — and for non-DXT/unreadable data.
-    // Used by AtlasExtractor to slice gsi sprites from tex-backed atlases.
     // Decode the FlexiTexture (`ftx`) whose header sits at internal offset
     // `datapointer` to BGRA pixels (docs §3). Follows the in-header pointers
     // to the palette, the 1-byte index plane and — when present — the
@@ -62,7 +56,12 @@ public:
                                    std::uint32_t* recolorable = nullptr,
                                    const int* recolor = nullptr);
 
+    // Decode the `tex` linked file `lf_index` declared on `declaring_side` to
+    // mip-0 BGRA pixels (row-major, 4 B/px) by following its chain to the
+    // bitmap-table page (docs §4.1). False when the chain is broken or the
+    // page format is unsupported. Used by AtlasExtractor to slice gsi sprites.
     static bool decode_tex_bgra(const OvlParser& parser, OvlSide declaring_side,
+                                std::size_t lf_index,
                                 std::uint32_t& width, std::uint32_t& height,
                                 std::vector<std::uint8_t>& bgra);
 };

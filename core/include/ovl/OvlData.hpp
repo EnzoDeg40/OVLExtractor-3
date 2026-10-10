@@ -39,6 +39,11 @@ struct OvlData {
     std::vector<SymbolStruct>   symbolpointers;
     std::vector<LoadReference>  loaderreference;
     std::vector<SymbolResolve>  symbolresolves;
+    // extradata[i] = the chunks owned by loaderreference[i] (docs §4.1): the
+    // btbl table + pixel payloads, a flic's page index, … Empty for loaders
+    // whose hasextradata is 0.
+    std::vector<std::vector<ExtraChunk>> extradata;
+    std::uint64_t               extradata_start = 0;  // file offset of the stream
 
     std::vector<PreResolved>    presolvedfurtherdata;
     std::vector<LinkedFiles>    linkedfiles;

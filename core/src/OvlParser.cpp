@@ -119,6 +119,7 @@ bool OvlParser::parse_side(const std::filesystem::path& ovlname, OvlSide side, s
 
     parse_block_data(r, d, version, offset);
     parse_relocations(r, d);
+    const std::uint64_t after_relocations = r.tell();
     parse_stringtable(r, d);
     parse_symbol_references(r, d, version);
     parse_loader_references(r, d);
@@ -126,6 +127,7 @@ bool OvlParser::parse_side(const std::filesystem::path& ovlname, OvlSide side, s
 
     d.postrelocunknown = r.read_u32();
     d.dataend = r.tell();
+    parse_extradata(r, d, version, after_relocations);
 
     link_loader_references(d);
     resolve_relocation_targets(r, d);
@@ -393,6 +395,36 @@ void OvlParser::parse_symbol_resolves(BinaryReader& r, OvlData& d, std::uint32_t
         sr.internal_offset = loaderoffset;
         loaderoffset += per_entry;
         d.symbolresolves.push_back(sr);
+    }
+}
+
+// The per-loader "extra data" stream (docs §4.1). It starts right after the
+// relocation table — after one extra u32 on v4 files and on v5 files whose
+// subversion flag is set (rct3dump reads `size` there, OpenCobra skips it) —
+// and holds, for every loader reference in order, `hasextradata` records of
+// {u32 size, size bytes}. The game consumes the stream while executing the
+// loaders, so the association is positional: that is how a `flic` finds its
+// page index and a `btbl` its FlicHeader table and pixel payloads.
+void OvlParser::parse_extradata(BinaryReader& r, OvlData& d, std::uint32_t version,
+                                std::uint64_t start) {
+    d.extradata.assign(d.loaderreference.size(), {});
+    if (version == 4 || (version == 5 && d.extendedheaders.ovlv5extra.subversion == 1)) {
+        start += 4;
+    }
+    d.extradata_start = start;
+    std::uint64_t pos = start;
+    const std::uint64_t end = r.size();
+    for (std::size_t i = 0; i < d.loaderreference.size(); ++i) {
+        std::uint32_t count = d.loaderreference[i].hasextradata;
+        if (version == 5) count &= 0xFFFFu;  // v5 packs a second u16 in the high half
+        for (std::uint32_t c = 0; c < count; ++c) {
+            if (pos + 4 > end) return;
+            r.seek(pos);
+            std::uint32_t size = r.read_u32();
+            if (pos + 4 + size > end) return;
+            d.extradata[i].push_back(ExtraChunk{pos + 4, size});
+            pos += 4 + size;
+        }
     }
 }
 

@@ -6,6 +6,8 @@
 #include "ovl/extract/SceneryExtractor.hpp"
 #include "ovl/extract/TrackExtractor.hpp"
 #include "ovl/extract/SoundExtractor.hpp"
+#include "ovl/extract/FontExtractor.hpp"
+#include "ovl/extract/TextExtractor.hpp"
 #include "ovl/extract/TextureExtractor.hpp"
 #include "ovl/extract/TextureIndex.hpp"
 
@@ -77,6 +79,29 @@ int do_extract_sound(const ovl::OvlParser& p,
     if (r.files_written > 0 || r.errors > 0){
         std::cout << "sound: " << r.files_written << " .wav written, "
         << r.errors << " error(s)\n";
+    }
+    return r.errors == 0 ? 0 : 2;
+}
+
+template <class Extractor>
+int do_extract_simple(const ovl::OvlParser& p,
+                      const std::filesystem::path& out_dir,
+                      bool overwrite,
+                      bool verbose,
+                      const char* label,
+                      const char* unit) {
+    Extractor ex;
+    ovl::ExtractContext ctx;
+    ctx.output_dir = out_dir;
+    ctx.overwrite = overwrite;
+    std::string prefix = std::string("[") + label + "] ";
+    if (verbose) {
+        ctx.log = [prefix](std::string_view m) { std::cerr << prefix << m << "\n"; };
+    }
+    auto r = ex.extract(p, ctx);
+    if (r.files_written > 0 || r.errors > 0) {
+        std::cout << label << ": " << r.files_written << " " << unit << " written, "
+                  << r.errors << " error(s)\n";
     }
     return r.errors == 0 ? 0 : 2;
 }
@@ -190,6 +215,8 @@ struct Actions {
     bool dump = false;
     bool list = false;
     bool sound = false;
+    bool font = false;
+    bool text = false;
     bool texture = false;
     bool atlas = false;
     bool model = false;
@@ -279,6 +306,16 @@ int process_one(const std::filesystem::path& input,
     }
     if (a.texture) {
         rc |= do_extract_texture(parser, out_dir, a.overwrite, a.verbose);
+        did_anything = true;
+    }
+    if (a.font) {
+        rc |= do_extract_simple<ovl::FontExtractor>(parser, out_dir, a.overwrite, a.verbose,
+                                                    "font", "font(s)");
+        did_anything = true;
+    }
+    if (a.text) {
+        rc |= do_extract_simple<ovl::TextExtractor>(parser, out_dir, a.overwrite, a.verbose,
+                                                    "text", "json(s)");
         did_anything = true;
     }
     if (a.atlas) {
@@ -479,11 +516,12 @@ int main(int argc, char** argv) {
                  "model's output directory so .mtl map_Kd paths resolve. "
                  "Requires --assets-root.");
     app.add_option("-t,--types", types,
-                   "Resource types to extract: sound, texture, atlas, model, scenery, track, dump, all (repeatable). "
+                   "Resource types to extract: sound, texture, atlas, font, text, model, scenery, track, dump, all (repeatable). "
                    "`scenery` packages each scenery item (svd: stalls, shops, decorations…) "
                    "as a self-contained .glb — mesh, textures, materials, skeleton, animations. "
-                   "`track` exports track sections (tks), tracked rides (trr) and splines as JSON.")
-        ->check(CLI::IsMember({"sound", "texture", "atlas", "model", "scenery", "track", "dump", "all"}));
+                   "`track` exports track sections (tks), tracked rides (trr) and splines as JSON. "
+                   "`font` writes each fct as .font.json + its glyph page; `text` writes every txt string of the pair to one .txt.json.")
+        ->check(CLI::IsMember({"sound", "texture", "atlas", "font", "text", "model", "scenery", "track", "dump", "all"}));
     app.add_flag("--all-lods", a.all_lods,
                  "With --types scenery, also write a .glb for every lower level of detail "
                  "(the most detailed one is always written).");
@@ -506,6 +544,8 @@ int main(int argc, char** argv) {
     };
     a.dump = do_dump_flag || wants("dump");
     a.sound = wants("sound");
+    a.font = wants("font");
+    a.text = wants("text");
     a.texture = wants("texture");
     a.atlas = wants("atlas");
     a.model = wants("model");
