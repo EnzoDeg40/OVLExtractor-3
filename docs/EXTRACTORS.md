@@ -227,6 +227,25 @@ The 16 pairs that carry text (the three language files, `Main`, the
 `Style` packs, the content packs, the staff-uniform icons) give 38 726
 strings, 0 errors.
 
+### 4.3 `scripts/ovl_text_pack.py` — write a language file back
+
+The reverse of 4.2, for `gui/<Language>` pairs only (format docs §18.1): take
+a template pair, a JSON of texts and write a new pair whose strings may have
+any length. Symbols the JSON omits keep the template text; symbols it adds
+are refused (the symbol set, and so the hashes, come from the template).
+
+```bash
+# edit out/gui/French/French.txt.json (any subset of symbols), then:
+python3 scripts/ovl_text_pack.py "$ASSETS/gui/French.common.ovl" French.txt.json \
+        "$ASSETS/gui/French.common.ovl"      # the .unique.ovl is written next to it
+python3 scripts/ovl_text_pack.py --roundtrip "$ASSETS/gui/German.common.ovl"   # self-check
+```
+
+Back the originals up first: the game's language list is fixed to the three
+shipped files, so a new language has to take one of their names. Verified in
+the game on 2026-10-10 (menu texts of free length, see the screenshot in the
+format doc's §18.1 narrative).
+
 
 ## 5. ModelExtractor — `shs`/`mms` → `.obj` + `.mtl`
 

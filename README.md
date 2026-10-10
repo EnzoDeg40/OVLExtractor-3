@@ -50,7 +50,9 @@ This project addresses both:
   `Main`'s 1 860 interface icons included.
 - ✅ **Fonts** (`--types font`: `fct` → `.font.json` + glyph page) and
   **text** (`--types text`: `txt` → `.txt.json`, the 12 388 interface strings
-  per language) — the whole `gui/` tree extracts (docs §17–18).
+  per language) — the whole `gui/` tree extracts (docs §17–18). And the way
+  back: `scripts/ovl_text_pack.py` re-encodes a language pair from a JSON of
+  strings of any length, verified in the running game (docs §18.1).
 - ✅ **Scenery packager** (`--types scenery`: `svd` → `.glb`): one
   self-contained glTF 2.0 per scenery item — most detailed LOD, embedded
   PNG textures, opaque / alpha-mask / blend materials, skeleton and

@@ -1676,3 +1676,40 @@ their shops, resolved by `--types scenery` for the manifests, §13.4). In
 
 `--types text` writes one `<ovl>.txt.json` per pair, `{"Symbol": "string"}`
 in UTF-8, sorted by symbol: 38 726 strings over the 16 pairs that carry any.
+
+### 18.1 Writing a language file (verified in the game)
+
+A language pair is the simplest OVL to re-encode, and `scripts/ovl_text_pack.py`
+does it from a template pair and a JSON `{"Symbol": "text"}` (what
+`--types text` writes). What the common side of `gui/<Language>` holds, in
+order, and what the writer does with it:
+
+| Part | Content | Writer |
+|---|---|---|
+| Header, loaders, v5 loader extra | `FGRK`, header v2, OVL v5, one `txt` loader; per-loader `{0, symbol count}` | copied |
+| Chunk 1 | block 0 = the symbol-name string table (`Name:txt\0`, sorted by hash); blocks 1… = the UTF-16LE texts, ~16 KB per block | names copied, texts re-packed |
+| Chunk 3 | block 0 = symbol table (`{name ptr, data ptr, u16 1, u16 0xFFFF, hash}` × n); block 1 = loader references (`{0, data ptr, hasextradata, symbol ptr, 0}` × n) | pointers recomputed |
+| v5 extra struct (`temp` = 64 B) | the loader references that own extra data: `{u32 index, u16 0xFFFF, u16 1, u32 1, u16 1}` × 4 | copied |
+| Relocations | the 4 pointer fields of every symbol / loader reference, ascending | regenerated |
+| Extra data | one `{4, 1}` record for 4 of the `txt` loaders | copied |
+| Tail | `FilesAndLines`: per block, `{start, end, ?}` then one `{source path, line, offset}` per string — the authoring source map (`c:\coding\safari\resource\gui\<Language>\General.txt`, 3.7 MB) | **dropped** |
+
+The unique side only declares the loader and three empty blocks; its tail
+repeats the common's total size three times. The writer emits it without the
+tail. Keeping the symbol set of the template means the symbol hashes travel
+unchanged, so no hash function is needed; new symbols are refused.
+
+Verified on the Mac build (`RCT3_Exe` 3.3.4): the game loads a re-packed
+`French.common.ovl` whose strings changed length — the main menu shows the new
+texts, wrapped and ellipsised by the GUI — and a pair truncated right after
+its extra data (no tail) loads too, so the source map is not read. The
+writer reproduces `German` and `French` byte for byte (minus the tail) and
+`English` up to the split of the text blocks (one of its blocks closes at
+15 586 B for no visible reason).
+
+What the game does **not** do: discover new languages. The Language list of
+the options dialog is fixed to English / French / German on this build (names
+from `Main`'s `Language_<Stem>:txt`), `Language "Spanish"` in `Options.txt`
+falls back to English, and a `gui/Spanish.common.ovl` is never opened. A new
+language therefore replaces one of the three slots — e.g. ship Spanish as
+`gui/French.common.ovl` — until the list in the executable is patched.
