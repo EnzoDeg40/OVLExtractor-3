@@ -73,7 +73,7 @@ std::optional<LinkedRef> find_linked(const OvlParser& parser,
 //             +0x34 ptr local bind matrices, +0x38 ptr model-space bind matrices
 // Sub-mesh (StaticShape2/BoneShape2): +0x18 vc, +0x1C ic, +0x20 ptr verts, +0x24 ptr idx.
 //   shs vertex 36 B: pos(12) normal(12) color(4) uv(8);   u32 indices
-//   bsh vertex 44 B: pos(12) normal(12) bone(4) unk(4) color(4) uv(8);   u16 indices
+//   bsh vertex 44 B: pos(12) normal(12) bones(4×u8) weights(4×u8) color(4) uv(8);   u16 indices
 bool read_shape(const OvlParser& parser, OvlSide side, std::size_t lf_index,
                 bool skinned, Shape& out, std::string& err) {
     const auto& d = parser.side(side);
@@ -141,8 +141,9 @@ bool read_shape(const OvlParser& parser, OvlSide side, std::size_t lf_index,
             for (float& f : v.pos) f = vr->read_f32();
             for (float& f : v.normal) f = vr->read_f32();
             if (skinned) {
-                v.bone = vr->read_u32();
-                vr->read_u32();
+                // D3D BLENDINDICES (4 × u8) then BLENDWEIGHT (4 × u8, sum 255).
+                for (auto& b : v.bones) b = vr->read_u8();
+                for (auto& w : v.weights) w = vr->read_u8() / 255.0f;
             }
             v.color = vr->read_u32();
             v.uv[0] = vr->read_f32();
@@ -178,7 +179,12 @@ bool read_shape(const OvlParser& parser, OvlSide side, std::size_t lf_index,
         }
         for (const auto& p : out.parts)
             for (const auto& v : p.verts)
-                if (v.bone >= bone_count) { err = "vertex bone index out of range"; return false; }
+                for (int k = 0; k < 4; ++k)
+                    if (v.weights[k] > 0 && v.bones[k] >= bone_count) {
+                        err = "vertex bone index out of range: " + std::to_string(v.bones[k]) +
+                              " >= " + std::to_string(bone_count);
+                        return false;
+                    }
     }
     return true;
 }

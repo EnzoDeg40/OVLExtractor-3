@@ -316,8 +316,12 @@ public:
                 p.normals.insert(p.normals.end(), {v.normal[0], v.normal[1], -v.normal[2]});
                 p.uvs.insert(p.uvs.end(), {v.uv[0], v.uv[1]});
                 if (shape.skinned) {
-                    p.joints.insert(p.joints.end(), {static_cast<std::uint16_t>(v.bone), 0, 0, 0});
-                    p.weights.insert(p.weights.end(), {1.f, 0.f, 0.f, 0.f});
+                    float sum = v.weights[0] + v.weights[1] + v.weights[2] + v.weights[3];
+                    for (int k = 0; k < 4; ++k) {
+                        bool used = v.weights[k] > 0;
+                        p.joints.push_back(used ? v.bones[k] : 0);
+                        p.weights.push_back(used && sum > 0 ? v.weights[k] / sum : (k == 0 && sum <= 0 ? 1.f : 0.f));
+                    }
                 }
             }
             // Mirroring flips the winding: swap two corners per triangle.
@@ -569,6 +573,12 @@ ExtractResult SceneryExtractor::extract(const OvlParser& parser, const ExtractCo
                 L.lod = lod;
                 used_meshes.insert(lower(lod.mesh_symbol));
                 L.ok = load_shape_by_symbol(parser, lod.mesh_symbol, L.shape, L.error);
+                if (!L.ok) {
+                    // Counted as an error: silently falling back to a coarser LOD
+                    // would ship the wrong model.
+                    ctx.log("svd " + svd.symbol + ": LOD " + lod.mesh_symbol + " unreadable: " + L.error);
+                    ++res.errors;
+                }
                 if (L.ok && L.shape.skinned) {
                     for (const auto& a : lod.animations) {
                         auto ref = find_linked(parser, a);

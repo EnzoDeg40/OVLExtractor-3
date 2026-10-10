@@ -883,8 +883,14 @@ animation (§8.7), i.e. what the game shows when the animation starts.
   translation (-0.141, -0.033, -0.088) composed with its parent '' gives
   (0.593, 3.030, -0.777) = chocolate `world` translation. They are equal
   only for root bones, which is why they looked "≈ identical".
-- Vertex `bone` (VERTEX2 +0x18) indexes this table directly; one bone per
-  vertex, weight 1.
+- **Skin weights**: VERTEX2 `+0x18` is **4 × u8 bone indices** and `+0x1C`
+  (rct3dump's "unk") **4 × u8 weights summing to 255** — standard D3D
+  `BLENDINDICES` / `BLENDWEIGHT`. Most scenery uses one bone per vertex
+  (`indices = (b,0,0,0)`, `weights = (255,0,0,0)`), which made the field look
+  like a plain u32 bone index. `SunglassesStall` blends up to 3 bones
+  (e.g. indices `02 01 03`, weights `0x9B 0x32 0x32`); reading the word as a
+  u32 gives "bone 196866" and rejected its three detailed LODs until this was
+  fixed.
 
 #### Skinning, for exporters
 
@@ -896,8 +902,8 @@ L_bone(t)  = R(rotate key) with translation = translate key
 ```
 
 `SceneryExtractor` (§14) writes exactly this as a glTF skin: joint nodes with
-TRS = `local`, `inverseBindMatrices = inverse(world)`, `JOINTS_0 = bone`,
-`WEIGHTS_0 = (1,0,0,0)`.
+TRS = `local`, `inverseBindMatrices = inverse(world)`, `JOINTS_0` / `WEIGHTS_0` = the 4
+indices / normalised weights.
 
 Verified on `WildAnimals/Helicopter` (4 LODs: h/m/l + DartCamMode) and
 `WildAnimals/Crates` (40 bsh): **44/44 decode cleanly**, sub-mesh vc/ic sums
@@ -1116,8 +1122,8 @@ offsets resolved via `offset_to_position()`.
 VERTEX  (static, shs — 36 B)          VERTEX2 (skinned, bsh — 44 B)
 +0x00  float position[3]               +0x00  float position[3]
 +0x0C  float normal[3]                 +0x0C  float normal[3]
-+0x18  u32   color  (D3DCOLOR)         +0x18  u32   Bone     ← bone index
-+0x1C  float u, v                      +0x1C  u32   unk
++0x18  u32   color  (D3DCOLOR)         +0x18  u8[4] bone indices (§8.6)
++0x1C  float u, v                      +0x1C  u8[4] bone weights, sum 255
                                        +0x20  u32   color (D3DCOLOR)
                                        +0x24  float u, v
 ```

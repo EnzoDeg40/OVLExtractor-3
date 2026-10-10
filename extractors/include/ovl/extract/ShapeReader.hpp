@@ -21,8 +21,11 @@ struct ShapeVertex {
     float         pos[3]    = {0, 0, 0};
     float         normal[3] = {0, 0, 0};
     float         uv[2]     = {0, 0};
-    std::uint32_t bone      = 0;   // bsh only: index into Shape::bones
-    std::uint32_t color     = 0;   // D3DCOLOR (bsh only)
+    // bsh only: up to 4 influences — indices into Shape::bones and weights
+    // (stored as u8, sum 255). Most scenery uses a single bone at weight 1.
+    std::uint8_t  bones[4]   = {0, 0, 0, 0};
+    float         weights[4] = {0, 0, 0, 0};
+    std::uint32_t color      = 0;  // D3DCOLOR
 };
 
 // One sub-mesh: own vertex buffer, sub-mesh-local triangle list, and the
