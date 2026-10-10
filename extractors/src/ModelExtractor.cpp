@@ -1099,7 +1099,7 @@ bool process_ban(const OvlParser& parser, OvlSide side, std::size_t lf_index,
         std::uint32_t tp = rb.read_u32();
         std::uint32_t rc = rb.read_u32();
         std::uint32_t rp = rb.read_u32();
-        std::string name = name_ptr ? parser.string_from_offset(name_ptr) : "";
+        std::string name = string_at_slot(parser, name_ptr, bones_ptr + b * 20);
         auto trans = read_track(tp, tc);
         auto rot   = read_track(rp, rc);
         total_keys += trans.size() + rot.size();

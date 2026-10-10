@@ -104,6 +104,11 @@ std::string linked_symbol(const OvlParser& parser, OvlSide side,
 // slot at internal offset `slot`, as its full "name:tag" symbol; "" if none.
 std::string resolved_symbol_at(const OvlParser& parser, std::uint32_t slot);
 
+// The string a `char*` field points to. `slot` is the internal offset of the
+// field: a pointer value of 0 is the first string of the table (offset 0)
+// when the slot is relocated, and null otherwise (docs §10).
+std::string string_at_slot(const OvlParser& parser, std::uint32_t ptr, std::uint32_t slot);
+
 // Find a linked file by full symbol ("name:tag", case-insensitive) on either
 // side of the pair.
 struct LinkedRef { OvlSide side = OvlSide::Common; std::size_t index = 0; };

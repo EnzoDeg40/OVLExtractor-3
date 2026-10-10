@@ -44,6 +44,12 @@ std::string resolve_at(const OvlParser& parser, std::uint32_t slot) {
 
 }  // namespace
 
+std::string string_at_slot(const OvlParser& parser, std::uint32_t ptr, std::uint32_t slot) {
+    if (ptr == 0 && !parser.is_relocation(slot)) return {};
+    std::string s = parser.string_from_offset(ptr);
+    return s == "STRINGNOTFOUND" ? std::string() : s;
+}
+
 std::string resolved_symbol_at(const OvlParser& parser, std::uint32_t slot) {
     return resolve_at(parser, slot);
 }
@@ -178,10 +184,11 @@ bool read_shape(const OvlParser& parser, OvlSide side, std::size_t lf_index,
         auto wr = open_at(parser, world_ptr);
         if (bone_count && (!br || !lr || !wr)) { err = "bone table unresolved"; return false; }
         out.bones.resize(bone_count);
-        for (auto& b : out.bones) {
+        for (std::uint32_t bi = 0; bi < bone_count; ++bi) {
+            auto& b = out.bones[bi];
             std::uint32_t np = br->read_u32();
             b.parent = br->read_i32();
-            b.name = np ? parser.string_from_offset(np) : std::string();
+            b.name = string_at_slot(parser, np, bones_ptr + 8 * bi);
             for (float& f : b.local) f = lr->read_f32();
             for (float& f : b.world) f = wr->read_f32();
             if (b.parent >= static_cast<std::int32_t>(bone_count)) b.parent = -1;
@@ -227,11 +234,12 @@ bool read_bone_animation(const OvlParser& parser, OvlSide side,
         return keys;
     };
     out.bones.resize(count);
-    for (auto& b : out.bones) {
+    for (std::uint32_t bi = 0; bi < count; ++bi) {
+        auto& b = out.bones[bi];
         std::uint32_t np = br->read_u32();
         std::uint32_t tc = br->read_u32(), tp = br->read_u32();
         std::uint32_t rc = br->read_u32(), rp = br->read_u32();
-        b.name = np ? parser.string_from_offset(np) : std::string();
+        b.name = string_at_slot(parser, np, bones_ptr + 20 * bi);
         b.translate = read_keys(tp, tc);
         b.rotate = read_keys(rp, rc);
     }
@@ -300,7 +308,7 @@ bool read_scenery_visual(const OvlParser& parser, OvlSide side,
         VisualLod lod;
         lod.mesh_type = l->read_u32();
         std::uint32_t name_ptr = l->read_u32();
-        lod.name = name_ptr ? parser.string_from_offset(name_ptr) : std::string();
+        lod.name = string_at_slot(parser, name_ptr, lod_off + 4);
         lod.mesh_symbol = resolve_at(parser, lod_off + 0x08);
         if (lod.mesh_symbol.empty()) lod.mesh_symbol = resolve_at(parser, lod_off + 0x10);
         l->seek(l->tell() + 0x38 - 0x08);
