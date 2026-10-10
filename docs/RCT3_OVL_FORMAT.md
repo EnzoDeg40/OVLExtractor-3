@@ -1540,8 +1540,15 @@ tile (deck on both sides of the rails). Read from the campaign parks
 
 In park saves (`TrackPiece`) the travel direction **is** stored:
 `Reversed` (bool), next to `StartDistance`, `StartDistanceBackwardsSpline`,
-`Prev`/`Next`, `BrakeSpeed`, `HoldingTime`, `FlexiColourField`.
-`.trk` designs drop it, so §15.4's geometric inference is needed there.
+`Prev`/`Next`, `BrakeSpeed`, `HoldingTime`, `FlexiColourField`. Checked on
+the 74 tracks of the 42 campaign parks (`rct3_saves/tools/track_geometry.py`):
+2999/3024 joints meet under §15.4, and `Reversed` agrees with the geometric
+travel direction on 1124/1140 directed pieces. The 16 others are ties
+where both orientations connect. `.trk` designs drop the field, so §15.4's
+geometric inference is needed there. When several ride types share piece
+names over different track sets (Corkscrew / LoopingRC / Twister…), pick
+the type whose geometry connects the most joints, or read
+`TrackedRideInstance.TrackedRideSymbolName`.
 
 Supports are not part of the piece mesh on most sets (`sid.supports` names
 a style: `Supports/ts1…ts5`, built from 1H/4H/8H column, top, bottom and
