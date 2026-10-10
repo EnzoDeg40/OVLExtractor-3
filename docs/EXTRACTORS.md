@@ -325,7 +325,20 @@ python3 scripts/rct3_track.py show  out/track ride.trk                     # pie
 python3 scripts/rct3_track.py check out/track "$ASSETS/Coaster Designs"/*.trk
 ```
 
-and exposes `Catalog`, `piece_transform`, `can_follow`, `successors`,
+Train (`rit`) and car (`ric`) OVLs give `<train>.train.json` (car roles,
+counts, friction, each car's svd / moving part / animations / wheels), and
+an OVL holding only scenery items (station platforms, support parts) gives
+`<ovl>.sids.json`.
+
+A whole ride, track + platforms + a parked train (format docs §15.9):
+
+```bash
+python3 scripts/rct3_track.py layout out/track design.trk --glb-dir out/glb --cars 4
+blender -b --python scripts/blender_ride.py -- design.layout.json out/glb \
+    --glb ride.glb --render ride.png [--focus car|platform] [--elev 30] [--zoom 1.3]
+```
+
+`rct3_track.py` also exposes `Catalog`, `piece_transform`, `can_follow`, `successors`,
 `next_placement` (grid placement that attaches a piece to a joint) for
 other tools. `scripts/trk_to_gltf.py --track-json out/track` uses the exact
 footprints.

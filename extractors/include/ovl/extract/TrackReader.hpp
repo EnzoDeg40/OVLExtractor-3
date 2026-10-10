@@ -173,6 +173,47 @@ struct TrackedRideInfo {
     std::vector<std::vector<TrackGroupPair>> group_definitions;
 };
 
+// --------------------------------------------------------------- ric / rit
+
+// RideCar_V (240 B) + Soaked/Wild extensions (rct3-importer car.h).
+struct RideCarInfo {
+    std::string   symbol;             // without ":ric"
+    std::string   name, username;
+    std::uint8_t  seating = 0;        // RCT3_Seating
+    std::uint8_t  version = 0;        // 0 vanilla, 2 soaked, 3 wild
+    std::string   svd;                // car body "foo:svd"
+    float         inertia = 0;
+    std::string   moving_svd;         // rotating / swinging part
+    std::uint32_t axis_type = 0;      // 0 none, 2 across track, 3 along track, 4 vertical
+    float         moving_inertia = -1;
+    float         axis_stability = 0, axis_momentum = 0, axis_maximum = -1;
+    std::uint32_t bobbing = 0;
+    std::int32_t  anims[20];          // indices into the svd's animation list (-1 = none)
+    std::vector<std::uint32_t> seat_types;
+    std::string   wheels[4];          // front right, front left, back right, back left svd
+    std::uint32_t wheels_flipped[4] = {0, 0, 0, 0};
+    std::string   axle_front, axle_rear;
+    std::uint32_t axle_front_type = 0, axle_rear_type = 0;
+    RideCarInfo() { for (auto& a : anims) a = -1; }
+};
+
+// RideTrain_V (188 B) + Soaked (16 B) / Wild (36 B) extensions (train.h).
+struct RideTrainInfo {
+    std::string   symbol;             // without ":rit"
+    std::string   name, description;  // txt lookups (plain strings)
+    // front, second, mid (repeated), penultimate, rear, link — "foo:ric"
+    std::string   cars[6];
+    std::uint32_t car_count_min = 0, car_count_max = 0, car_count_def = 0;
+    float         friction_dynamic = 0, friction_static = 0, air_drag = 0;
+    float         camera_lookahead = 0;
+    std::uint32_t overtake = 0;
+    std::string   liftcar_left, liftcar_right;   // spl
+    std::string   station;            // platform style, overrides the trr's
+    std::uint32_t version = 1;
+    std::string   sext_name;
+    std::uint32_t icon = 0;           // 0 none, 1 soaked, 2 wild
+};
+
 // Readers. `lf_index` indexes parser.side(side).linkedfiles.
 bool read_spline(const OvlParser& parser, OvlSide side, std::size_t lf_index,
                  Spline& out, std::string& err);
@@ -182,5 +223,9 @@ bool read_scenery_item(const OvlParser& parser, OvlSide side, std::size_t lf_ind
                        SceneryItemInfo& out, std::string& err);
 bool read_tracked_ride(const OvlParser& parser, OvlSide side, std::size_t lf_index,
                        TrackedRideInfo& out, std::string& err);
+bool read_ride_car(const OvlParser& parser, OvlSide side, std::size_t lf_index,
+                   RideCarInfo& out, std::string& err);
+bool read_ride_train(const OvlParser& parser, OvlSide side, std::size_t lf_index,
+                     RideTrainInfo& out, std::string& err);
 
 }  // namespace ovl

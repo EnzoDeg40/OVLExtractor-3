@@ -1481,3 +1481,83 @@ size, cost, supports, svds, cells); then every referenced spline (nodes +
 lengths). `<ride>.ride.json`: the §15.5 fields, the piece list and costs,
 group definitions and the profile splines. `scripts/rct3_track.py`
 implements §15.4 on top of these files.
+
+### 15.7 Trains (`rit`) and cars (`ric`)
+
+`Cars/CoasterCars/<Train>/<Train>.ovl` (and `Cars/TrackedRideCars/…`) hold
+one `rit` (RideTrain) + its `ric` (RideCar) + the car `svd`/`bsh`/`ban`.
+The trr's `train_names` are rit symbols. 186 trains, 0 errors.
+
+`RideTrain_V` (188 B): `+0 char* name` (or `0xFFFFFFFF` → Soaked/Wild, the
+name is then in the extension at +188: `version, char* name, icon`),
+`+4 description`, **`+8…+28` car slots front, second, mid, penultimate,
+rear, link**, `+32/36/40` cars per train min/max/default, `+44/48/52`
+dynamic friction / static friction / air drag (0.04/0.06/0.02),
+`+56` camera look-ahead, `+140` overtake, `+176/+180` lift-car splines,
+`+184 char* station` (platform style, overrides the trr).
+
+**Train composition**: car 0 = front, car 1 = second (if set), the last =
+rear (if set), the one before = penultimate (if set), every other one =
+mid; an empty mid means "front again". The link object (`ArrowsLink`…)
+sits between cars. Only the front slot is set on 120 of 186 trains
+(identical cars). The steam train is front = Caboose, second = Tender,
+mid = Carriage. The inverted dragon uses all five (head, legs, middle,
+legs, tail).
+
+`RideCar_V` (240 B): `+0 name, +4 username, +8 u8 seating, +9 u8 version,
++12 svd (body), +16 inertia, +20 moving svd` (spinning/swinging part),
+`+24 axis type` (0 none, 2 across the track, 3 along, 4 vertical),
+`+28 moving inertia, +32 axis stability, +44 axis momentum, +56 axis max,
++60 bobbing, +76 20 animation indices` (start, started idle, stop, stopped
+idle, belt open/idle/close/closed idle, doors open/idle/close/closed idle,
+row both/left/right, canoe ×5; each indexes the svd's `ban` list),
+`+156/+160 seat types, +164…+192 four wheel svds + flipped flags, +196/+200
+axle svds, +204/+208 axle types`.
+
+**Car frame**: unlike track pieces, a car points along its local **+Z**
+(game frame; right = +X, up = +Y). The front cars' noses (Arrows,
+InvertedDragonHead) extend to +Z, the dragon's tail to −Z. Cars are
+spaced by their mesh length along Z (WoodenCoaster 2.52); rerct3 reads the
+same value from the svd bounding box at runtime (`Stats.Length`,
+RideCarInstance +0x190).
+
+### 15.8 Station platforms and park saves
+
+`trr.station_name` (or `rit.station`) names a platform style:
+`Tracks/Platforms/Vanilla/<Style>.ovl` holds 16 `sid`s
+`<Style>{start,middle,end,startEnd}{,1stairLeft,1stairRight,2stair}`, whose
+meshes are in sibling `_data` OVLs. A platform mesh covers the whole 4×4
+tile (deck on both sides of the rails). Read from the campaign parks
+(`rct3_saves`, class `TrackPlatformPiece`):
+
+- each station track piece owns one platform piece with the **same tile,
+  height and direction** (`TrackPiece.PlatformPiece` ↔ `TrackPlatformPiece.TrackPiece`);
+- `start` = first station piece in travel order (lowest StartDistance),
+  `end` = last, `middle` between, `startEnd` for a one-piece station;
+- `TrackPlatformPiece.Flags`: bit0 start, bit1 end, bit2 stairs left,
+  bit3 stairs right. The stairs variants go where the entrance / exit
+  buildings join the platform.
+
+In park saves (`TrackPiece`) the travel direction **is** stored:
+`Reversed` (bool), next to `StartDistance`, `StartDistanceBackwardsSpline`,
+`Prev`/`Next`, `BrakeSpeed`, `HoldingTime`, `FlexiColourField`.
+`.trk` designs drop it, so §15.4's geometric inference is needed there.
+
+Supports are not part of the piece mesh on most sets (`sid.supports` names
+a style: `Supports/ts1…ts5`, built from 1H/4H/8H column, top, bottom and
+girder pieces). They are generated at runtime (`TrackPiece_BuildSupports`
+in rerct3's notes) and not reconstructed here yet.
+
+### 15.9 Putting a ride together
+
+```bash
+ovlextract -t track   -o json  <track set>.ovl <ride>.ovl <train>.ovl <platform style>.ovl
+ovlextract -t scenery -o glb --texture-index idx.json --assets-root "$ASSETS" <every _data / car OVL>
+python3 scripts/rct3_track.py layout json design.trk --glb-dir glb --cars 4   # → design.layout.json
+blender -b --python scripts/blender_ride.py -- design.layout.json glb --glb ride.glb --render ride.png
+```
+
+The layout lists every track piece (§15.4 transform), one platform piece per
+station piece (§15.8) and a train parked nose-first at the end of the first
+station, its cars sampled on the rail centre line (§15.7). All are glTF-frame
+matrices for the Z-mirrored `.glb`s: `M = S·[R|t]·S` with `S = diag(1,1,−1)`.

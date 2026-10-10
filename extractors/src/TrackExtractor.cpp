@@ -183,6 +183,8 @@ ExtractResult TrackExtractor::extract(const OvlParser& parser, const ExtractCont
     std::map<std::string, SceneryItemInfo> sids;
     std::vector<TrackSectionDef> sections;
     std::vector<TrackedRideInfo> rides;
+    std::vector<RideTrainInfo> trains;
+    std::map<std::string, RideCarInfo> cars;   // lower "name:ric"
 
     for (std::size_t s = 0; s < (parser.has_unique() ? 2u : 1u); ++s) {
         auto side = static_cast<OvlSide>(s);
@@ -203,6 +205,14 @@ ExtractResult TrackExtractor::extract(const OvlParser& parser, const ExtractCont
                 TrackSectionDef t;
                 if (read_track_section(parser, side, i, t, err)) sections.push_back(std::move(t));
                 else { ctx.log("tks " + linked_symbol(parser, side, i) + ": " + err); ++res.errors; }
+            } else if (tag == "rit") {
+                RideTrainInfo t;
+                if (read_ride_train(parser, side, i, t, err)) trains.push_back(std::move(t));
+                else { ctx.log("rit " + linked_symbol(parser, side, i) + ": " + err); ++res.errors; }
+            } else if (tag == "ric") {
+                RideCarInfo c;
+                if (read_ride_car(parser, side, i, c, err)) cars[lower(c.symbol + ":ric")] = c;
+                else { ctx.log("ric " + linked_symbol(parser, side, i) + ": " + err); ++res.errors; }
             } else if (tag == "trr") {
                 TrackedRideInfo r;
                 if (read_tracked_ride(parser, side, i, r, err)) rides.push_back(std::move(r));
@@ -210,7 +220,9 @@ ExtractResult TrackExtractor::extract(const OvlParser& parser, const ExtractCont
             }
         }
     }
-    if (sections.empty() && rides.empty() && splines.empty()) return res;
+    if (sections.empty() && rides.empty() && splines.empty() && trains.empty() && cars.empty() &&
+        sids.empty())
+        return res;
 
     std::set<std::string> used_splines;
     auto find_spline = [&](const std::string& sym) -> const Spline* {
@@ -372,7 +384,94 @@ ExtractResult TrackExtractor::extract(const OvlParser& parser, const ExtractCont
         write(r.symbol + ".ride.json", o.str());
     }
 
-    if (sections.empty() && rides.empty()) {
+    auto car_json = [&](const RideCarInfo& c) {
+        static const char* kAnim[20] = {
+            "start", "started_idle", "stop", "stopped_idle", "belt_open", "belt_open_idle",
+            "belt_close", "belt_closed_idle", "doors_open", "doors_open_idle", "doors_close",
+            "doors_closed_idle", "row_both", "row_left", "row_right", "canoe_station_idle",
+            "canoe_idle_front", "canoe_idle_back", "canoe_row_idle", "canoe_row"};
+        std::ostringstream o;
+        o << "{\"symbol\": " << jstr(c.symbol) << ", \"name\": " << jstr(c.name)
+          << ", \"seating\": " << int(c.seating) << ", \"version\": " << int(c.version)
+          << ", \"svd\": " << jstr(c.svd) << ", \"inertia\": " << jnum(c.inertia);
+        if (!c.moving_svd.empty())
+            o << ", \"moving_svd\": " << jstr(c.moving_svd) << ", \"axis_type\": " << c.axis_type
+              << ", \"moving_inertia\": " << jnum(c.moving_inertia)
+              << ", \"axis_stability\": " << jnum(c.axis_stability)
+              << ", \"axis_momentum\": " << jnum(c.axis_momentum)
+              << ", \"axis_maximum\": " << jnum(c.axis_maximum);
+        if (c.bobbing) o << ", \"bobbing\": " << c.bobbing;
+        o << ", \"animations\": {";
+        bool first = true;
+        for (int k = 0; k < 20; ++k) {
+            if (c.anims[k] < 0) continue;
+            o << (first ? "" : ", ") << "\"" << kAnim[k] << "\": " << c.anims[k];
+            first = false;
+        }
+        o << "}, \"seat_types\": [";
+        for (std::size_t k = 0; k < c.seat_types.size(); ++k) o << (k ? ", " : "") << c.seat_types[k];
+        o << "]";
+        static const char* kWheel[4] = {"front_right", "front_left", "back_right", "back_left"};
+        for (int k = 0; k < 4; ++k)
+            if (!c.wheels[k].empty())
+                o << ", \"wheels_" << kWheel[k] << "\": {\"svd\": " << jstr(c.wheels[k])
+                  << ", \"flipped\": " << c.wheels_flipped[k] << "}";
+        if (!c.axle_front.empty()) o << ", \"axle_front\": {\"svd\": " << jstr(c.axle_front) << ", \"type\": " << c.axle_front_type << "}";
+        if (!c.axle_rear.empty()) o << ", \"axle_rear\": {\"svd\": " << jstr(c.axle_rear) << ", \"type\": " << c.axle_rear_type << "}";
+        o << "}";
+        return o.str();
+    };
+    std::set<std::string> cars_written;
+    for (const auto& t : trains) {
+        static const char* kRole[6] = {"front", "second", "mid", "penultimate", "rear", "link"};
+        std::ostringstream o;
+        o << "{\n  \"train\": " << jstr(t.symbol) << ",\n  \"name\": " << jstr(t.name.empty() ? t.sext_name : t.name)
+          << ",\n  \"description\": " << jstr(t.description)
+          << ",\n  \"version\": " << t.version << ",\n  \"icon\": " << t.icon
+          << ",\n  \"cars_per_train\": {\"min\": " << t.car_count_min << ", \"max\": " << t.car_count_max
+          << ", \"default\": " << t.car_count_def << "}"
+          << ",\n  \"friction\": {\"dynamic\": " << jnum(t.friction_dynamic) << ", \"static\": "
+          << jnum(t.friction_static) << ", \"air_drag\": " << jnum(t.air_drag) << "}"
+          << ",\n  \"camera_lookahead\": " << jnum(t.camera_lookahead)
+          << ",\n  \"overtake\": " << t.overtake
+          << ",\n  \"station\": " << jstr(t.station);
+        if (!t.liftcar_left.empty())
+            o << ",\n  \"liftcar_splines\": [" << jstr(t.liftcar_left) << ", " << jstr(t.liftcar_right) << "]";
+        o << ",\n  \"car_roles\": {";
+        for (int k = 0; k < 6; ++k)
+            o << (k ? ", " : "") << "\"" << kRole[k] << "\": " << jstr(strip_tag(t.cars[k]));
+        o << "},\n  \"cars\": {";
+        bool first = true;
+        for (int k = 0; k < 6; ++k) {
+            auto it = cars.find(lower(t.cars[k]));
+            if (it == cars.end() || cars_written.count(it->first)) continue;
+            o << (first ? "\n    " : ",\n    ") << jstr(it->second.symbol) << ": " << car_json(it->second);
+            cars_written.insert(it->first);
+            first = false;
+        }
+        o << "\n  }\n}\n";
+        write(t.symbol + ".train.json", o.str());
+    }
+    for (const auto& [k, c] : cars) {
+        if (cars_written.count(k)) continue;
+        write(c.symbol + ".car.json", car_json(c) + "\n");
+    }
+
+    // Scenery items not owned by a track section: station platforms
+    // (Tracks/Platforms/<style>), support parts, ride entrances…
+    if (sections.empty() && !sids.empty()) {
+        std::ostringstream o;
+        o << "{\n  \"ovl\": " << jstr(base) << ",\n  \"items\": [";
+        bool first = true;
+        for (const auto& [k, si] : sids) {
+            o << (first ? "\n    " : ",\n    ") << sid_json(si);
+            first = false;
+        }
+        o << "\n  ]\n}\n";
+        write(base + ".sids.json", o.str());
+    }
+
+    if (sections.empty() && rides.empty() && trains.empty() && cars.empty() && !splines.empty()) {
         std::ostringstream o;
         o << "{\n";
         bool first = true;

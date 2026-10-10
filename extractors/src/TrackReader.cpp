@@ -67,6 +67,24 @@ std::vector<std::string> symbol_array(const OvlParser& parser, std::uint32_t arr
     return out;
 }
 
+// A reference slot that is either symbol-resolved (cross-OVL) or a plain
+// relocated pointer to a linked file's data in the same pair: the full
+// "name:tag" symbol in both cases, "" for null.
+std::string ref_at(const OvlParser& parser, std::uint32_t slot) {
+    std::string s = resolved_symbol_at(parser, slot);
+    if (!s.empty()) return s;
+    std::uint32_t ptr = u32s_at(parser, slot, 1)[0];
+    if (ptr == 0) return {};
+    for (std::size_t si = 0; si < (parser.has_unique() ? 2u : 1u); ++si) {
+        auto side = static_cast<OvlSide>(si);
+        const auto& d = parser.side(side);
+        for (std::size_t i = 0; i < d.linkedfiles.size(); ++i)
+            if (d.linkedfiles[i].loaderreference.datapointer == ptr)
+                return linked_symbol(parser, side, i, true);
+    }
+    return {};
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- spline
@@ -515,6 +533,79 @@ bool read_tracked_ride(const OvlParser& parser, OvlSide side, std::size_t lf_ind
         for (std::uint32_t i = 0; i < struct_count; ++i) {
             TrackedRideSectionCost sc{cstr(parser, s[i * 2]), s[i * 2 + 1]};
             if (!sc.name.empty()) out.section_costs.push_back(sc);
+        }
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------- ric / rit
+
+bool read_ride_car(const OvlParser& parser, OvlSide side, std::size_t lf_index,
+                   RideCarInfo& out, std::string& err) {
+    const auto& lf = parser.side(side).linkedfiles[lf_index];
+    out = RideCarInfo{};
+    out.symbol = linked_symbol(parser, side, lf_index);
+    const std::uint32_t b = lf.loaderreference.datapointer;
+    if (!open_at(parser, b)) { err = "datapointer unresolved"; return false; }
+    auto v = u32s_at(parser, b, 240 / 4);
+    auto sym = [&](std::uint32_t off) { return resolved_symbol_at(parser, b + off); };
+    out.name = cstr(parser, v[0]);
+    out.username = cstr(parser, v[1]);
+    out.seating = static_cast<std::uint8_t>(v[2] & 0xFF);
+    out.version = static_cast<std::uint8_t>((v[2] >> 8) & 0xFF);
+    out.svd = sym(12);
+    out.inertia = as_f32(v[4]);
+    out.moving_svd = sym(20);
+    out.axis_type = v[6];
+    out.moving_inertia = as_f32(v[7]);
+    out.axis_stability = as_f32(v[8]);
+    out.axis_momentum = as_f32(v[11]);
+    out.axis_maximum = as_f32(v[14]);
+    out.bobbing = v[15];
+    for (int k = 0; k < 20; ++k) out.anims[k] = static_cast<std::int32_t>(v[19 + k]);
+    std::uint32_t seat_count = v[39];
+    if (seat_count > 0 && seat_count < 64) out.seat_types = u32s_at(parser, v[40], seat_count);
+    for (int k = 0; k < 4; ++k) {
+        out.wheels[k] = sym(164 + 8 * k);
+        out.wheels_flipped[k] = v[(168 + 8 * k) / 4];
+    }
+    out.axle_front = sym(196);
+    out.axle_rear = sym(200);
+    out.axle_front_type = v[204 / 4];
+    out.axle_rear_type = v[208 / 4];
+    return true;
+}
+
+bool read_ride_train(const OvlParser& parser, OvlSide side, std::size_t lf_index,
+                     RideTrainInfo& out, std::string& err) {
+    const auto& lf = parser.side(side).linkedfiles[lf_index];
+    out = RideTrainInfo{};
+    out.symbol = linked_symbol(parser, side, lf_index);
+    const std::uint32_t b = lf.loaderreference.datapointer;
+    if (!open_at(parser, b)) { err = "datapointer unresolved"; return false; }
+    auto v = u32s_at(parser, b, 188 / 4);
+    if (v[0] != 0xFFFFFFFFu) out.name = cstr(parser, v[0]);
+    out.description = cstr(parser, v[1]);
+    for (int k = 0; k < 6; ++k) out.cars[k] = ref_at(parser, b + 8 + 4 * k);
+    out.car_count_min = v[8];
+    out.car_count_max = v[9];
+    out.car_count_def = v[10];
+    out.friction_dynamic = as_f32(v[11]);
+    out.friction_static = as_f32(v[12]);
+    out.air_drag = as_f32(v[13]);
+    out.camera_lookahead = as_f32(v[14]);
+    out.overtake = v[35];
+    out.liftcar_left = resolved_symbol_at(parser, b + 176);
+    out.liftcar_right = resolved_symbol_at(parser, b + 180);
+    out.station = cstr(parser, v[46]);
+    // The extension is present when the name slot is the 0xFFFFFFFF marker
+    // (RideTrainB/C); its first u32 is the version.
+    if (v[0] == 0xFFFFFFFFu) {
+        auto x = u32s_at(parser, b + 188, 4);
+        if (x[0] == 2 || x[0] == 3) {
+            out.version = x[0];
+            out.sext_name = cstr(parser, x[1]);
+            out.icon = x[2];
         }
     }
     return true;

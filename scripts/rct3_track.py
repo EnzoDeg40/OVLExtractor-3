@@ -113,6 +113,31 @@ class Catalog:
         self.ride_files = {f.name[:-len(".ride.json")].lower(): f
                            for f in self.root.rglob("*.ride.json")}
         self._rides: dict[str, Ride] = {}
+        self._splines: dict[str, dict] = {}
+        self._set_files = {}
+        for f in self.root.rglob("*.tracks.json"):
+            self._set_files[f.name[:-len(".tracks.json")].lower()] = f
+        self._sid_files = {f.name[:-len(".sids.json")].lower(): f
+                           for f in self.root.rglob("*.sids.json")}
+        self._train_files = {f.name[:-len(".train.json")].lower(): f
+                             for f in self.root.rglob("*.train.json")}
+
+    def splines(self, setname: str) -> dict:
+        key = setname.lower()
+        if key not in self._splines:
+            d = json.loads(self._set_files[key].read_text())
+            self._splines[key] = {k.lower(): v for k, v in d.get("splines", {}).items()}
+        return self._splines[key]
+
+    def platforms(self, style: str) -> dict:
+        f = self._sid_files.get(style.lower())
+        if not f:
+            return {}
+        return {i["symbol"].lower(): i for i in json.loads(f.read_text())["items"]}
+
+    def train(self, name: str) -> dict | None:
+        f = self._train_files.get(name.lower())
+        return json.loads(f.read_text()) if f else None
 
     def ride(self, name: str) -> Ride:
         key = name.lower()
@@ -403,6 +428,201 @@ def solve_orientation(ride: Ride, pieces: list[Placed], tol: float = 0.2):
 
 
 # --------------------------------------------------------------------------- #
+# rail centre line, layout of a whole ride
+# --------------------------------------------------------------------------- #
+def _bezier(nodes, seg, t):
+    a, b = nodes[seg], nodes[(seg + 1) % len(nodes)]
+    u = 1 - t
+    p0 = a[0]
+    p1 = [a[0][k] + a[2][k] for k in range(3)]
+    p2 = [b[0][k] + b[1][k] for k in range(3)]
+    p3 = b[0]
+    return [u * u * u * p0[k] + 3 * u * u * t * p1[k] + 3 * u * t * t * p2[k] + t * t * t * p3[k]
+            for k in range(3)]
+
+
+def sample_spline(sp: dict, n_per_seg: int = 16) -> list[list[float]]:
+    nodes = sp["nodes"]
+    segs = len(nodes) if sp.get("cyclic") else len(nodes) - 1
+    pts = []
+    for s_ in range(segs):
+        for i in range(n_per_seg + (1 if s_ == segs - 1 else 0)):
+            pts.append(_bezier(nodes, s_, i / n_per_seg))
+    return pts
+
+
+class CentreLine:
+    """Polyline of a piece's rail mid-line (local frame, entry → exit)."""
+
+    def __init__(self, cat: "Catalog", sec: Section):
+        self.left = self.right = None
+        for setname, secs in cat.sets.items():
+            if secs.get(sec.name.lower()) is sec:
+                spl = cat.splines(setname)
+                l = spl.get(sec.data["splines"].get("left", "").split(":")[0].lower())
+                r = spl.get(sec.data["splines"].get("right", "").split(":")[0].lower())
+                self.left = sample_spline(l) if l else None
+                self.right = sample_spline(r) if r else None
+                break
+        if self.left and self.right and len(self.left) == len(self.right):
+            self.pts = [[(a[k] + b[k]) / 2 for k in range(3)] for a, b in zip(self.left, self.right)]
+            self.rgt = [[b[k] - a[k] for k in range(3)] for a, b in zip(self.left, self.right)]
+        else:
+            self.pts = self.left or self.right or []
+            self.rgt = [[0, 0, 1]] * len(self.pts)
+        self.cum = [0.0]
+        for a, b in zip(self.pts, self.pts[1:]):
+            self.cum.append(self.cum[-1] + math.dist(a, b))
+
+    @property
+    def length(self) -> float:
+        return self.cum[-1] if self.cum else 0.0
+
+    def at(self, d: float):
+        """(pos, forward, right) at arc length d from the entry."""
+        d = max(0.0, min(d, self.length))
+        i = 0
+        while i < len(self.cum) - 2 and self.cum[i + 1] < d:
+            i += 1
+        span = self.cum[i + 1] - self.cum[i] or 1.0
+        t = (d - self.cum[i]) / span
+        a, b = self.pts[i], self.pts[i + 1]
+        pos = [a[k] + (b[k] - a[k]) * t for k in range(3)]
+        fwd = [b[k] - a[k] for k in range(3)]
+        rgt = self.rgt[i]
+        return pos, _unit(fwd), _unit(rgt)
+
+
+def _unit(v):
+    n = math.sqrt(sum(c * c for c in v)) or 1.0
+    return [c / n for c in v]
+
+
+def _cross(a, b):
+    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+
+
+def game_to_gltf_matrix(rot_cols, t):
+    """Column-major 4x4 glTF matrix for a game-frame (left-handed) rigid
+    transform applied to a mesh that ovlextract already mirrored on Z:
+    M = S·[R|t]·S with S = diag(1, 1, -1)."""
+    S = [1, 1, -1]
+    m = [0.0] * 16
+    for c in range(3):
+        for r in range(3):
+            m[c * 4 + r] = S[r] * rot_cols[c][r] * S[c]
+    m[12], m[13], m[14], m[15] = t[0], t[1], -t[2], 1.0
+    return m
+
+
+def piece_matrix(sec: Section, p: Placed):
+    f = piece_transform(sec, p)
+    o = f((0, 0, 0))
+    cols = [[f(e)[k] - o[k] for k in range(3)] for e in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+    return game_to_gltf_matrix(cols, o)
+
+
+def glb_extent(path: Path) -> tuple[list[float], list[float]] | None:
+    """(min, max) of every POSITION accessor in a .glb (glTF frame)."""
+    buf = Path(path).read_bytes()
+    if buf[:4] != b"glTF":
+        return None
+    n = struct.unpack_from("<I", buf, 12)[0]
+    g = json.loads(buf[20:20 + n])
+    lo, hi = [1e9] * 3, [-1e9] * 3
+    for m in g.get("meshes", []):
+        for pr in m["primitives"]:
+            a = g["accessors"][pr["attributes"]["POSITION"]]
+            if "min" in a:
+                lo = [min(x, y) for x, y in zip(lo, a["min"])]
+                hi = [max(x, y) for x, y in zip(hi, a["max"])]
+    return (lo, hi) if lo[0] < 1e9 else None
+
+
+def ride_layout(cat: "Catalog", ride: Ride, pieces: list[Placed], cars: int = 0,
+                train: dict | None = None, car_length: float | None = None,
+                platform_style: str | None = None) -> dict:
+    """Everything needed to draw the ride: track pieces, station platforms and
+    (optionally) one train parked in the station, as glTF-space matrices.
+    Asset names are svd symbols (`ovlextract -t scenery` writes <svd>.glb)."""
+    pieces = ordered_pieces(ride, pieces)
+    rev, ok = solve_orientation(ride, pieces)
+    items = []
+    for p in pieces:
+        sec = ride.section(p.name)
+        if not sec:
+            continue
+        svds = (sec.data.get("sid") or {}).get("svds") or []
+        if svds:
+            items.append({"kind": "track", "piece": sec.name, "asset": svds[0].split(":")[0],
+                          "matrix": piece_matrix(sec, p)})
+
+    # station platforms: one platform piece per station track piece, chosen by
+    # its place in the run (start / middle / end, or startEnd for a run of 1).
+    style = platform_style or ride.data.get("station_name") or ""
+    runs, cur = [], []
+    for i, p in enumerate(pieces):
+        sec = ride.section(p.name)
+        if sec and sec.flags & FLAG_STATION:
+            cur.append(i)
+        elif cur:
+            runs.append(cur)
+            cur = []
+    if cur:
+        if runs and runs[0][0] == 0 and len(pieces) - 1 == cur[-1]:
+            runs[0] = cur + runs[0]          # run wraps around the circuit start
+        else:
+            runs.append(cur)
+    plat = cat.platforms(style) if style else {}
+    for run in runs:
+        for k, i in enumerate(run):
+            role = ("startEnd" if len(run) == 1 else "start" if k == 0
+                    else "end" if k == len(run) - 1 else "middle")
+            item = plat.get(f"{style}{role}".lower())
+            if item:
+                sec = ride.section(pieces[i].name)
+                items.append({"kind": "platform", "piece": item["symbol"],
+                              "asset": item["svds"][0].split(":")[0] if item["svds"] else item["symbol"],
+                              "matrix": piece_matrix(sec, pieces[i])})
+
+    # a train parked nose-first at the end of the first station run
+    if cars and train and runs:
+        run = runs[0]
+        lines = [(pieces[i], rev[i], CentreLine(cat, ride.section(pieces[i].name))) for i in run]
+        total = sum(cl.length for _, _, cl in lines)
+        clen = car_length or 2.0
+        roles = train["car_roles"]
+        for c in range(cars):
+            d_from_end = 0.5 * clen + c * clen
+            if d_from_end > total:
+                break
+            d = total - d_from_end
+            for pc, r, cl in lines:
+                if d <= cl.length:
+                    break
+                d -= cl.length
+            dl = cl.length - d if r else d
+            pos, fwd, rgt = cl.at(dl)
+            if r:
+                fwd = [-x for x in fwd]
+                rgt = [-x for x in rgt]
+            up = _cross(fwd, rgt)          # left-handed: up = fwd × right
+            sec = ride.section(pc.name)
+            f = piece_transform(sec, pc)
+            wpos = f(pos)
+            wf, wr, wu = (f(v, False) for v in (fwd, rgt, up))
+            # car local frame (D3D convention): right = +X, up = +Y, forward = +Z
+            cols = [wr, wu, wf]
+            role = ("front" if c == 0 else "rear" if c == cars - 1 and roles.get("rear")
+                    else "second" if c == 1 and roles.get("second") else "mid")
+            name = roles.get(role) or roles.get("mid") or roles.get("front")
+            car = train["cars"].get(name) or next(iter(train["cars"].values()))
+            items.append({"kind": "car", "piece": name, "asset": car["svd"].split(":")[0],
+                          "matrix": game_to_gltf_matrix(cols, wpos)})
+    return {"ride": ride.name, "items": items}
+
+
+# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 def _fmt(sec: Section, rev: bool) -> str:
@@ -484,6 +704,36 @@ def cmd_show(cat: Catalog, args) -> int:
     return 0
 
 
+def cmd_layout(cat: Catalog, args) -> int:
+    name, pieces = parse_trk(Path(args.trk))
+    ride = cat.ride(args.ride or name)
+    train_name = args.train or (ride.data.get("train_names") or [None])[0]
+    train = cat.train(train_name) if train_name else None
+    car_length = args.car_length
+    if train and car_length is None and args.glb_dir:
+        # The game spaces cars by the car mesh's length along the track
+        # (rerct3: Stats.Length from the svd's bounding box); a car points
+        # along its local Z (unlike track pieces, which run along -X).
+        lens = []
+        for c in train["cars"].values():
+            ext = glb_extent(Path(args.glb_dir) / (c["svd"].split(":")[0] + ".glb"))
+            if ext:
+                lens.append(ext[1][2] - ext[0][2])
+        car_length = max(lens) if lens else None
+        if car_length:
+            print(f"car length {car_length:.3f} (from the car mesh)")
+    lay = ride_layout(cat, ride, pieces, cars=args.cars if train else 0, train=train,
+                      car_length=car_length, platform_style=args.platform)
+    lay["train"] = train_name if train else None
+    out = Path(args.output) if args.output else Path(args.trk).with_suffix(".layout.json")
+    out.write_text(json.dumps(lay, indent=1))
+    kinds = {}
+    for it in lay["items"]:
+        kinds[it["kind"]] = kinds.get(it["kind"], 0) + 1
+    print(f"wrote {out}: {kinds}")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -501,9 +751,21 @@ def main(argv=None) -> int:
     s.add_argument("json_dir")
     s.add_argument("trk")
     s.add_argument("--ride")
+    l = sub.add_parser("layout", help="placements (glTF matrices) of track, platforms and a train")
+    l.add_argument("json_dir")
+    l.add_argument("trk")
+    l.add_argument("-o", "--output")
+    l.add_argument("--ride")
+    l.add_argument("--train", help="train (rit) name, default: the ride's first")
+    l.add_argument("--cars", type=int, default=3)
+    l.add_argument("--car-length", type=float, default=None,
+                   help="spacing between cars (default 2.0; the game uses the car mesh length)")
+    l.add_argument("--platform", help="platform style (default: the ride's station name)")
+    l.add_argument("--glb-dir", help="ovlextract -t scenery output; car spacing = car mesh length")
     args = ap.parse_args(argv)
     cat = Catalog(Path(args.json_dir))
-    return {"next": cmd_next, "check": cmd_check, "show": cmd_show}[args.cmd](cat, args)
+    return {"next": cmd_next, "check": cmd_check, "show": cmd_show,
+            "layout": cmd_layout}[args.cmd](cat, args)
 
 
 if __name__ == "__main__":
