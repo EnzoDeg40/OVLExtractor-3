@@ -1568,3 +1568,63 @@ The layout lists every track piece (§15.4 transform), one platform piece per
 station piece (§15.8) and a train parked nose-first at the end of the first
 station, its cars sampled on the rail centre line (§15.7). All are glTF-frame
 matrices for the Z-mirrored `.glb`s: `M = S·[R|t]·S` with `S = diag(1,1,−1)`.
+
+
+## 16. Flat rides (`anr`) and the shared Attraction / Ride blocks
+
+### 16.1 Attraction_V (56 B) — every stall, flat ride and tracked ride
+
+| off | field |
+|---|---|
+| +0x00 | type (`typech[1] == 2` → AttractionA) |
+| +0x04 / +0x08 / +0x0C | name `txt`, description `txt`, icon `gsi` (symbol refs) |
+| +0x10 / +0x14 | cost / refund |
+| +0x20 | base upkeep |
+| +0x24 | **loop `spl`**: flat rides; the closed path around the ride |
+| +0x28 / +0x2C | path count / `spl*[]`: **guest paths** from the loop to each seat, the **last one is the mechanic's** |
+| +0x30 / +0x34 | flags / max build height |
+| (Soaked ext) +0x38 | add-on pack (0 vanilla, 1 soaked, 2 wild) |
+
+### 16.2 Ride_V (24 B) + Ride_Sext
+
+`+0 attractivity, +4 seating, +8 RideOption**` (0-terminated),
+`+12 min circuits, +16 max circuits, +20 entry fee`. Soaked/Wild append
+`Attraction_S*` (the attraction block lives behind this pointer in S/W
+layouts), attractivity, and **`RideStationLimit[]`**: `{i32 x, i32 z,
+i32 height, u32 flags}` tiles where an entrance/exit may attach (flags
+1 −X, 2 +Z, 4 +X, 8 −Z, 0x10 entrance, 0x20 exit). E.g. the dolphin show allows
+both on the +Z side of its back row, `(0..4, 6)`, flags 0x32. Rides without
+limits accept them anywhere on the footprint edge.
+
+`RideOption {u32 type; payload}`: payload sizes by type 0:0, 1:1, 8:5,
+9/12:3, others 2 words. **Type 8 is the rating block**: excitement,
+intensity, nausea, the option id it applies to, a factor (BuckingBronco
+base: 2.5 / 2.7 / 2.74).
+
+### 16.3 AnimatedRide (`anr`)
+
+Vanilla `AnimatedRide_V` = Attraction_V + Ride_V + `+80 sid ref` + 4 u32.
+Soaked/Wild `AnimatedRide_SW` = `0xFFFFFFFF, 4×u32, +0x14 Ride_S*,
++0x18 sid, 2×u32, +0x24 show-item count, +0x28 {u32 animation index;
+char* name}[]` (shows: `DolphinShowAnimTrick1…`). The ride's `sid`
+gives the footprint (Aviator 6×6, BuckingBronco 3×3), default colours,
+support style (`scaffolding`) and the svd. Its tail
+(`+0xB8` individual animation count / `char*[]`, `+0xC4…+0xD0` age
+alternatives / animation chunks / alternate runs / cycles per circuit)
+drives the run cycle. The `anr` usually sits in the theme's `Style` OVL
+while the mesh and splines are in `Style/…/Rides/<Ride>/<Ride>.ovl`.
+
+`ovlextract -t track` writes `<anr>.flatride.json` (attraction, ride
+options + ratings, station limits, sid, show items, splines). All 86 flat
+rides of the Complete Edition decode with 0 errors. Paths and loop are in
+the ride's local frame, which is the mesh frame (checked on the Aviator: 16
+guest paths end at the 16 gondolas, the loop circles the base):
+
+```bash
+python3 scripts/rct3_track.py flatlayout out/track Aviator -o aviator.layout.json
+blender -b --python scripts/blender_ride.py -- aviator.layout.json out/glb --render aviator.png
+```
+
+Tracked rides carry the same two blocks: `<ride>.ride.json` has
+`attraction` and `ride_info` (Vanilla: at the start of the `trr`;
+Soaked/Wild: behind the extension's `Ride_S*`).

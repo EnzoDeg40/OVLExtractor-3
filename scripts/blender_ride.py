@@ -85,6 +85,27 @@ def main():
         placed.append((it["kind"], e))
     print(f"placed {len(placed)} items from {len(assets)} assets")
 
+    # optional polylines (guest / mechanic paths of a flat ride…), glTF frame
+    colours = {"guest": (0.1, 0.9, 0.2, 1), "mechanic": (1, 0.5, 0, 1), "loop": (1, 0, 0, 1)}
+    for c in layout.get("curves", []):
+        cu = bpy.data.curves.new(c["name"], "CURVE")
+        cu.dimensions = "3D"
+        cu.bevel_depth = 0.06
+        sp = cu.splines.new("POLY")
+        sp.points.add(len(c["points"]) - 1)
+        for p, q in zip(sp.points, c["points"]):
+            v = C @ Vector((q[0], q[1], q[2]))
+            p.co = (v.x, v.y, v.z, 1)
+        mat = bpy.data.materials.new(c["name"])
+        mat.diffuse_color = colours.get(c.get("kind"), (1, 1, 0, 1))
+        mat.use_nodes = True
+        mat.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = mat.diffuse_color
+        mat.node_tree.nodes["Principled BSDF"].inputs["Emission Color"].default_value = mat.diffuse_color
+        mat.node_tree.nodes["Principled BSDF"].inputs["Emission Strength"].default_value = 2.0
+        cu.materials.append(mat)
+        ob = bpy.data.objects.new(c["name"], cu)
+        ride.objects.link(ob)
+
     if blend:
         bpy.ops.wm.save_as_mainfile(filepath=str(Path(blend).resolve()))
     if glb:

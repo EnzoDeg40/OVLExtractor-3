@@ -85,6 +85,80 @@ std::string ref_at(const OvlParser& parser, std::uint32_t slot) {
     return {};
 }
 
+// Attraction_V at internal offset `a` (+ Soaked ext when `sext`).
+AttractionInfo read_attraction_at(const OvlParser& parser, std::uint32_t a, bool sext) {
+    AttractionInfo at;
+    auto v = u32s_at(parser, a, sext ? 16 : 14);
+    at.type = v[0];
+    at.name_txt = ref_at(parser, a + 4);
+    at.description_txt = ref_at(parser, a + 8);
+    at.icon_gsi = ref_at(parser, a + 12);
+    at.cost = v[4];
+    at.base_upkeep = v[8];
+    at.loop_spline = ref_at(parser, a + 36);
+    if (v[10] > 0 && v[10] < 64)
+        for (std::uint32_t i = 0; i < v[10]; ++i) {
+            std::string s = ref_at(parser, v[11] + 4 * i);
+            if (!s.empty()) at.paths.push_back(s);
+        }
+    at.flags = v[12];
+    at.max_height = static_cast<std::int32_t>(v[13]);
+    if (sext) at.addon = v[14];
+    return at;
+}
+
+// RideOption payload size in u32 by type (sharedride.h).
+std::size_t ride_option_words(std::uint32_t type) {
+    switch (type) {
+        case 0: return 0;
+        case 1: return 1;
+        case 8: return 5;
+        case 9: case 12: return 3;
+        default: return 2;
+    }
+}
+
+// Ride_V at `r`; with `sext` the Soaked extension follows (+24) and carries
+// the Attraction_S pointer and the station limits.
+RideInfo read_ride_at(const OvlParser& parser, std::uint32_t r, bool sext, AttractionInfo* att) {
+    RideInfo ri;
+    auto v = u32s_at(parser, r, sext ? 6 + 9 : 6);
+    ri.attractivity = v[0];
+    ri.seating = v[1];
+    ri.min_circuits = v[3];
+    ri.max_circuits = static_cast<std::int32_t>(v[4]);
+    ri.entry_fee = v[5];
+    // options: RideOption** terminated by a 0 pointer
+    if (v[2]) {
+        auto ptrs = u32s_at(parser, v[2], 64);
+        for (std::uint32_t p : ptrs) {
+            if (p == 0) break;
+            auto o = u32s_at(parser, p, 6);
+            RideOptionInfo opt;
+            opt.type = o[0];
+            std::size_t n = ride_option_words(opt.type);
+            for (std::size_t k = 0; k < n; ++k) {
+                opt.raw.push_back(o[1 + k]);
+                opt.values.push_back(as_f32(o[1 + k]));
+            }
+            ri.options.push_back(std::move(opt));
+        }
+    }
+    if (sext) {
+        if (v[6] != 0 && att) *att = read_attraction_at(parser, v[6], true);
+        if (v[7] != 0xFFFFFFFFu && v[7] != 0) ri.attractivity = v[7];
+        std::uint32_t n = v[8];
+        if (n > 0 && n < 256) {
+            auto l = u32s_at(parser, v[9], n * 4);
+            for (std::uint32_t i = 0; i < n; ++i)
+                ri.station_limits.push_back({static_cast<std::int32_t>(l[i * 4]),
+                                             static_cast<std::int32_t>(l[i * 4 + 1]),
+                                             static_cast<std::int32_t>(l[i * 4 + 2]), l[i * 4 + 3]});
+        }
+    }
+    return ri;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- spline
@@ -421,6 +495,18 @@ bool read_scenery_item(const OvlParser& parser, OvlSide side, std::size_t lf_ind
     std::uint32_t svd_count = v[0x50 / 4];
     out.svds = symbol_array(parser, v[0x54 / 4], svd_count);
     for (int k = 0; k < 3; ++k) out.default_colours[k] = v[0x8C / 4 + k];
+    std::uint32_t pc = v[0x68 / 4];
+    if (pc > 0 && pc < 64) {
+        auto pr = u32s_at(parser, v[0x6C / 4], pc * 2);
+        for (std::uint32_t i = 0; i < pc; ++i)
+            out.params.emplace_back(cstr(parser, pr[i * 2]), cstr(parser, pr[i * 2 + 1]));
+    }
+    auto x = u32s_at(parser, b + 0xB8, 7);
+    if (x[0] > 0 && x[0] < 64) out.individual_animations = cstr_array(parser, x[1], x[0]);
+    out.anr_age_alternatives = x[3];
+    out.anr_chunks = x[4];
+    out.anr_alternate_runs = x[5];
+    out.anr_cycles_per_circuit = x[6];
     std::uint32_t nsq = out.squares_x * out.squares_z;
     if (nsq > 0 && nsq < 4096) {
         auto d = u32s_at(parser, v[0x18 / 4], nsq * 5);
@@ -495,6 +581,13 @@ bool read_tracked_ride(const OvlParser& parser, OvlSide side, std::size_t lf_ind
     out.car_spline = resolved_symbol_at(parser, c + 71 * 4);
     out.car_swing_spline = resolved_symbol_at(parser, c + 72 * 4);
 
+    if (!out.soaked_wild) {
+        out.attraction = read_attraction_at(parser, b, false);
+        out.ride = read_ride_at(parser, b + 56, false, nullptr);
+    } else {
+        std::uint32_t ride_ptr = u32s_at(parser, c + 300, 1)[0];
+        if (ride_ptr) out.ride = read_ride_at(parser, ride_ptr, true, &out.attraction);
+    }
     if (out.soaked_wild) {
         // Extension after Common: +0x00 Ride_S*, +0x04 track_section_count,
         // ... +0x3C track_path_count, +0x40 char** track_paths.
@@ -533,6 +626,34 @@ bool read_tracked_ride(const OvlParser& parser, OvlSide side, std::size_t lf_ind
         for (std::uint32_t i = 0; i < struct_count; ++i) {
             TrackedRideSectionCost sc{cstr(parser, s[i * 2]), s[i * 2 + 1]};
             if (!sc.name.empty()) out.section_costs.push_back(sc);
+        }
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------- anr
+
+bool read_flat_ride(const OvlParser& parser, OvlSide side, std::size_t lf_index,
+                    FlatRideInfo& out, std::string& err) {
+    const auto& lf = parser.side(side).linkedfiles[lf_index];
+    out = FlatRideInfo{};
+    out.symbol = linked_symbol(parser, side, lf_index);
+    const std::uint32_t b = lf.loaderreference.datapointer;
+    if (!open_at(parser, b)) { err = "datapointer unresolved"; return false; }
+    auto v = u32s_at(parser, b, 11);
+    out.soaked_wild = v[0] == 0xFFFFFFFFu;
+    if (!out.soaked_wild) {
+        out.attraction = read_attraction_at(parser, b, false);
+        out.ride = read_ride_at(parser, b + 56, false, nullptr);
+        out.sid = ref_at(parser, b + 80);
+    } else {
+        if (v[5]) out.ride = read_ride_at(parser, v[5], true, &out.attraction);
+        out.sid = ref_at(parser, b + 24);
+        std::uint32_t n = v[9];
+        if (n > 0 && n < 256) {
+            auto si = u32s_at(parser, v[10], n * 2);
+            for (std::uint32_t i = 0; i < n; ++i)
+                out.show_items.emplace_back(si[i * 2], cstr(parser, si[i * 2 + 1]));
         }
     }
     return true;

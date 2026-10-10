@@ -157,7 +157,20 @@ std::string sid_json(const SceneryItemInfo& s) {
       << ",\"cost\":" << s.cost << ",\"removal_cost\":" << s.removal_cost
       << ",\"supports\":" << jstr(s.supports) << ",\"svds\":" << jstrs(s.svds)
       << ",\"default_colours\":[" << s.default_colours[0] << "," << s.default_colours[1] << ","
-      << s.default_colours[2] << "],\"cells\":[";
+      << s.default_colours[2] << "]";
+    if (!s.params.empty()) {
+        o << ",\"params\":[";
+        for (std::size_t i = 0; i < s.params.size(); ++i)
+            o << (i ? "," : "") << "[" << jstr(s.params[i].first) << "," << jstr(s.params[i].second) << "]";
+        o << "]";
+    }
+    if (!s.individual_animations.empty())
+        o << ",\"individual_animations\":" << jstrs(s.individual_animations);
+    if (s.anr_chunks || s.anr_cycles_per_circuit)
+        o << ",\"anr\":{\"age_alternatives\":" << s.anr_age_alternatives << ",\"animation_chunks\":"
+          << s.anr_chunks << ",\"alternate_run_animations\":" << s.anr_alternate_runs
+          << ",\"cycles_per_circuit\":" << s.anr_cycles_per_circuit << "}";
+    o << ",\"cells\":[";
     for (std::size_t i = 0; i < s.squares.size(); ++i) {
         const auto& q = s.squares[i];
         o << (i ? "," : "") << "[" << q.flags << "," << q.height_adjust << "," << q.height_span
@@ -175,6 +188,51 @@ std::string end_json(std::uint32_t slope, std::uint32_t bank, std::uint32_t curv
            ",\"wide\":" + std::to_string(wide) + "}";
 }
 
+std::string attraction_json(const AttractionInfo& a) {
+    std::ostringstream o;
+    o << "{\"type\": " << a.type << ", \"name\": " << jstr(a.name_txt)
+      << ", \"description\": " << jstr(a.description_txt) << ", \"icon\": " << jstr(a.icon_gsi)
+      << ", \"cost\": " << a.cost << ", \"base_upkeep\": " << a.base_upkeep
+      << ", \"flags\": " << a.flags << ", \"max_height\": " << a.max_height
+      << ", \"addon\": " << a.addon;
+    if (!a.loop_spline.empty()) o << ", \"loop_spline\": " << jstr(a.loop_spline);
+    o << ", \"paths\": " << jstrs(a.paths) << "}";
+    return o.str();
+}
+
+std::string ride_json(const RideInfo& r) {
+    std::ostringstream o;
+    o << "{\"attractivity\": " << r.attractivity << ", \"seating\": " << r.seating
+      << ", \"min_circuits\": " << r.min_circuits << ", \"max_circuits\": " << r.max_circuits
+      << ", \"entry_fee\": " << r.entry_fee << ", \"options\": [";
+    for (std::size_t i = 0; i < r.options.size(); ++i) {
+        const auto& op = r.options[i];
+        o << (i ? ", " : "") << "{\"type\": " << op.type;
+        if (op.type == 8 && op.values.size() >= 5)
+            o << ", \"excitement\": " << jnum(op.values[0]) << ", \"intensity\": " << jnum(op.values[1])
+              << ", \"nausea\": " << jnum(op.values[2]) << ", \"option\": " << op.raw[3]
+              << ", \"factor\": " << jnum(op.values[4]);
+        else {
+            o << ", \"values\": [";
+            for (std::size_t k = 0; k < op.raw.size(); ++k) {
+                // small integers are option ids (u16 suboption | u16 group), the rest floats
+                if (op.raw[k] < 0x10000000u) o << (k ? ", " : "") << op.raw[k];
+                else o << (k ? ", " : "") << jnum(op.values[k]);
+            }
+            o << "]";
+        }
+        o << "}";
+    }
+    o << "], \"station_limits\": [";
+    for (std::size_t i = 0; i < r.station_limits.size(); ++i) {
+        const auto& l = r.station_limits[i];
+        o << (i ? ", " : "") << "{\"x\": " << l.x << ", \"z\": " << l.z << ", \"height\": " << l.height
+          << ", \"flags\": " << l.flags << "}";
+    }
+    o << "]}";
+    return o.str();
+}
+
 }  // namespace
 
 ExtractResult TrackExtractor::extract(const OvlParser& parser, const ExtractContext& ctx) {
@@ -184,6 +242,7 @@ ExtractResult TrackExtractor::extract(const OvlParser& parser, const ExtractCont
     std::vector<TrackSectionDef> sections;
     std::vector<TrackedRideInfo> rides;
     std::vector<RideTrainInfo> trains;
+    std::vector<FlatRideInfo> flat_rides;
     std::map<std::string, RideCarInfo> cars;   // lower "name:ric"
 
     for (std::size_t s = 0; s < (parser.has_unique() ? 2u : 1u); ++s) {
@@ -205,6 +264,10 @@ ExtractResult TrackExtractor::extract(const OvlParser& parser, const ExtractCont
                 TrackSectionDef t;
                 if (read_track_section(parser, side, i, t, err)) sections.push_back(std::move(t));
                 else { ctx.log("tks " + linked_symbol(parser, side, i) + ": " + err); ++res.errors; }
+            } else if (tag == "anr") {
+                FlatRideInfo f;
+                if (read_flat_ride(parser, side, i, f, err)) flat_rides.push_back(std::move(f));
+                else { ctx.log("anr " + linked_symbol(parser, side, i) + ": " + err); ++res.errors; }
             } else if (tag == "rit") {
                 RideTrainInfo t;
                 if (read_ride_train(parser, side, i, t, err)) trains.push_back(std::move(t));
@@ -221,7 +284,7 @@ ExtractResult TrackExtractor::extract(const OvlParser& parser, const ExtractCont
         }
     }
     if (sections.empty() && rides.empty() && splines.empty() && trains.empty() && cars.empty() &&
-        sids.empty())
+        sids.empty() && flat_rides.empty())
         return res;
 
     std::set<std::string> used_splines;
@@ -366,6 +429,8 @@ ExtractResult TrackExtractor::extract(const OvlParser& parser, const ExtractCont
             }
             o << "]";
         }
+        o << ",\n  \"attraction\": " << attraction_json(r.attraction)
+          << ",\n  \"ride_info\": " << ride_json(r.ride);
         o << ",\n  \"sections\": [";
         for (std::size_t i = 0; i < r.sections.size(); ++i)
             o << (i ? ", " : "") << jstr(strip_tag(r.sections[i]));
@@ -421,6 +486,35 @@ ExtractResult TrackExtractor::extract(const OvlParser& parser, const ExtractCont
         o << "}";
         return o.str();
     };
+    for (const auto& f : flat_rides) {
+        std::ostringstream o;
+        o << "{\n  \"flat_ride\": " << jstr(f.symbol)
+          << ",\n  \"layout\": " << jstr(f.soaked_wild ? "soaked_wild" : "vanilla")
+          << ",\n  \"attraction\": " << attraction_json(f.attraction)
+          << ",\n  \"ride\": " << ride_json(f.ride);
+        auto si = sids.find(lower(f.sid));
+        if (si != sids.end()) o << ",\n  \"sid\": " << sid_json(si->second);
+        else o << ",\n  \"sid\": {\"symbol\": " << jstr(strip_tag(f.sid)) << "}";
+        if (!f.show_items.empty()) {
+            o << ",\n  \"show_items\": [";
+            for (std::size_t i = 0; i < f.show_items.size(); ++i)
+                o << (i ? ", " : "") << "[" << f.show_items[i].first << ", " << jstr(f.show_items[i].second) << "]";
+            o << "]";
+        }
+        o << ",\n  \"splines\": {";
+        bool first = true;
+        std::vector<std::string> wanted = f.attraction.paths;
+        if (!f.attraction.loop_spline.empty()) wanted.insert(wanted.begin(), f.attraction.loop_spline);
+        for (const auto& w : wanted) {
+            if (const Spline* sp = find_spline(w)) {
+                o << (first ? "\n    " : ",\n    ") << jstr(strip_tag(w)) << ": " << spline_json(*sp);
+                first = false;
+            }
+        }
+        o << "\n  }\n}\n";
+        write(f.symbol + ".flatride.json", o.str());
+    }
+
     std::set<std::string> cars_written;
     for (const auto& t : trains) {
         static const char* kRole[6] = {"front", "second", "mid", "penultimate", "rear", "link"};
@@ -471,16 +565,19 @@ ExtractResult TrackExtractor::extract(const OvlParser& parser, const ExtractCont
         write(base + ".sids.json", o.str());
     }
 
-    if (sections.empty() && rides.empty() && trains.empty() && cars.empty() && !splines.empty()) {
+    // Splines nothing above consumed (e.g. a flat ride's guest paths, whose
+    // anr is declared in the theme's Style OVL): keep them in their own file.
+    {
         std::ostringstream o;
         o << "{\n";
         bool first = true;
-        for (const auto& [sym, s] : splines) {
-            o << (first ? "" : ",\n") << "  " << jstr(strip_tag(sym)) << ": " << spline_json(s);
+        for (const auto& [sym, sp] : splines) {
+            if (used_splines.count(sym)) continue;
+            o << (first ? "" : ",\n") << "  " << jstr(sp.symbol) << ": " << spline_json(sp);
             first = false;
         }
         o << "\n}\n";
-        write(base + ".splines.json", o.str());
+        if (!first) write(base + ".splines.json", o.str());
     }
     return res;
 }

@@ -72,6 +72,63 @@ struct SceneryItemInfo {
     std::vector<std::string>        svds;            // "foo:svd" symbols
     std::vector<SceneryItemSquare>  squares;         // squares_x * squares_z
     std::uint32_t                   default_colours[3] = {0, 0, 0};
+    // SceneryParams: (type, params) string pairs
+    std::vector<std::pair<std::string, std::string>> params;
+    // animated (flat) rides: per-instance animation names and the run cycle
+    std::vector<std::string>        individual_animations;
+    std::uint32_t                   anr_age_alternatives = 0, anr_chunks = 0,
+                                    anr_alternate_runs = 0, anr_cycles_per_circuit = 0;
+};
+
+// --------------------------------------------------------------- attraction / ride
+
+// Attraction_V (56 B, attraction.h) — shared by stalls, flat rides, tracked
+// rides. Text and icon are symbol references (txt / gsi).
+struct AttractionInfo {
+    std::uint32_t type = 0;
+    std::string   name_txt, description_txt, icon_gsi;
+    std::uint32_t cost = 0, base_upkeep = 0;
+    std::string   loop_spline;               // flat rides: the loop the ride runs
+    std::vector<std::string> paths;          // guest paths (spl); the last is the mechanic's
+    std::uint32_t flags = 0;
+    std::int32_t  max_height = 0;
+    std::uint32_t addon = 0;                 // Soaked ext: 0 vanilla, 1 soaked, 2 wild
+};
+
+// One RideOption (sharedride.h): `type` + its payload as floats. Type 8 is
+// the ride ratings: excitement, intensity, nausea, (option), factor.
+struct RideOptionInfo {
+    std::uint32_t      type = 0;
+    std::vector<float> values;
+    std::vector<std::uint32_t> raw;
+};
+
+// RideStationLimit: a tile where an entrance / exit may be attached.
+struct RideStationLimitInfo {
+    std::int32_t  x = 0, z = 0, height = 0;
+    std::uint32_t flags = 0;   // 1 -X, 2 +Z, 4 +X, 8 -Z, 0x10 entrance, 0x20 exit
+};
+
+// Ride_V (24 B) + Ride_Sext (Soaked: pointer to its Attraction_S, station limits…).
+struct RideInfo {
+    std::uint32_t attractivity = 0, seating = 0;
+    std::uint32_t min_circuits = 0;
+    std::int32_t  max_circuits = 0;
+    std::uint32_t entry_fee = 0;
+    std::vector<RideOptionInfo> options;
+    std::vector<RideStationLimitInfo> station_limits;
+};
+
+// AnimatedRide (anr): a flat ride. Vanilla = Attraction_V + Ride_V + sid;
+// Soaked/Wild = marker 0xFFFFFFFF, Ride_S* (which points to the attraction),
+// sid, show items.
+struct FlatRideInfo {
+    std::string    symbol;           // without ":anr"
+    bool           soaked_wild = false;
+    AttractionInfo attraction;
+    RideInfo       ride;
+    std::string    sid;              // "foo:sid"
+    std::vector<std::pair<std::uint32_t, std::string>> show_items;  // (animation index, name)
 };
 
 // --------------------------------------------------------------- tks
@@ -171,6 +228,8 @@ struct TrackedRideInfo {
     std::string   other_top, other_mid, tower_top, tower_mid;   // tks symbols
     std::string   track_spline, track_big_spline, car_spline, car_swing_spline;
     std::vector<std::vector<TrackGroupPair>> group_definitions;
+    AttractionInfo attraction;
+    RideInfo       ride;
 };
 
 // --------------------------------------------------------------- ric / rit
@@ -223,6 +282,8 @@ bool read_scenery_item(const OvlParser& parser, OvlSide side, std::size_t lf_ind
                        SceneryItemInfo& out, std::string& err);
 bool read_tracked_ride(const OvlParser& parser, OvlSide side, std::size_t lf_index,
                        TrackedRideInfo& out, std::string& err);
+bool read_flat_ride(const OvlParser& parser, OvlSide side, std::size_t lf_index,
+                    FlatRideInfo& out, std::string& err);
 bool read_ride_car(const OvlParser& parser, OvlSide side, std::size_t lf_index,
                    RideCarInfo& out, std::string& err);
 bool read_ride_train(const OvlParser& parser, OvlSide side, std::size_t lf_index,

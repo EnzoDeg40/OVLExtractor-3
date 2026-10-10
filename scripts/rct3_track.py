@@ -129,6 +129,24 @@ class Catalog:
             self._splines[key] = {k.lower(): v for k, v in d.get("splines", {}).items()}
         return self._splines[key]
 
+    def any_spline(self, name: str) -> dict | None:
+        """A spline by symbol from anywhere in the catalogue (track sets,
+        rides, flat rides, stand-alone <ovl>.splines.json)."""
+        if not hasattr(self, "_all_splines"):
+            self._all_splines = {}
+            for f in self.root.rglob("*.json"):
+                if f.name.endswith(".layout.json"):
+                    continue
+                try:
+                    d = json.loads(f.read_text())
+                except ValueError:
+                    continue
+                pool = d.get("splines", d) if isinstance(d, dict) else {}
+                for k, v in pool.items():
+                    if isinstance(v, dict) and "nodes" in v:
+                        self._all_splines.setdefault(k.lower(), v)
+        return self._all_splines.get(name.split(":")[0].lower())
+
     def platforms(self, style: str) -> dict:
         f = self._sid_files.get(style.lower())
         if not f:
@@ -734,6 +752,39 @@ def cmd_layout(cat: Catalog, args) -> int:
     return 0
 
 
+def cmd_flatlayout(cat: Catalog, args) -> int:
+    """A flat ride (anr): its mesh at the origin and its guest / mechanic
+    paths and loop as polylines, all in the glTF frame."""
+    f = cat.root.rglob(f"{args.ride}.flatride.json")
+    path = next(iter(f), None)
+    if not path:
+        print(f"no {args.ride}.flatride.json under {cat.root}", file=sys.stderr)
+        return 1
+    d = json.loads(path.read_text())
+    sid = d.get("sid") or {}
+    items = []
+    if sid.get("svds"):
+        ident = game_to_gltf_matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, 0])
+        items.append({"kind": "ride", "piece": d["flat_ride"],
+                      "asset": sid["svds"][0].split(":")[0], "matrix": ident})
+    curves = []
+    wanted = ([d["attraction"]["loop_spline"]] if d["attraction"].get("loop_spline") else []) + d["attraction"]["paths"]
+    pool = {}
+    for w in wanted:
+        sp = d.get("splines", {}).get(w.split(":")[0]) or cat.any_spline(w)
+        if sp:
+            pool[w.split(":")[0]] = sp
+    for name, sp in pool.items():
+        pts = [[p[0], p[1], -p[2]] for p in sample_spline(sp, 8)]   # mirror Z like the meshes
+        kind = ("loop" if name.lower().endswith("loop") else
+                "mechanic" if "mech" in name.lower() else "guest")
+        curves.append({"name": name, "kind": kind, "points": pts})
+    out = Path(args.output or f"{d['flat_ride']}.layout.json")
+    out.write_text(json.dumps({"ride": d["flat_ride"], "items": items, "curves": curves}, indent=1))
+    print(f"wrote {out}: {len(items)} mesh, {len(curves)} paths")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -762,10 +813,14 @@ def main(argv=None) -> int:
                    help="spacing between cars (default 2.0; the game uses the car mesh length)")
     l.add_argument("--platform", help="platform style (default: the ride's station name)")
     l.add_argument("--glb-dir", help="ovlextract -t scenery output; car spacing = car mesh length")
+    fl = sub.add_parser("flatlayout", help="a flat ride's mesh + guest/mechanic paths")
+    fl.add_argument("json_dir")
+    fl.add_argument("ride", help="anr name, e.g. BuckingBronco")
+    fl.add_argument("-o", "--output")
     args = ap.parse_args(argv)
     cat = Catalog(Path(args.json_dir))
     return {"next": cmd_next, "check": cmd_check, "show": cmd_show,
-            "layout": cmd_layout}[args.cmd](cat, args)
+            "layout": cmd_layout, "flatlayout": cmd_flatlayout}[args.cmd](cat, args)
 
 
 if __name__ == "__main__":
