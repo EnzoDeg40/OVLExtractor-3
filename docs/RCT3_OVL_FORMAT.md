@@ -1593,7 +1593,7 @@ top, **14** bottom (footing), **15** bottom-extra, **16** girder
 `+0x38` → 88-byte `SceneryItemTrack`). They come in groups
 (`direction_type` 1, 2, 3…). In a group, the entry whose `end` cell equals
 its `start` cell is the point the track rests on: footprint cell `start`,
-sub-position `start_sub[2..3]` (0.5 = cell centre), attach height `height`
+`start_sub[2..3]` (always 0.5; the game picks the sub-cell itself, see below), attach height `height`
 above the piece base (the underside of the track: 0 for a Track3 straight,
 0.95 mid-way up a `medslope`). The other entries of the group name
 neighbouring cells, some outside the footprint (`(0,-1)`, `(0,1)`): where the
@@ -1603,26 +1603,42 @@ none at the top of the loop. Local cell → world tile is the game's
 `SceneryItem_GridTransform` (rerct3), sub-positions turn with
 `TransformSubGridFloat`.
 
-**Checked in the running game** (The Money Pit, Giga, `ts1`): every support
-piece is a scene node whose world matrix ends in `(x, y, z, 1.0)`, so
-scanning memory for `(z, 1.0)` at each tile and reading `x`, `y` lists the
-real columns (`rct3_saves` probe; the game builds the meshes only for the
-part of the park in view). Of the 8 columns in view, 6 sit exactly on the
-predicted point with exactly the predicted stack, e.g. footing@0, then
-1H@1, 2H@2, 4H@4, 8H@8, 8H@16, 4H@20, 2H@22, top@23 under an attach height
-of 24.37. That confirms the stacking: footing at the ground, top piece ending
-at **round(attach)** (30.37 → 30, 24.37 → 24, 8.99 → 9), middles at multiples
-of their own height, largest first. The other 2 (the first group of
-`Steepslope2straight`) stand **one third of a tile** further along the piece
-than the entry says; that rule is not known yet.
+**Measured in the running game** (Mac build, `rct3_saves` probe,
+`scripts/verify/live_supports.py`). Every drawn scene node has a 4×4 world
+matrix in memory, last column `(0,0,0,1)`; the probe's `mats` command lists
+them all in a box. A real node has the class pointer `0x100d28f50` 0x70
+bytes before its matrix and its model 0x58 before; the model's float at
++0x2C is the mesh height (1, 2, 4, 8 for the `ts1` pieces). With
+`SupportLOD 50 50` in `Options.txt` the game builds the supports of the whole
+park at once, not just the part in view. Two parks were read whole: The Money
+Pit (Giga, 91 predicted columns, **62 exact** piece for piece) and Fright
+Night (LayDown, 148 predicted, **89 exact**). What those measurements fix:
 
-`rct3_track.py layout --supports` implements this. Per group: the column on
-the main point, unless another piece covers that tile lower than the
-column top (then the next candidate cell plus a girder at the attach
-height), or the attach is less than 1.1 above the terrain. The terrain
-comes from the park save when there is one (a `.trk` has none: ground 0).
-Not verified against the game yet: the girder choice and blocking rule, the
-1/3-tile offset above, inverted track, girders/caps between two columns.
+| Rule | Detail | Evidence |
+| --- | --- | --- |
+| Sub-position | The column stands on a **3×3 sub-grid** of the tile (centres 1/6, 1/2, 5/6), not at the entry's `start_sub` (always 0.5 there). It is the sub-cell where the **track's underside** is at the attach height: the rail mid-line moved down by the ride's track depth along the banked normal (1.18 on the Giga = rail height above the support point on a flat Straight), then 0.25 towards the lower side. If several sub-cells qualify (flat track), the one the track crosses the longest, then the one nearest the centre. | 77 of 79 single columns of The Money Pit; the 2 misses are both `Straight2tilt90left` |
+| Footing | At **ceil(ground)**, not at the ground: ground 0.72 → footing at 1, 3.13 → 4. It sinks into the terrain. | every column measured |
+| Top | The top piece starts at **round(attach) − 1** and is **stretched vertically** to end exactly at the attach height (Y scale 0.76 for attach 17.76, 1.37 for 22.37, 1.45 for 11.45). The column touches the track. | ~70 columns, no exception |
+| Middles | Between the footing and the top piece, at multiples of their own height, largest first (`RebuildCellVisuals`). | every column measured |
+| Blocked tile | A tile holding **any scenery item** (a bush at height 0 is enough) or another piece of track lower down takes no column. | e.g. bushes on (36,50), (36,57), (50,55), (50,57), (49,70), (34,47) |
+| Neighbour + girder | The column then moves to a free cell named by another entry of the group, on that tile's sub-cell **nearest the support point**, and ends 0.443 under the attach height. A horizontal girder (the `3L` mesh, 3.66 long) is centred between the two, at attach − 0.22, stretched to the gap + 0.73 (X scale 1.292 for a 4.0 gap, 0.927 for 2.667). No free neighbour: no column. | (50,57) → (51,57), (49,70) → (49,69), (50,55) → (51,55), (36,57) → (37,57) |
+
+**Not understood yet** (the remaining misses):
+- **Spacing.** On a run of identical one-tile pieces (a chain lift, a run of
+  `Steepslope`) the game keeps **one column out of two**, with no scenery
+  involved. rerct3 notes that `TrackPiece_BuildSupports` walks the linked
+  pieces (≤ 20) "to avoid double supports"; a greedy rule "skip when the
+  previous column is closer than ~4–5.5 units" walked backwards along the
+  track explains most of it but not all. Not implemented: those columns are
+  still predicted.
+- Whole stretches with no support and nothing on the tiles (The Money Pit
+  (55..64, 46..50); in Fright Night columns over very low ground).
+- `Straight2tilt90left`; the columns predicted under the Fright Night
+  `Halfloop` (the game has none).
+
+`rct3_track.py layout --supports` implements every rule of the table; the
+park save provides the terrain and the scenery (a `.trk` has neither:
+ground 0, no obstacles).
 
 ⚠ **The style string is usually at offset 0 of the OVL's string table**, so
 `sid +0x4C` holds a *relocated 0*. Reading it as a null pointer loses it
