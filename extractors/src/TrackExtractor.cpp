@@ -419,6 +419,9 @@ ExtractResult TrackExtractor::extract(const OvlParser& parser, const ExtractCont
           << ",\n  \"start_possibilities\": " << r.start_possibilities
           << ",\n  \"blocks_possible\": " << r.blocks_possible
           << ",\n  \"station_roll_speed\": " << jnum(r.station_roll_speed)
+          << ",\n  \"forces\": {\"chain\": " << jnum(r.chain_force) << ", \"brake_speed\": " << jnum(r.brake_speed)
+          << ", \"brake\": " << jnum(r.brake_force) << ", \"block_brake_speed\": " << jnum(r.block_brake_speed)
+          << ", \"booster\": " << jnum(r.booster_force) << ", \"gravity_scale\": " << jnum(r.gravity_scale) << "}"
           << ",\n  \"chain_speed\": {\"preset\": " << jnum(r.chain_speed_preset) << ", \"min\": "
           << jnum(r.chain_speed_min) << ", \"max\": " << jnum(r.chain_speed_max) << "}"
           << ",\n  \"launched_speed\": {\"preset\": " << jnum(r.launched_speed_preset) << ", \"min\": "

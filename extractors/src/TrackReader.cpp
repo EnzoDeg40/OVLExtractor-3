@@ -588,6 +588,12 @@ bool read_tracked_ride(const OvlParser& parser, OvlSide side, std::size_t lf_ind
     out.station_roll_speed = f(21);
     out.launched_speed_preset = f(23);
     out.chain_speed_preset = f(25);
+    out.chain_force = f(26);
+    out.brake_speed = f(27);
+    out.brake_force = f(28);
+    out.block_brake_speed = f(29);
+    out.booster_force = f(30);
+    out.gravity_scale = f(35);
     out.constant_speed_preset = f(31);
     out.upkeep_per_train = v[41];
     out.upkeep_per_car = v[42];

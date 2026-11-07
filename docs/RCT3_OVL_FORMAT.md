@@ -1342,6 +1342,7 @@ Vanilla `TrackedRide_V` = `Attraction_V` (56 B) + `Ride_V` (24 B) +
 | 18–20 | start preset, start possibilities, blocks possible | | 60, 61 | chain speed min / max |
 | 21 | station roll speed | | 64, 65 | section-cost count, `{char* name; u32 cost}[]` |
 | 23, 25 | launched / chain speed preset | | 66, 67 | launched speed min / max |
+| 26–30 | chain force, brake speed, brake force, block brake speed, booster force | | 35 | gravity scale |
 | 31 | constant speed preset (< 0 = none) | | 69–72 | track, track-big, car, car-swing profile `spl` |
 
 Soaked/Wild extension (after the 300 B): `+0x04` section count, `+0x1C/+0x20`

@@ -238,6 +238,7 @@ struct TrackedRideInfo {
     float         station_roll_speed = 0;
     float         launched_speed_preset = 0, chain_speed_preset = 0;
     float         chain_speed_min = 0, chain_speed_max = 0;
+    float         chain_force = 0, brake_speed = 0, brake_force = 0, block_brake_speed = 0, booster_force = 0, gravity_scale = 1;
     float         launched_speed_min = 0, launched_speed_max = 0;
     float         constant_speed_preset = -1;
     std::uint32_t loop_not_allowed = 0;
