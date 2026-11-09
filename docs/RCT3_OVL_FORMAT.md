@@ -1590,6 +1590,18 @@ item): 2–5 turn by `(d − p) mod 4`, 6–7 by `d ≠ p`, 1 only on 1. Pieces 
 The inverted / Sky Swinger / Flyer sets (`ts1a`, `ts6`) use inverted entries
 whose column stands beside the track with a girder over it.
 
+**Checked in the running game** (2026-11-09, The Money Pit, Giga, every support
+node read with the probe, `scripts/verify/live_supports.py`): 467 of 506
+predicted column pieces sit exactly (< 0.06) on a piece the game built, 6 of 8
+girders, and the game builds no column the rules don't predict. Two things the
+live game fixed: a girder's node sits at the centre of its thickness (the mesh
+spans −0.223..+0.223), and what lies **under the column's top** blocks it, not
+only what lies under the item's base (a bush at 3 under a piece based at 2 whose
+column reaches 16). Still unexplained: the game builds no column under a few
+`Medcurve` / `Medslope…curve` pieces with nothing on their tiles.
+In the game, `SupportLOD` is capped at 3 and supports are built around the
+camera only: aim it with `Save.look_at` (rct3_saves `tools/mac/launch_supports.sh`).
+
 `rct3_track.py layout --supports` (with `--glb-dir` for the exact shape sizes)
 implements all of this; the park save provides terrain and scenery (a `.trk`
 has neither: ground 0, no obstacles). Not modelled: the animal-enclosure grid

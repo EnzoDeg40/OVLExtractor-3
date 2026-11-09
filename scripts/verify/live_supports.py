@@ -106,6 +106,12 @@ def main(argv):
                   f"({p['t'][0]:.2f},{p['t'][1]:.2f},{p['t'][2]:.2f})  nearest live {dist:.2f} "
                   f"{tuple(round(c, 2) for c in best['l']) if best else ''}")
     print(dict(ok))
+    if "--json" in argv:
+        import json
+        res = [{"asset": p["asset"], "piece": p["piece"], "t": p["t"],
+                "hit": math.dist(min(mats, key=lambda m: math.dist(m["l"], p["t"]))["l"], p["t"]) < 0.06 if mats else False}
+               for p in pred]
+        Path(argv[argv.index("--json") + 1]).write_text(json.dumps(res))
     # live column-like stacks nobody predicted: >= 3 axis-aligned unit matrices on one (x, z)
     stacks = collections.defaultdict(list)
     for m in mats:

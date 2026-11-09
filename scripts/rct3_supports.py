@@ -35,8 +35,8 @@ NEAR_CENTRE_SQ = 0.04             # start fraction within 0.2 of its sub-cell ce
 MIDDLE, TOP, BOTTOM, BOTTOM_EXTRA, GIRDER, CAP = 12, 13, 14, 15, 16, 17
 
 # Shape sizes measured on ts1 when the meshes are not at hand (docs §15.8).
-DEFAULT_SHAPE = {"girder": {"min": [-1.83, -0.443, -0.2], "max": [1.83, 0.0, 0.2]},
-                 "top_half_width": 0.365, "cap_height": 1.0}
+DEFAULT_SHAPE = {"girder": {"min": [-1.827, -0.223, -0.36], "max": [1.827, 0.223, 0.36]},
+                 "top_half_width": 0.36, "cap_height": 0.35}
 
 
 def game_to_gltf_matrix(rot_cols, t):
@@ -205,10 +205,13 @@ class World:
         g = self.terrain.get((tx, tz))
         return (g[0], g[1]) if g else (0.0, 0.0)
 
-    def bottom(self, tx, tz, sub, above: Item, style: Style, connection: bool):
+    def bottom(self, tx, tz, sub, above: Item, style: Style, connection: bool, top: float | None = None):
         """FUN_1009a469c: where a column on (tile, sub-cell) starts, or None if blocked.
         Returns (bottom, on_ground)."""
-        lower = sorted((it for it in self.by_tile.get((tx, tz), []) if it is not above and it.base < above.base),
+        # The cell list runs from the top down: what lies under the column's top is "below" it,
+        # even when it stands higher than the item's own base (a bush under a high attach point).
+        limit = above.base if top is None else top
+        lower = sorted((it for it in self.by_tile.get((tx, tz), []) if it is not above and it.base < limit),
                        key=lambda it: -it.base)
         for it in lower:
             sq = it.square(tx, tz)
@@ -224,7 +227,7 @@ class World:
             if it.sid.get("type") == 0x12 and not style.no_track_gap:
                 b += 1
             return b, False
-        if any(h < above.base for _, h in self.scenery.get((tx, tz), [])):
+        if any(h < limit for _, h in self.scenery.get((tx, tz), [])):
             return None
         tmin, _ = self.corners(tx, tz)
         return math.ceil(tmin - 1e-6), True
@@ -304,8 +307,13 @@ def girder_matrix(style: Style, g: dict, p0, p1, inverted: bool):
     return game_to_gltf_matrix([[e * s for e in ex], list(ey), list(ez)], pos)
 
 
-def item_supports(cat, item: Item, world: World, style: Style) -> list[dict]:
-    """First half of RebuildCellVisuals for one item: column records and girders."""
+def item_supports(cat, item: Item, world: World, style: Style, records_out: list | None = None,
+                  checkerboard: bool = True) -> list[dict]:
+    """First half of RebuildCellVisuals for one item: column records and girders.
+    Returns the placed pieces; `records_out`, when given, also receives the column records
+    (tile, sub-cell, bottom, top, top_f, dir, start tile) and each girder/cap entry is tagged.
+    `checkerboard=False` keeps the columns the checkerboard would drop (for a caller that applies it
+    itself, once the piece's real tile is known)."""
     out = []
     sid, p = item.sid, item.p
     if not item.flags & 0x80 or not style.usable:
@@ -325,10 +333,10 @@ def item_supports(cat, item: Item, world: World, style: Style) -> list[dict]:
                 if i >= len(cells) or not cells[i][0] & 2:
                     continue
                 tx, tz = grid_transform(lx, lz, p.x, p.z, item.w, item.h, p.direction)
-                if not checkerboard_ok(item, tx, tz):
+                if checkerboard and not checkerboard_ok(item, tx, tz):
                     continue
                 top = item.base + cells[i][1]
-                found = world.bottom(tx, tz, (1, 1), item, style, connection=False)
+                found = world.bottom(tx, tz, (1, 1), item, style, connection=False, top=top)
                 if not found:
                     continue
                 bottom, ground = found
@@ -336,7 +344,8 @@ def item_supports(cat, item: Item, world: World, style: Style) -> list[dict]:
                 if bottom < top and (not ground or top - tmin > 0.5):
                     records.append({"tile": (tx, tz), "sub": (1, 1), "bottom": bottom, "top": top,
                                     "top_f": float(top), "on_ground": ground, "stretch": False,
-                                    "dir": square_dir(lx, lz)})
+                                    "dir": square_dir(lx, lz), "start": (tx, tz),
+                                    "checker": bool(item.flags & 0x200)})
     else:
         supported_groups = set()
         cap = style.pieces[CAP][0] if style.pieces[CAP] and item.flags & 0x800 else None
@@ -347,7 +356,7 @@ def item_supports(cat, item: Item, world: World, style: Style) -> list[dict]:
                 continue
             stx, stz = grid_transform(*c["start"], p.x, p.z, item.w, item.h, p.direction)
             etx, etz = grid_transform(*c["end"], p.x, p.z, item.w, item.h, p.direction)
-            if not checkerboard_ok(item, stx, stz):
+            if checkerboard and not checkerboard_ok(item, stx, stz):
                 continue
             sx, sz = rotate_sub(*c["start_sub"][:2], p.direction)
             fx, fz = rotate_frac(*c.get("start_frac", [0.5, 0.5]), p.direction)
@@ -363,18 +372,20 @@ def item_supports(cat, item: Item, world: World, style: Style) -> list[dict]:
             # 1) a column straight under the attach point
             if (not inverted and not c.get("angled") and (stx, stz) == (etx, etz)
                     and (fx - 0.5) ** 2 + (fz - 0.5) ** 2 < NEAR_CENTRE_SQ):
-                found = world.bottom(stx, stz, (sx, sz), item, style, connection=True)
+                found = world.bottom(stx, stz, (sx, sz), item, style, connection=True,
+                                     top=math.floor(h - cap_h + 0.5))
                 if found:
                     bottom, ground = found
                     supported_groups.add(group)
                     hv = h - cap_h
                     top = math.floor(hv + 0.5)
                     if cap and (ground or bottom < top - 1):
-                        out.append({"asset": cap["asset"], "matrix": turned_matrix(S[0], hv, S[1])})
+                        out.append({"asset": cap["asset"], "kind": "cap", "matrix": turned_matrix(S[0], hv, S[1])})
                     world.sub_used.setdefault((stx, stz), set()).add((sx, sz))
                     if bottom < top - 1 and top - bottom <= MAX_COLUMN:
                         records.append({"tile": (stx, stz), "sub": (sx, sz), "bottom": bottom, "top": top,
-                                        "top_f": hv, "on_ground": ground, "stretch": True, "dir": dirc})
+                                        "top_f": hv, "on_ground": ground, "stretch": True, "dir": dirc,
+                                        "start": (stx, stz), "checker": bool(item.flags & 0x200)})
                     continue
             # 2) a column on the end sub-cell and a girder to the attach point
             if flags & 2 or c.get("angled"):
@@ -395,7 +406,7 @@ def item_supports(cat, item: Item, world: World, style: Style) -> list[dict]:
                 have = True
                 supported_groups.add(group)
             else:
-                found = world.bottom(etx, etz, (ex, ez), item, style, connection=True)
+                found = world.bottom(etx, etz, (ex, ez), item, style, connection=True, top=top)
                 if not found:
                     continue
                 bottom, ground = found
@@ -404,19 +415,22 @@ def item_supports(cat, item: Item, world: World, style: Style) -> list[dict]:
                     used.add((ex, ez))
                 if bottom < top - 1:
                     records.append({"tile": (etx, etz), "sub": (ex, ez), "bottom": bottom, "top": top,
-                                    "top_f": h, "on_ground": ground, "stretch": True, "dir": dirc})
+                                    "top_f": h, "on_ground": ground, "stretch": True, "dir": dirc,
+                                    "start": (stx, stz), "checker": bool(item.flags & 0x200)})
                     have = True
                 elif not ground:
                     continue
                 else:
                     have = False
             if cap:
-                out.append({"asset": cap["asset"], "matrix": turned_matrix(S[0], item.base + y_s, S[1])})
+                out.append({"asset": cap["asset"], "kind": "cap", "matrix": turned_matrix(S[0], item.base + y_s, S[1])})
             g = style.girder
             if have and g:
                 m = girder_matrix(style, g, (S[0], item.base + y_s, S[1]), (E[0], item.base + y_e, E[1]), inverted)
                 if m:
-                    out.append({"asset": g["asset"], "matrix": m})
+                    out.append({"asset": g["asset"], "kind": "girder", "matrix": m, "column": records[-1] if records and records[-1]["tile"] == (etx, etz) and records[-1]["sub"] == (ex, ez) else None})
+    if records_out is not None:
+        records_out += records
     for r in records:
         out += stack(style, r)
     return out
