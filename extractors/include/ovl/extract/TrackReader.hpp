@@ -57,23 +57,27 @@ struct SceneryItemSquare {
     std::uint32_t direction_type = 0;
 };
 
-// SceneryItemTrack (88 B): a support connection of a placed item — where
-// its support structure attaches (rerct3 supports notes; field meaning
-// partly static-tier). Cells are local to the item's footprint, sub-cell
-// positions in [0,1] within the cell, heights above the item's base.
+// SceneryItemTrack (88 B): one support connection of a placed item (docs §15.8;
+// decoded from the Mac build's RebuildCellVisuals, ghidra/notes/rebuild_cell_visuals.md).
+// Cells are local to the item's footprint; a position is
+// (cell + (sub + frac) / 3) * tile with sub the 3x3 sub-cell index (0..2) and frac the
+// position inside it; heights are above the item's base. The column stands at the centre
+// of the end sub-cell; angled entries run a sloped girder from the start point to `far`.
 struct SceneryConnection {
-    std::int32_t  start_x = 0, start_z = 0;
-    float         start_sub[4] = {0, 0, 0, 0};   // +0x08..+0x14
-    float         height = 0;                    // +0x18
-    std::int32_t  end_x = 0, end_z = 0;          // +0x1C/+0x20
-    float         end_sub_x = 0, end_sub_z = 0;  // +0x24/+0x28
-    float         end_height = 0;                // +0x2C
-    std::int32_t  angled = 0;                    // +0x30
-    std::uint32_t raw_34 = 0, raw_38 = 0;
-    std::int32_t  angled_start_sub[2] = {0, 0};  // +0x3C/+0x40
-    float         angled_end[3] = {0, 0, 0};     // +0x44..+0x4C
-    std::uint32_t flags = 0;                     // +0x50
-    std::int32_t  direction_type = 0;            // +0x54
+    std::int32_t  start_x = 0, start_z = 0;          // +0x00/+0x04 attach cell
+    std::int32_t  start_sub[2] = {0, 0};             // +0x08/+0x0C attach sub-cell index
+    float         start_frac[2] = {0, 0};            // +0x10/+0x14 attach position in the sub-cell
+    float         height = 0;                        // +0x18 attach height above the base
+    std::int32_t  end_x = 0, end_z = 0;              // +0x1C/+0x20 cell the column stands on
+    std::int32_t  end_sub[2] = {0, 0};               // +0x24/+0x28 its sub-cell index
+    float         unused_2c = 0;                     // +0x2C read, never used by the game
+    std::int32_t  angled = 0;                        // +0x30
+    std::int32_t  far_x = 0, far_z = 0;              // +0x34/+0x38 angled girder far point cell
+    std::int32_t  far_sub[2] = {0, 0};               // +0x3C/+0x40
+    float         far_frac[2] = {0, 0};              // +0x44/+0x48
+    float         far_height = 0;                    // +0x4C
+    std::uint32_t flags = 0;                         // +0x50 bit0 inverted, bit1 no girder fallback
+    std::int32_t  group = 0;                         // +0x54 alternative group (< 32): first entry that succeeds wins
 };
 
 struct SceneryItemInfo {

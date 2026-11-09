@@ -1494,65 +1494,106 @@ Vertical Drop's holding-brake wait in seconds (5 on the one shipped
 `holdingbrake`); elsewhere it is leftovers too.
 
 **Supports** are not part of the piece meshes; the game builds them at
-runtime (`TrackPiece_BuildSupports` → `SupportGrid_PlaceColumns` →
-`ScenerySupportManager_RebuildCellVisuals` in rerct3's notes). Each piece's
-`sid.supports` names its style (`ts1` for Track3/Corkscrew and most steel
-sets, `ts2` for Track20/wooden, `ts6` for Track32–34…). The style's pieces
-are `sid`s in the central `Supports/Supports.ovl` (257 of them), meshes in
-`Supports/<style>/`, by type: **12** middle (`_support_1H/2H/4H/8H`), **13**
-top, **14** bottom (footing), **15** bottom-extra, **16** girder
-(`_girder_1L/2L/3L`), **17** cap.
+runtime. **A track piece is an ordinary scenery item for supports**: it owns
+a `SceneryItem` with its own `sid`, which goes through the scenery path
+(AddConnectionSupports → `RebuildCellVisuals`). The Windows
+`TrackPiece_BuildSupports` / `SupportGrid_PlaceColumns` chain, long taken for
+the support builder, only records tunnel (terrain hollow) intervals.
+Decoded from the Mac build with Ghidra (2026-11-09): `docs/re/rebuild_cell_visuals.md`
+and `docs/re/track_build_supports.md` hold the addresses and pseudo-code;
+`scripts/rct3_supports.py` implements it.
 
-**Where columns go: the sid connection entries** (`sid +0x34` count,
-`+0x38` → 88-byte `SceneryItemTrack`). They come in groups
-(`direction_type` 1, 2, 3…). In a group, the entry whose `end` cell equals
-its `start` cell is the point the track rests on: footprint cell `start`,
-`start_sub[2..3]` (always 0.5; the game picks the sub-cell itself, see below), attach height `height`
-above the piece base (the underside of the track: 0 for a Track3 straight,
-0.95 mid-way up a `medslope`). The other entries of the group name
-neighbouring cells, some outside the footprint (`(0,-1)`, `(0,1)`): where the
-column moves, with a horizontal **girder**, when it cannot go straight down.
-A straight has one group, a 2×2 tight curve one, a loop four placed by hand,
-none at the top of the loop. Local cell → world tile is the game's
-`SceneryItem_GridTransform` (rerct3), sub-positions turn with
-`TransformSubGridFloat`.
+**Style.** `sid.supports` (+0x4C) names it. Its pieces are the `sid`s of
+`Supports/Supports.ovl` named `<style>_*`, grouped by **sid type**: **12**
+middle (`_support_1H/2H/4H/8H`, height = sid size y), **13** top, **14**
+bottom, **15** bottom-extra, **16** girder, **17** cap. Each piece's first
+square `+0x10` is its direction class: 1 vertical, 2–5 diagonal, 6–7
+mirrored. A support piece sid flag `0x4000` (or `0x8000`) lets the style's
+columns stand on other items (the wooden `ts2`); `0x8000` also drops the
+one-unit gap above a track piece below.
 
-**Measured in the running game** (Mac build, `rct3_saves` probe,
-`scripts/verify/live_supports.py`). Every drawn scene node has a 4×4 world
-matrix in memory, last column `(0,0,0,1)`; the probe's `mats` command lists
-them all in a box. A real node has the class pointer `0x100d28f50` 0x70
-bytes before its matrix and its model 0x58 before; the model's float at
-+0x2C is the mesh height (1, 2, 4, 8 for the `ts1` pieces). With
-`SupportLOD 50 50` in `Options.txt` the game builds the supports of the whole
-park at once, not just the part in view. Two parks were read whole: The Money
-Pit (Giga, 91 predicted columns, **62 exact** piece for piece) and Fright
-Night (LayDown, 148 predicted, **89 exact**). What those measurements fix:
+**The item's sid decides everything** (`sid.flags`):
 
-| Rule | Detail | Evidence |
-| --- | --- | --- |
-| Sub-position | The column stands on a **3×3 sub-grid** of the tile (centres 1/6, 1/2, 5/6), not at the entry's `start_sub` (always 0.5 there). It is the sub-cell where the **track's underside** is at the attach height: the rail mid-line moved down by the ride's track depth along the banked normal (1.18 on the Giga = rail height above the support point on a flat Straight), then 0.25 towards the lower side. If several sub-cells qualify (flat track), the one the track crosses the longest, then the one nearest the centre. | 77 of 79 single columns of The Money Pit; the 2 misses are both `Straight2tilt90left` |
-| Footing | At **ceil(ground)**, not at the ground: ground 0.72 → footing at 1, 3.13 → 4. It sinks into the terrain. | every column measured |
-| Top | The top piece starts at **round(attach) − 1** and is **stretched vertically** to end exactly at the attach height (Y scale 0.76 for attach 17.76, 1.37 for 22.37, 1.45 for 11.45). The column touches the track. | ~70 columns, no exception |
-| Middles | Between the footing and the top piece, at multiples of their own height, largest first (`RebuildCellVisuals`). | every column measured |
-| Blocked tile | A tile holding **any scenery item** (a bush at height 0 is enough) or another piece of track lower down takes no column. | e.g. bushes on (36,50), (36,57), (50,55), (50,57), (49,70), (34,47) |
-| Neighbour + girder | The column then moves to a free cell named by another entry of the group, on that tile's sub-cell **nearest the support point**, and ends 0.443 under the attach height. A horizontal girder (the `3L` mesh, 3.66 long) is centred between the two, at attach − 0.22, stretched to the gap + 0.73 (X scale 1.292 for a 4.0 gap, 0.927 for 2.667). No free neighbour: no column. | (50,57) → (51,57), (49,70) → (49,69), (50,55) → (51,55), (36,57) → (37,57) |
+| flag | meaning |
+|---|---|
+| `0x80` | the item has supports |
+| `0x400` | connection mode (the 88-byte entries, all steel sets); clear = per-cell mode (wooden `ts2`, `ts3`, `ts5`, `ts7`, water rides) |
+| `0x200` | checkerboard: a column only on tiles where `(x ^ z) & 1` (the start cell of an entry). Set on one-tile orthogonal pieces, never on 45° ones: this is the "one column out of two" on straight runs |
+| `0x800` | the style's cap (type 17) is put at the attach point (Wild Mouse, Junior, Mine Ride…) |
+| `0x100` | other columns may stand on this item |
 
-**Not understood yet** (the remaining misses):
-- **Spacing.** On a run of identical one-tile pieces (a chain lift, a run of
-  `Steepslope`) the game keeps **one column out of two**, with no scenery
-  involved. rerct3 notes that `TrackPiece_BuildSupports` walks the linked
-  pieces (≤ 20) "to avoid double supports"; a greedy rule "skip when the
-  previous column is closer than ~4–5.5 units" walked backwards along the
-  track explains most of it but not all. Not implemented: those columns are
-  still predicted.
-- Whole stretches with no support and nothing on the tiles (The Money Pit
-  (55..64, 46..50); in Fright Night columns over very low ground).
-- `Straight2tilt90left`; the columns predicted under the Fright Night
-  `Halfloop` (the game has none).
+**Per-cell mode.** Each footprint square with flag bit 1 gets one column at
+the tile centre, from its bottom up to `base + square.+4` (an integer: no
+stretch). Square `+8` is the item's top there, which is where a column from
+above may stand. Square bits 3–11 mark which 3×3 sub-cells are solid.
 
-`rct3_track.py layout --supports` implements every rule of the table; the
-park save provides the terrain and the scenery (a `.trk` has neither:
-ground 0, no obstacles).
+**Connection entry** (`SceneryItemTrack`, 88 B, `sid +0x34` count, `+0x38` array):
+
+| offset | type | field |
+|---|---|---|
+| +0x00/+0x04 | i32 | attach (start) cell, item-local |
+| +0x08/+0x0C | i32 | attach **sub-cell index** 0..2 on the tile's 3×3 grid |
+| +0x10/+0x14 | f32 | attach position inside that sub-cell (0..1) |
+| +0x18 | f32 | attach height above the item base (the track's underside) |
+| +0x1C/+0x20 | i32 | cell the column stands on |
+| +0x24/+0x28 | i32 | its sub-cell index (the column stands at the sub-cell centre) |
+| +0x2C | f32 | read, never used |
+| +0x30 | i32 | angled (a sloped girder to the far point); no shipped entry sets it |
+| +0x34/+0x38, +0x3C/+0x40, +0x44/+0x48, +0x4C | | angled far point: cell, sub-cell, fraction, height |
+| +0x50 | u32 | bit0 inverted (the girder passes over the track), bit1 no girder fallback |
+| +0x54 | i32 | **alternative group** (< 32), not a direction |
+
+A point is at `(cell + (sub + frac) / 3) · 4`; under item rotation r the
+sub-cell turns as the footprint does (`r=1: (sz, 2−sx)`, `r=2: (2−sx, 2−sz)`,
+`r=3: (2−sz, sx)`, fractions with `1−f`). Earlier versions of the extractor
+read +0x08..+0x14 and +0x24/+0x28 as floats, so the integer indices came out as
+denormals printed as 0, and the sub-cell had to be fitted from the track
+geometry (77/79 columns of a live Giga park; the data agrees with that fit on
+90 % of the Giga's entries, and the game uses no geometry).
+
+**Connection mode, per entry, in array order:** an entry is skipped when its
+group already has a support or the checkerboard forbids its start tile. Then:
+1. **Column under the point** when the entry is not inverted, not angled, starts
+   and ends in the same cell, and its attach position is within 0.2 of its
+   sub-cell centre (`(fx−½)² + (fz−½)² < 0.04`): the column ends at
+   `floor(h + 0.5)` and its top piece is stretched to the exact `h`; with the cap
+   flag, `h` is lowered by the cap's height and the cap sits at the point. It
+   needs `bottom < top − 1`.
+2. Otherwise (unless bit1), a **column on the end sub-cell plus one girder**
+   from the attach point to the end sub-cell centre. The column top is lowered
+   by the thinnest girder's thickness (0.443 on `ts1`) unless inverted. A
+   sub-cell that already holds a column in this cell is reused (girder only).
+   The girder is **one stretched mesh** (no tiling): length scale
+   `(|d| + 2·w) / (maxX − minX)` with w the top piece's half-width (0.365 on
+   `ts1`), pitched along the line, its top on the line (bottom when inverted).
+   The game picks "the first girder thicker than the span", which never
+   happens: it always uses the last girder after sorting by thickness (`3L`).
+
+**Bottom of a column** (`FUN_1009a469c`): the nearest item below in the cell,
+station platforms ignored. A connection-mode item below lets the column pass
+when the sub-cell is not solid in its square; otherwise the column stands on
+it only if the style may (0x4000) or the item has 0x100 — **track below
+blocks** (the entry falls back to its group's other entries). Standing on an
+item: bottom = its `base + square.+8` (+1 above a track piece unless 0x8000).
+Nothing below: `ceil(lowest terrain corner)`, unless water or another volume
+is on the tile. A column taller than 228 units is rejected.
+
+**Stacking a column** (`bottom`, `top` integers): on the ground the
+bottom-extra piece (15) is preferred, on an item the bottom piece (14), each
+falling back to the other; then the top piece (13) right under `top`; then the
+middles, tallest first, at multiples of their own height. A piece is used only
+if its direction class fits the column's (the square's `+0x10`, turned with the
+item): 2–5 turn by `(d − p) mod 4`, 6–7 by `d ≠ p`, 1 only on 1. Pieces face
+`rotY((turns + 2)·π·−½)` like any scenery item.
+
+**Hanging styles** don't hang: every column stands on the ground or an item.
+The inverted / Sky Swinger / Flyer sets (`ts1a`, `ts6`) use inverted entries
+whose column stands beside the track with a girder over it.
+
+`rct3_track.py layout --supports` (with `--glb-dir` for the exact shape sizes)
+implements all of this; the park save provides terrain and scenery (a `.trk`
+has neither: ground 0, no obstacles). Not modelled: the animal-enclosure grid
+that also triggers the checkerboard, and water volumes.
 
 ⚠ **The style string is usually at offset 0 of the OVL's string table**, so
 `sid +0x4C` holds a *relocated 0*. Reading it as a null pointer loses it

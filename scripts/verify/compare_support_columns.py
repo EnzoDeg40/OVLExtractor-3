@@ -7,7 +7,7 @@ JSON_DIR must hold the whole game ovlextract -t track output (under JSON_DIR/ful
 by default layout: pass the parent).
 """
 import sys, json, math
-sys.path.insert(0, 'scripts'); import rct3_track as r
+sys.path.insert(0, 'scripts'); import rct3_track as r; import rct3_supports as r_s
 S, savep, colsf = sys.argv[1:4]
 x0, x1, z0, z1 = map(int, sys.argv[4:8])
 cat = r.Catalog(S + '/full'); d = r.read_design(savep); ride = cat.ride(d['ride'])
@@ -27,10 +27,10 @@ for p in d['pieces']:
     for c in sec.data['sid']['connections']:
         if c['start'] != c['end']: continue
         gx, gz = gt(c['start'][0], c['start'][1], p['x'], p['z'], w, h, p['direction'])
-        ux, uz = subt(c['start_sub'][2], c['start_sub'][3], p['direction'])
-        X, Z = OX + (gx + ux) * 4, OZ + (gz + uz) * 4
+        sx, sz = r_s.rotate_sub(*c['start_sub'], p['direction'])
+        X, Z = OX + (gx + (2 * sx + 1) / 6) * 4, OZ + (gz + (2 * sz + 1) / 6) * 4
         near = [k for k in cols if abs(k[0] - X) < 0.2 and abs(k[1] - Z) < 0.2]
         used.update(near)
         top = p['height'] + c['height']
-        print(f"    dt{c['direction_type']} flags {c['flags']} -> ({X:.2f},{Z:.2f}) top {top:.2f}  game column: {[(k, cols[k][-1]) for k in near] or '-'}")
+        print(f"    g{c['group']} flags {c['flags']} -> ({X:.2f},{Z:.2f}) top {top:.2f}  game column: {[(k, cols[k][-1]) for k in near] or '-'}")
 print('game columns not predicted:', [(k, v[-1]) for k, v in cols.items() if k not in used])

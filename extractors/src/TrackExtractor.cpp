@@ -172,14 +172,13 @@ std::string sid_json(const SceneryItemInfo& s) {
         o << ",\"connections\":[";
         for (std::size_t i = 0; i < s.connections.size(); ++i) {
             const auto& c = s.connections[i];
+            auto pair = [&](const auto* v) { return "[" + jnum(v[0]) + "," + jnum(v[1]) + "]"; };
             o << (i ? "," : "") << "{\"start\":[" << c.start_x << "," << c.start_z << "],\"start_sub\":"
-              << jvec(c.start_sub, 4) << ",\"height\":" << jnum(c.height) << ",\"end\":[" << c.end_x << ","
-              << c.end_z << "],\"end_sub\":[" << jnum(c.end_sub_x) << "," << jnum(c.end_sub_z)
-              << "],\"end_height\":" << jnum(c.end_height) << ",\"angled\":" << c.angled
-              << ",\"raw\":[" << c.raw_34 << "," << c.raw_38 << "],\"angled_start_sub\":["
-              << c.angled_start_sub[0] << "," << c.angled_start_sub[1] << "],\"angled_end\":"
-              << jvec(c.angled_end) << ",\"flags\":" << c.flags << ",\"direction_type\":"
-              << c.direction_type << "}";
+              << pair(c.start_sub) << ",\"start_frac\":" << pair(c.start_frac) << ",\"height\":" << jnum(c.height)
+              << ",\"end\":[" << c.end_x << "," << c.end_z << "],\"end_sub\":" << pair(c.end_sub)
+              << ",\"angled\":" << c.angled << ",\"far\":[" << c.far_x << "," << c.far_z << "],\"far_sub\":"
+              << pair(c.far_sub) << ",\"far_frac\":" << pair(c.far_frac) << ",\"far_height\":" << jnum(c.far_height)
+              << ",\"flags\":" << c.flags << ",\"group\":" << c.group << "}";
         }
         o << "]";
     }

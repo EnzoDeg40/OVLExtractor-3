@@ -508,21 +508,20 @@ bool read_scenery_item(const OvlParser& parser, OvlSide side, std::size_t lf_ind
             SceneryConnection c;
             c.start_x = static_cast<std::int32_t>(q[0]);
             c.start_z = static_cast<std::int32_t>(q[1]);
-            for (int k = 0; k < 4; ++k) c.start_sub[k] = as_f32(q[2 + k]);
+            auto i32 = [&](int k) { return static_cast<std::int32_t>(q[k]); };
+            c.start_sub[0] = i32(2); c.start_sub[1] = i32(3);
+            c.start_frac[0] = as_f32(q[4]); c.start_frac[1] = as_f32(q[5]);
             c.height = as_f32(q[6]);
-            c.end_x = static_cast<std::int32_t>(q[7]);
-            c.end_z = static_cast<std::int32_t>(q[8]);
-            c.end_sub_x = as_f32(q[9]);
-            c.end_sub_z = as_f32(q[10]);
-            c.end_height = as_f32(q[11]);
-            c.angled = static_cast<std::int32_t>(q[12]);
-            c.raw_34 = q[13];
-            c.raw_38 = q[14];
-            c.angled_start_sub[0] = static_cast<std::int32_t>(q[15]);
-            c.angled_start_sub[1] = static_cast<std::int32_t>(q[16]);
-            for (int k = 0; k < 3; ++k) c.angled_end[k] = as_f32(q[17 + k]);
+            c.end_x = i32(7); c.end_z = i32(8);
+            c.end_sub[0] = i32(9); c.end_sub[1] = i32(10);
+            c.unused_2c = as_f32(q[11]);
+            c.angled = i32(12);
+            c.far_x = i32(13); c.far_z = i32(14);
+            c.far_sub[0] = i32(15); c.far_sub[1] = i32(16);
+            c.far_frac[0] = as_f32(q[17]); c.far_frac[1] = as_f32(q[18]);
+            c.far_height = as_f32(q[19]);
             c.flags = q[20];
-            c.direction_type = static_cast<std::int32_t>(q[21]);
+            c.group = i32(21);
             out.connections.push_back(c);
         }
     }
