@@ -1420,6 +1420,19 @@ tile (deck on both sides of the rails). Read from the campaign parks
 - `TrackPlatformPiece.Flags`: bit0 start, bit1 end, bit2 stairs left,
   bit3 stairs right. The stairs variants go where the entrance / exit
   buildings join the platform.
+- **Signal lights.** `start`, `end` and `startEnd` meshes are `bsh` (the
+  `middle` ones are `shs`) carrying a lamp post per station end: at +X for
+  `start` (where trains come in, pieces running towards −X), at −X for `end`.
+  Each post is a box with both lamps unlit (`StationLights:ftx`, own bone
+  `meshlightstart_hi` / `meshlightend_hi` in Wooden and NoPlatform, in the
+  deck's bone for standard). What lights one is a 5-triangle glow sprite
+  (`stationMisc:ftx`, `SIAlphaUnlit`, bones `lightglow{start,end}{red,green}`)
+  facing ±X; the svd's four one-frame `ban`s `<Style>{Start,End}{Green,Red}`
+  move the lit colour's glow 0.05 out of the lamp and the other in, and swap
+  `lightend01–04` (bones with no triangles, z 1.251 ↔ −1) — probably the
+  point-light markers, alongside `lightcolourNN_rRgGbB` and
+  `simplelightstartNN_<end><colour>`. Extracted as is by `--types scenery`
+  (skinned glb with the four animations).
 
 In park saves (`TrackPiece`) the travel direction **is** stored:
 `Reversed` (bool), next to `StartDistance`, `StartDistanceBackwardsSpline`,
