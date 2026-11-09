@@ -1344,6 +1344,7 @@ Vanilla `TrackedRide_V` = `Attraction_V` (56 B) + `Ride_V` (24 B) +
 | 23, 25 | launched / chain speed preset | | 66, 67 | launched speed min / max |
 | 26–30 | chain force, brake speed, brake force, block brake speed, booster force | | 35 | gravity scale |
 | 31 | constant speed preset (< 0 = none) | | 69–72 | track, track-big, car, car-swing profile `spl` |
+| | | | 74 | constant speed hill rate (`+0x128`, < 0 = a quarter of the constant speed) |
 
 Soaked/Wild extension (after the 300 B): `+0x04` section count, `+0x1C/+0x20`
 group-definition count / arrays (`{u32 n; {flags, char* group | tks ref}×2 [n]}`,
@@ -1352,6 +1353,12 @@ the auto start/mid/end rules), `+0x3C/+0x40` track-path count / `char*[]`.
 E.g. `WoodenRC`: track path `../Track20/Track20`, 85 pieces, trains
 `WoodenCoaster, WagonCoaster, 6PeepWoodenRC, …`, station `Wooden`, chain
 speed 4 m/s (2.24–6.26), upkeep 1100/300/1000.
+
+A powered ride drives its train at the constant speed (`FixedSpeed` on the
+ride, seeded from slot 31): rerct3's train update clamps the speed, while
+running, to between that speed minus the hill rate when a car climbs and
+plus it when one descends (`ride-physics.fixed-speed-hill-rate`). `Ghost`:
+4 m/s, hill rate −1 (so 1 m/s), gravity scale 0.1.
 
 ### 15.6 Output of `--types track`
 

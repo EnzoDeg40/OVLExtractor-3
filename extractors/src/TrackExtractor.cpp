@@ -427,6 +427,7 @@ ExtractResult TrackExtractor::extract(const OvlParser& parser, const ExtractCont
           << ",\n  \"launched_speed\": {\"preset\": " << jnum(r.launched_speed_preset) << ", \"min\": "
           << jnum(r.launched_speed_min) << ", \"max\": " << jnum(r.launched_speed_max) << "}"
           << ",\n  \"constant_speed_preset\": " << jnum(r.constant_speed_preset)
+          << ",\n  \"constant_speed_hill_rate\": " << jnum(r.constant_speed_hill_rate)
           << ",\n  \"loop_not_allowed\": " << r.loop_not_allowed
           << ",\n  \"car_rotation\": " << r.car_rotation
           << ",\n  \"auto_complete\": " << r.auto_complete

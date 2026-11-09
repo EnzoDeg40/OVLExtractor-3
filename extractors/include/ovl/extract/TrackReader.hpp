@@ -241,6 +241,9 @@ struct TrackedRideInfo {
     float         chain_force = 0, brake_speed = 0, brake_force = 0, block_brake_speed = 0, booster_force = 0, gravity_scale = 1;
     float         launched_speed_min = 0, launched_speed_max = 0;
     float         constant_speed_preset = -1;
+    // Common+0x128: how much a powered ride's constant speed drops uphill and rises downhill;
+    // < 0 = a quarter of the constant speed (rerct3 ride-physics.fixed-speed-hill-rate)
+    float         constant_speed_hill_rate = -1;
     std::uint32_t loop_not_allowed = 0;
     std::uint32_t car_rotation = 0;
     std::uint32_t auto_complete = 0;

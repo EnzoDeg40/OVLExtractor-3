@@ -595,6 +595,7 @@ bool read_tracked_ride(const OvlParser& parser, OvlSide side, std::size_t lf_ind
     out.booster_force = f(30);
     out.gravity_scale = f(35);
     out.constant_speed_preset = f(31);
+    out.constant_speed_hill_rate = f(74);  // Common+0x128, the last slot of the 300-byte Common
     out.upkeep_per_train = v[41];
     out.upkeep_per_car = v[42];
     out.upkeep_per_station = v[43];
