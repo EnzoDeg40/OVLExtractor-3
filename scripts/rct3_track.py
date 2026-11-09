@@ -449,7 +449,10 @@ def read_design(path: Path) -> dict | None:
         placed.append({"id": oid, "name": v["SYMBOLNAME"].split(":")[0], "x": d["POSX"], "z": d["POSZ"],
                        "height": d["HEIGHT"], "direction": d["DIRECTION"] & 3,
                        "reversed": bool(v.get("Reversed")), "distance": v.get("StartDistance", 0.0),
-                       "colours": col(v.get("FlexiColourField"))})
+                       "colours": col(v.get("FlexiColourField")),
+                       # per-piece target speed in m/s (int32 TrackPiece+0x194): meaningful on
+                       # brakes, block brakes and boosters only, -1 = the ride's default
+                       "speed": v.get("Speed", -1), "holding_time": v.get("HoldingTime", -1)})
     def sid_name(ref):
         e = sids.get(ref.id) if ref else None
         return (e or {}).get("SYMBOLNAME", ""), (e or {}).get("OVERLAYFILENAME", "")
@@ -510,7 +513,30 @@ def read_design(path: Path) -> dict | None:
                         "car_light": col(tri.get("CarLightFlexiColours")),
                         "fence": col(tri.get("FenceFlexiColours")),
                         "queue": col(tri.get("QueueFlexiColours"))},
+            "operation": design_operation(tri),
             "pieces": placed, "platforms": platforms, "items": singles}
+
+
+# TrackedRideInstance.OpMode ordinals (rerct3 research/re/park-systems.md, OpMode_ToString)
+OP_MODES = ("ContinuousCircuit", "PoweredLaunch", "ReverseInclinedLaunch", "Boat", "Race", "Shuttle",
+            "UpwardsLaunch", "FreefallDrop", "UpAndDown", "MiniGolf", "Slide", "ReverseCableLiftHill",
+            "WaterTransport", "Aquarium", "MultiplePoweredLaunch", "LazyRiver")
+
+
+def design_operation(tri: dict) -> dict:
+    """The operating panel a design was saved with (TrackedRideInstance): speeds in m/s,
+    times in seconds, -1 for a wait that is switched off. `fixed_speed` < 0 means none."""
+    op = tri.get("OpMode", 0)
+    return {"op_mode": op, "op_mode_name": OP_MODES[op] if 0 <= op < len(OP_MODES) else "",
+            "chain_speed": tri.get("LiftChainSpeed"), "launch_speed": tri.get("LaunchSpeed"),
+            "brake_speed": tri.get("BrakeSpeed"), "block_brake_speed": tri.get("BlockBrakeOffSpeed"),
+            "fixed_speed": tri.get("FixedSpeed"), "min_wait": tri.get("MinWaitTime"),
+            "max_wait": tri.get("MaxWaitTime"), "wait_for_load": tri.get("WaitForLoad"),
+            "circuits": tri.get("NumCircuits"), "sync_trains": bool(tri.get("SyncTrains")),
+            "departure_interval": tri.get("DepartureIntervalSecs"),
+            "block_sectioned": bool(tri.get("BlockSectionedMode")),
+            "leave_if_another": bool(tri.get("LeaveIfAnotherTrainEntersStation")),
+            "friction_multiplier": tri.get("FrictionMultiplier")}
 
 
 def order_by_links(ride: Ride, pieces: list[Placed], tol: float = 0.2) -> list[Placed]:

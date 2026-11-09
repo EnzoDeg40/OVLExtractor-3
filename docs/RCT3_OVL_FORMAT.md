@@ -1454,6 +1454,38 @@ names over different track sets (Corkscrew / LoopingRC / Twister…), pick
 the type whose geometry connects the most joints, or read
 `TrackedRideInstance.TrackedRideSymbolName`.
 
+**Operating settings in a design** (`read_design(...)["operation"]` and each
+piece's `speed`). The `TrackedRideInstance` keeps the operating panel the
+design was saved with; the game seeds it from the ride's `trr` Common block
+(`TrackedRideInstance_InitOperatingParameters @ 0x00a83570` in rerct3), so a
+fresh ride's chain and launch speeds are the `trr` presets **clamped to the
+`trr` min/max** (Splash Boats: preset 4, range 2.235–2.235 → 2.235 m/s).
+Measured on the 208 shipped designs:
+
+| field (save name) | meaning | values seen |
+|---|---|---|
+| `LiftChainSpeed` f32 | chain lift speed, m/s | 1.36–6.26 (4.0 on 136) |
+| `LaunchSpeed` f32 | launch speed, m/s; used by `OpMode` 1 / 14 | 4.5–50 |
+| `OpMode` i32 | operating mode (rerct3 `park.enum.op-mode`: 0 continuous circuit, 1 powered launch, 4 race, 11 reverse cable lift, 13 aquarium, 14 multiple powered launch, 15 lazy river…) | 0 ×180, 1 ×20 |
+| `BrakeSpeed`, `BlockBrakeOffSpeed` f32 | default target of brakes / block brakes, m/s | always 4 |
+| `FixedSpeed` f32 | constant speed for powered rides, < 0 none | −1, 4 (dark rides, cars), 7 (Mine Ride) |
+| `MinWaitTime`, `MaxWaitTime` i32 | station waits, s; −1 = off | 10 / 120 mostly |
+| `WaitForLoad` i32 | load to wait for (0 none, 4 = the default) | 0, 4 |
+| `NumCircuits` i32 | laps per ride | 1 (2 and 3 once each) |
+| `SyncTrains`, `LeaveIfAnotherTrainEntersStation`, `BlockSectionedMode` bool | station options | |
+| `DepartureIntervalSecs` i32 | fixed departure interval, s; −2 = off | −2, 5, 10, 20 |
+| `FrictionMultiplier` f32 | | always 1 |
+
+Per piece, `TrackPiece.Speed` (int32, runtime `TrackPiece+0x194`) is the
+target speed the player sets on a **brake** (the train is braked with the
+ride's brake force while faster), a **block brake** (pushed with the booster
+force while slower, once its block is clear) and a **booster**; −1 means the
+ride default above. Shipped values: brakes 1–14 (8, 4 and 1 most often),
+block brakes 1–30, boosters 5–24. On every other piece `Speed` holds
+leftovers (1, 4, 8, 30…) the game never reads. `HoldingTime` (int32) is the
+Vertical Drop's holding-brake wait in seconds (5 on the one shipped
+`holdingbrake`); elsewhere it is leftovers too.
+
 **Supports** are not part of the piece meshes; the game builds them at
 runtime (`TrackPiece_BuildSupports` → `SupportGrid_PlaceColumns` →
 `ScenerySupportManager_RebuildCellVisuals` in rerct3's notes). Each piece's
