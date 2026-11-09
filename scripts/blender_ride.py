@@ -3,7 +3,7 @@
 Usage:
     blender -b --python scripts/blender_ride.py -- ride.layout.json GLB_DIR \
         [--blend out.blend] [--glb out.glb] [--render out.png] [--size PX] [--views N]
-        [--focus car|platform|track] [--elev DEG] [--zoom F]
+        [--focus car|platform|track] [--elev DEG] [--zoom F] [--center X,Y,Z --radius R]
 
 `ride.layout.json` comes from `python3 scripts/rct3_track.py layout …`
 (track pieces, station platforms, a parked train — glTF-space matrices);
@@ -11,6 +11,8 @@ GLB_DIR holds the `ovlextract -t scenery` output (<svd>.glb). Each asset is
 imported once into its own hidden collection and placed as collection
 instances, so a 150-piece coaster stays light. --focus frames the camera on
 one kind of item (e.g. the train in the station) instead of the whole ride.
+--center (game frame, as in the layout: x, height, z) with --radius frames a
+close-up of one spot, e.g. where a support column meets the track.
 """
 import json
 import math
@@ -37,6 +39,8 @@ def main():
     blend, glb, render = arg(argv, "--blend"), arg(argv, "--glb"), arg(argv, "--render")
     size, views, focus = arg(argv, "--size", 1400, int), arg(argv, "--views", 1, int), arg(argv, "--focus")
     elev, zoom = arg(argv, "--elev", 35.0, float), arg(argv, "--zoom", 1.0, float)
+    spot = arg(argv, "--center")
+    spot = (tuple(float(v) for v in spot.split(",")), arg(argv, "--radius", 4.0, float)) if spot else None
     game_cam = arg(argv, "--game-camera")          # json: pos, forward, origin (rct3_saves look_at)
     aspect = arg(argv, "--aspect", 1.5, float)
     hfov = arg(argv, "--hfov", 45.0, float)       # the game's FOV is horizontal, 45°
@@ -130,7 +134,7 @@ def main():
         if game_cam:
             render_game_camera(scene, json.loads(Path(game_cam).read_text()), Path(render), size, aspect, hfov)
         else:
-            render_views(scene, placed, assets, Path(render), size, views, focus, elev, zoom)
+            render_views(scene, placed, assets, Path(render), size, views, focus, elev, zoom, spot)
 
 
 def setup_render(scene, w, h):
@@ -170,7 +174,7 @@ def render_game_camera(scene, cam_json, out, size, aspect, hfov):
     print("rendered", out)
 
 
-def render_views(scene, placed, assets, out, size, views, focus, elev=35.0, zoom=1.0):
+def render_views(scene, placed, assets, out, size, views, focus, elev=35.0, zoom=1.0, spot=None):
     lo = Vector((1e9, 1e9, 1e9))
     hi = -lo
     for kind, e in placed:
@@ -185,6 +189,10 @@ def render_views(scene, placed, assets, out, size, views, focus, elev=35.0, zoom
                 hi = Vector(map(max, hi, w))
     center = (lo + hi) / 2
     radius = max((hi - lo).length / 2, 0.5)
+    if spot:
+        # game frame (left-handed, Y up) -> glTF (Z mirrored) -> Blender (Z up)
+        (gx, gy, gz), radius = spot
+        center = C @ Vector((gx, gy, -gz))
     engines = {e.identifier for e in bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items}
     scene.render.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in engines else "BLENDER_EEVEE"
     scene.render.resolution_x = size
