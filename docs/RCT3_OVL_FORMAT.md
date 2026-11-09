@@ -1773,3 +1773,34 @@ ad-hoc re-signed): verified, "Español" then appears in the list and the
 interface switches live to a `gui/Spanish` pair written by
 `ovl_text_pack.py`. Without the patch, a new language replaces one of the
 three slots — e.g. ship Spanish as `gui/French.common.ovl`.
+
+## 19. Terrain types (`ter`)
+
+The land tools' surfaces are `ter` symbols in two pairs: `terrain/RCT3/Terrain_RCT3`
+(`Terrain_00`…`25` and `Cliff_00`…`05`) and `terrain/CT/Terrain_CT` (`Terrain_26`…`31`,
+Soaked/Wild, `addon` 1). Each points to one `tex` of the same pair (`Terrain_NN`,
+`TerrainCliffN`), a 256×256 picture that `--types texture` decodes like any other (§4):
+all 38 do. The struct is 60 bytes, relocate-only (layout verified against the game's
+consumer in rerct3/research/re/loader-structs.md):
+
+| Off | Field | Notes |
+|---|---|---|
+| +0x00 | u32 version | 1 |
+| +0x04 | u32 | 0 |
+| +0x08 | u32 addon | 0 vanilla, 1 Soaked/Wild |
+| +0x0C | u32 number | index in its list (grounds 0–31, cliffs 0–5) |
+| +0x10 | u32 type | 0 ground, 1 cliff, 2 ground that blends with its neighbours |
+| +0x14 | `tex*` | resolved by symbol |
+| +0x18 | `char*` description | a `txt` key: `Land_Paint_Base0Help`… |
+| +0x1C | `char*` icon | a `gsi` name: `Land_Paint_Base0`… |
+| +0x20 | u32 colour_simple | BGRA, the untextured-terrain option's colour; cliffs `FFFF007F` |
+| +0x24 | u32 colour_map | BGRA, the map's colour |
+| +0x28 | f32 inv_width | U = world X × inv_width: **0.1 = a texture covers 10 m** (2.5 tiles); 0.25 = 4 m, one tile (CT paving and bordered concrete) |
+| +0x2C | f32 inv_height | same along Z |
+| +0x30… | 3 × f32 | read by nothing in the game |
+
+The order of the `Terrain_NN` symbols is **not** the order of the interface keys:
+19–22 are `Snow0`…`3`, 23–25 `Concrete0`…`2`; read `description` rather than counting.
+The six rock grounds (13–18) take the six cliffs' icons and textures.
+
+`--types terrain` writes the pair's records to one `<ovl>.terrain.json`.

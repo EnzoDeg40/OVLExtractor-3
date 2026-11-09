@@ -227,6 +227,20 @@ The 16 pairs that carry text (the three language files, `Main`, the
 `Style` packs, the content packs, the staff-uniform icons) give 38 726
 strings, 0 errors.
 
+### 4.2.1 TerrainExtractor — `ter` → `.terrain.json`
+
+Format docs §19. Every `ter` of the pair (ground and cliff surfaces of the land
+tools) as one JSON record: symbol, addon, number, type (`ground`, `cliff`,
+`blended_ground`), texture symbol, interface key and icon, colours, and the
+inverse world size of the texture (`inv_width`, `inv_height`).
+
+```bash
+ovlextract -t terrain -t texture -o out/terrain terrain/RCT3/Terrain_RCT3.common.ovl
+# → Terrain_RCT3.terrain.json (32 types) + Terrain_NN.tga, TerrainCliffN.tga
+```
+
+The two terrain pairs give 38 types and 38 textures, 0 errors.
+
 ### 4.3 `scripts/ovl_text_pack.py` — write a language file back
 
 The reverse of 4.2, for `gui/<Language>` pairs only (format docs §18.1): take
@@ -509,7 +523,7 @@ ovlextract [options] <input>
 | `--texture-index FILE` | Load the JSON map from a previous `--build-index` run (enables `map_Kd` emission) |
 | `--assets-root DIR` | Root directory the texture index was built against (required with `--auto-textures`) |
 | `--auto-textures` | When extracting models with `--texture-index`, also extract each referenced texture from its source OVL |
-| `-t,--types TYPE` | Resource type to extract (`sound`, `texture`, `atlas`, `font`, `text`, `model`, `scenery`, `track`, `dump`, `all`). Repeatable. |
+| `-t,--types TYPE` | Resource type to extract (`sound`, `texture`, `atlas`, `font`, `text`, `terrain`, `model`, `scenery`, `track`, `dump`, `all`). Repeatable. |
 | `--all-lods` | With `scenery`: also write a `.glb` per lower LOD |
 | `-o,--output-dir DIR` | Output directory (default: `./extracted/<basename>/` for single file, `./extracted/` for directory input) |
 | `--overwrite` | Overwrite existing output files (default skip) |

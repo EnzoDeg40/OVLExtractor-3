@@ -7,6 +7,7 @@ add_library(ovlextractors STATIC
     src/SceneryExtractor.cpp
     src/ShapeReader.cpp
     src/SoundExtractor.cpp
+    src/TerrainExtractor.cpp
     src/TextExtractor.cpp
     src/TextureExtractor.cpp
     src/TextureIndex.cpp
