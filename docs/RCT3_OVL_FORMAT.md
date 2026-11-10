@@ -358,16 +358,21 @@ is decoded to TGA.
 
 ### 4.3 Orientation
 
-Pages come out exactly as stored, and the stored orientation is **not
-uniform**: the GUI icon sheets (`GUI2Main`, `GUI2LargeIcons*`, `FrontEndIcons`,
-`FrontEndParts`, scenery icons) are top-down, while the splash logos
+Every `tex` page is stored **bottom-up**: its first stored row is the bottom
+of the picture, as OpenGL uploads it. This holds for the GUI icon sheets
+(`GUI2Main`, `GUI2LargeIcons*`, `FrontEndIcons`, `FrontEndParts`,
+`StaffIcons`, `TerrainIcons`, scenery icons), the splash logos
 (`gui/Banner`), the loading screen, the career-map images of
-`gui/FrontScreen`, `FrontEndLogo` and every **font page** are stored
-bottom-up — the game draws those elements with a flipped V. Nothing in the
-wrapper, the txs style, the format or the mip count tells the two apart (both
-happen with the same `GUIIcon:txs`), so it is an authoring convention: the
-extractor leaves pages and `gsi` sprites as stored, and only the font
-extractor flips (§17), where the convention is certain.
+`gui/FrontScreen`, `FrontEndLogo` and every font page. The texture
+extractor writes each page upright (rows reversed) and the atlas extractor
+slices that upright page (§5).
+
+Earlier revisions said the GUI icon sheets were top-down. They only look
+plausible that way (an icon sheet has no obvious up), but turned the other
+way up their people, mascots and arrows stand upright, and the gsi rects
+(§5), which count from the top of the upright page, land exactly on their
+sprites: cut from the stored rows the track editor's icons came out as
+slices of their neighbours (2026-11-10).
 
 ### 4.4 History: the "trailing header"
 
@@ -417,8 +422,9 @@ With every `tex` page reachable (§4.1) the `gsi` of the install crop:
 its 31 GUI pages. The rest are 20 degenerate rects (zero area on disk) and
 gsi referencing `RCT1_icons:tex`  a texture no OVL defines  or a render
 target. The rect is
-in the page's stored orientation (§4.3), so a sprite of a bottom-up page
-(career-map images) is itself bottom-up.
+in pixels of the **upright** page, from its top-left corner: since pages
+are stored bottom-up (§4.3), the rows of a sprite are
+`height - bottom .. height - top` of the stored page, read in reverse.
 
 
 ## 6. SND — sound (fully decoded)
@@ -933,7 +939,6 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 
 | Item | Impact when solved |
 |---|---|
-| Page orientation | `tex` pages are stored either top-down or bottom-up with no in-OVL marker (§4.3). Fonts are flipped by their extractor; other pages and `gsi` sprites come out as stored. |
 | `RCT1_icons:tex` | Referenced by 20 `gsi` of `Main`, defined by no OVL of the install (an unshipped RCT1 icon sheet). |
 | `mms` position decode | Unlocks readable 3D meshes for animated objects (animals, characters, ride cars). Advanced this session: positions are quantized to a bias+scale found in the morph descriptor (§7.6); exact raw width/remap still TBD. |
 | `txs` specular/reflection | Alpha is solved (ftx alpha plane §3.5 + txs class). Still approximate: `*Specular*` → glTF roughness 0.5, `*Chrome*` / `*Reflection*` → metallic 0.8. The environment maps they sample (`chrome:ftx`, `two:ftx`) are not in any OVL — presumably built into the engine — so chrome parts export untextured. |

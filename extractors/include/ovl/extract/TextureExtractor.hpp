@@ -64,6 +64,11 @@ public:
                                 std::size_t lf_index,
                                 std::uint32_t& width, std::uint32_t& height,
                                 std::vector<std::uint8_t>& bgra);
+
+    // Turn a row-major 4 B/px image upside down in place. Every `tex` page is
+    // stored bottom-up (docs §4.3): this makes one upright.
+    static void flip_rows(std::uint32_t width, std::uint32_t height,
+                          std::vector<std::uint8_t>& bgra);
 };
 
 }  // namespace ovl

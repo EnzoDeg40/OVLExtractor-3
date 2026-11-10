@@ -172,9 +172,10 @@ What the extractor does:
      is skipped, not counted as an error.
 
 Sprite transparency comes from the ftx alpha plane or the DXT3 / A8R8G8B8
-alpha of the page. Sprites are cropped from the page as stored, so the
-career-map images of `gui/FrontScreen` come out bottom-up like their page
-(format docs §4.3).
+alpha of the page. A `tex` page is stored bottom-up and its gsi rects count
+from the top of the upright page (format docs §4.3, §5), so the page is
+turned upright (`TextureExtractor::flip_rows`) before it is sliced: every
+sprite comes out upright. `--types texture` writes the pages upright too.
 
 Output: one `<sprite>.tga` per resolvable `gsi` linked file.
 

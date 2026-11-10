@@ -20,7 +20,7 @@ namespace {
 struct DecodedTexture {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
-    std::vector<std::uint8_t> bgra;  // row-major BGRA, top-down
+    std::vector<std::uint8_t> bgra;  // row-major BGRA, upright
 };
 
 struct Rect {
@@ -84,9 +84,13 @@ bool decode_texture(const OvlParser& parser,
 
     if (tag == "tex") {
         // The page of the bitmap table this tex symbol maps to (docs §4.1):
-        // one DXT / A8R8G8B8 sheet sliced by the gsi rects.
-        return TextureExtractor::decode_tex_bgra(parser, side, lf_index, out.width,
-                                                 out.height, out.bgra);
+        // one DXT / A8R8G8B8 sheet sliced by the gsi rects. It is stored
+        // bottom-up and the rects count from the top of the upright page
+        // (docs §4.3, §5), so it is turned upright before slicing.
+        if (!TextureExtractor::decode_tex_bgra(parser, side, lf_index, out.width,
+                                               out.height, out.bgra)) return false;
+        TextureExtractor::flip_rows(out.width, out.height, out.bgra);
+        return true;
     }
     return decode_ftx_at(parser, pr.currentOVL, pr.position,
                          lf.loaderreference.datapointer, out);

@@ -577,6 +577,8 @@ bool extract_tex(const OvlParser& parser,
                 " " + format_name(page.format_code) + ")");
         return false;
     }
+    // Stored bottom-up like every tex page (docs §4.3): written upright.
+    TextureExtractor::flip_rows(page.width, page.height, bgra);
     write_tga(out_path, page.width, page.height, bgra);
     ctx.log("wrote " + out_path.filename().string() + " (" +
             std::to_string(page.width) + "x" + std::to_string(page.height) +
@@ -809,6 +811,15 @@ bool TextureExtractor::decode_tex_bgra(const OvlParser& parser,
     width  = page.width;
     height = page.height;
     return true;
+}
+
+void TextureExtractor::flip_rows(std::uint32_t width, std::uint32_t height,
+                                 std::vector<std::uint8_t>& bgra) {
+    const std::size_t row = static_cast<std::size_t>(width) * 4;
+    for (std::uint32_t y = 0; y < height / 2; ++y)
+        std::swap_ranges(bgra.begin() + static_cast<std::ptrdiff_t>(y * row),
+                         bgra.begin() + static_cast<std::ptrdiff_t>((y + 1) * row),
+                         bgra.begin() + static_cast<std::ptrdiff_t>((height - 1 - y) * row));
 }
 
 }  // namespace ovl

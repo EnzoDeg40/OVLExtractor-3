@@ -2,6 +2,7 @@
 // tex → flic → btbl chain, fonts (fct) and language strings (txt). Skipped
 // when the game is not installed (CI).
 #include "ovl/OvlParser.hpp"
+#include "ovl/extract/AtlasExtractor.hpp"
 #include "ovl/extract/FontExtractor.hpp"
 #include "ovl/extract/TextExtractor.hpp"
 #include "ovl/extract/TextureExtractor.hpp"
@@ -13,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 using namespace ovl;
 
@@ -112,6 +114,40 @@ TEST_CASE("FontExtractor writes a glyph table and an upright page", "[font][real
     CHECK(json.find("{\"code\": 65, \"advance_em\": 0.809524, \"spacing_em\": 0, \"offset\": [0, 0], "
                     "\"uv\": [0.519531, 0.875, 0.578125, 0.933594], \"rect\": [133, 17, 148, 32]}")
           != std::string::npos);
+    std::filesystem::remove_all(out);
+}
+
+TEST_CASE("AtlasExtractor cuts upright sprites from bottom-up pages", "[atlas][real][gui]") {
+    auto path = rct3_asset("Main.common.ovl");
+    if (!std::filesystem::exists(path)) SKIP("RCT3 Assets not installed");
+    OvlParser p;
+    p.parse(path);
+    auto out = temp_dir("atlas");
+    ExtractContext ctx;
+    ctx.output_dir = out;
+    ctx.overwrite = true;
+    AtlasExtractor ax;
+    auto r = ax.extract(p, ctx);
+    CHECK(r.errors == 0);
+    CHECK(r.files_written == 1860);
+    // The level-bank icon of the track editor: a yellow car whose dark wheels
+    // are at its top. Cut from the stored (bottom-up) rows it came out as a
+    // slice of the neighbouring sprites instead.
+    std::ifstream f(out / "AttractionEditor_IconBank0On.tga", std::ios::binary);
+    REQUIRE(f.good());
+    std::vector<unsigned char> tga((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    REQUIRE(tga.size() == 18u + 17u * 17u * 4u);
+    CHECK(tga[17] == 0x28);  // top-left origin: rows are written top-down
+    int top = 0, bottom = 0;
+    for (int y = 0; y < 17; ++y)
+        for (int x = 0; x < 17; ++x) {
+            const unsigned char* px = tga.data() + 18 + (y * 17 + x) * 4;
+            bool dark = px[3] > 200 && px[0] + px[1] + px[2] < 150;
+            if (dark && y < 8) ++top;
+            if (dark && y > 8) ++bottom;
+        }
+    CHECK(top == 39);
+    CHECK(bottom == 17);
     std::filesystem::remove_all(out);
 }
 
