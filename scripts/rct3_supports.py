@@ -308,12 +308,15 @@ def girder_matrix(style: Style, g: dict, p0, p1, inverted: bool):
 
 
 def item_supports(cat, item: Item, world: World, style: Style, records_out: list | None = None,
-                  checkerboard: bool = True) -> list[dict]:
+                  checkerboard: bool = True, alternatives: bool = False) -> list[dict]:
     """First half of RebuildCellVisuals for one item: column records and girders.
     Returns the placed pieces; `records_out`, when given, also receives the column records
     (tile, sub-cell, bottom, top, top_f, dir, start tile) and each girder/cap entry is tagged.
     `checkerboard=False` keeps the columns the checkerboard would drop (for a caller that applies it
-    itself, once the piece's real tile is known)."""
+    itself, once the piece's real tile is known).
+    `alternatives=True` works out every entry of every group, as if each were the one that stands, and
+    doesn't share a sub-cell between entries: records and girders/caps then carry their `group` and their
+    `entry` (index of the connection), for a caller that picks a group's entry itself against its own world."""
     out = []
     sid, p = item.sid, item.p
     if not item.flags & 0x80 or not style.usable:
@@ -345,14 +348,14 @@ def item_supports(cat, item: Item, world: World, style: Style, records_out: list
                     records.append({"tile": (tx, tz), "sub": (1, 1), "bottom": bottom, "top": top,
                                     "top_f": float(top), "on_ground": ground, "stretch": False,
                                     "dir": square_dir(lx, lz), "start": (tx, tz),
-                                    "checker": bool(item.flags & 0x200)})
+                                    "checker": bool(item.flags & 0x200), "group": 0x100 + i, "entry": i})
     else:
         supported_groups = set()
         cap = style.pieces[CAP][0] if style.pieces[CAP] and item.flags & 0x800 else None
         cap_h = style.cap_height if cap else 0.0
-        for c in sid.get("connections") or []:
+        for entry, c in enumerate(sid.get("connections") or []):
             group = c.get("group", c.get("direction_type", 0))
-            if group >= 0x20 or group in supported_groups:
+            if group >= 0x20 or (group in supported_groups and not alternatives):
                 continue
             stx, stz = grid_transform(*c["start"], p.x, p.z, item.w, item.h, p.direction)
             etx, etz = grid_transform(*c["end"], p.x, p.z, item.w, item.h, p.direction)
@@ -380,12 +383,14 @@ def item_supports(cat, item: Item, world: World, style: Style, records_out: list
                     hv = h - cap_h
                     top = math.floor(hv + 0.5)
                     if cap and (ground or bottom < top - 1):
-                        out.append({"asset": cap["asset"], "kind": "cap", "matrix": turned_matrix(S[0], hv, S[1])})
+                        out.append({"asset": cap["asset"], "kind": "cap", "matrix": turned_matrix(S[0], hv, S[1]),
+                                    "group": group, "entry": entry})
                     world.sub_used.setdefault((stx, stz), set()).add((sx, sz))
                     if bottom < top - 1 and top - bottom <= MAX_COLUMN:
                         records.append({"tile": (stx, stz), "sub": (sx, sz), "bottom": bottom, "top": top,
                                         "top_f": hv, "on_ground": ground, "stretch": True, "dir": dirc,
-                                        "start": (stx, stz), "checker": bool(item.flags & 0x200)})
+                                        "start": (stx, stz), "checker": bool(item.flags & 0x200),
+                                        "group": group, "entry": entry})
                     continue
             # 2) a column on the end sub-cell and a girder to the attach point
             if flags & 2 or c.get("angled"):
@@ -402,7 +407,7 @@ def item_supports(cat, item: Item, world: World, style: Style, records_out: list
                 h -= style.girder_depth
             top = math.floor(h + 0.5)
             used = world.sub_used.setdefault((etx, etz), set())
-            if (ex, ez) in used:
+            if (ex, ez) in used and not alternatives:
                 have = True
                 supported_groups.add(group)
             else:
@@ -416,19 +421,22 @@ def item_supports(cat, item: Item, world: World, style: Style, records_out: list
                 if bottom < top - 1:
                     records.append({"tile": (etx, etz), "sub": (ex, ez), "bottom": bottom, "top": top,
                                     "top_f": h, "on_ground": ground, "stretch": True, "dir": dirc,
-                                    "start": (stx, stz), "checker": bool(item.flags & 0x200)})
+                                    "start": (stx, stz), "checker": bool(item.flags & 0x200),
+                                    "group": group, "entry": entry})
                     have = True
                 elif not ground:
                     continue
                 else:
                     have = False
             if cap:
-                out.append({"asset": cap["asset"], "kind": "cap", "matrix": turned_matrix(S[0], item.base + y_s, S[1])})
+                out.append({"asset": cap["asset"], "kind": "cap", "matrix": turned_matrix(S[0], item.base + y_s, S[1]),
+                            "group": group, "entry": entry})
             g = style.girder
             if have and g:
                 m = girder_matrix(style, g, (S[0], item.base + y_s, S[1]), (E[0], item.base + y_e, E[1]), inverted)
                 if m:
-                    out.append({"asset": g["asset"], "kind": "girder", "matrix": m, "column": records[-1] if records and records[-1]["tile"] == (etx, etz) and records[-1]["sub"] == (ex, ez) else None})
+                    out.append({"asset": g["asset"], "kind": "girder", "matrix": m, "group": group, "entry": entry,
+                                "column": records[-1] if records and records[-1]["tile"] == (etx, etz) and records[-1]["sub"] == (ex, ez) else None})
     if records_out is not None:
         records_out += records
     for r in records:

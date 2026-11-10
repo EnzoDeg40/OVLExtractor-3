@@ -1506,7 +1506,10 @@ a `SceneryItem` with its own `sid`, which goes through the scenery path
 the support builder, only records tunnel (terrain hollow) intervals.
 Decoded from the Mac build with Ghidra (2026-11-09): `docs/re/rebuild_cell_visuals.md`
 and `docs/re/track_build_supports.md` hold the addresses and pseudo-code;
-`scripts/rct3_supports.py` implements it.
+`scripts/rct3_supports.py` implements it. Its `item_supports(..., alternatives=True)`
+works out every entry of every group, each as if it were the one that stands, tagged with
+its `group` and `entry`, for a caller that picks a group's entry against its own world
+(the rct3-neoforge converter does: the mod's world then builds the first that can stand).
 
 **Style.** `sid.supports` (+0x4C) names it. Its pieces are the `sid`s of
 `Supports/Supports.ovl` named `<style>_*`, grouped by **sid type**: **12**
