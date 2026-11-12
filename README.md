@@ -73,8 +73,10 @@ This project addresses both:
   Cross-OVL texture binding resolves via the global symbol index built by
   `--build-index`; `--auto-textures` pulls referenced `.tga` files into the
   model's output directory in one pass.
-- 🚧 **Animated mesh extractor** (`mms` → `.obj`): topology + UVs decode
-  correctly; vertex positions still broken across all 17 candidate decoders.
+- ✅ **Animated mesh extractor** (`mms` → `.obj`): positions, normals and UVs
+  of every keyframe of every animation (format doc §7); exported in one pose.
+- ✅ **People** (`--types people`): guest/staff part groups, parts, heads and
+  their meshes → `.people.json` + `.glb` per mesh (format doc §20).
 - ✅ **Qt 6 GUI** (`ovlextract_gui`): file picker, tree of resources grouped
   by category (textures / models / sounds / atlas / other), texture preview,
   embedded OpenGL viewer for shs meshes, "open externally" playback for snd
@@ -306,7 +308,7 @@ The window shows a tree on the left grouped by category. Click a leaf:
 - **Texture** (ftx/tex/fts/ftt) → image preview pane (only ftx + DXT1 `tex`
   decode currently; others fall back to a status message).
 - **3D Model** (shs) → embedded OpenGL viewer; left-drag to rotate, scroll
-  to zoom. Animated meshes (mms) are shown but won't render (positions WIP).
+  to zoom. Animated meshes (mms) are shown but not rendered by the viewer yet.
 - **Sound** (snd) → Play button opens the extracted .wav in the OS-default
   audio player via QDesktopServices (no QtMultimedia dep needed).
 - Anything else shows the symbol / loader metadata only.
@@ -377,8 +379,8 @@ The biggest open work items, in priority order:
    [RCT3_OVL_FORMAT.md §4](docs/RCT3_OVL_FORMAT.md#4-tex-wrapper-format-partially-red-not-decoded))
    but the pointer chain to the actual indexed pixel data is not yet
    located. Unlocks ~3 600 atlas sprites.
-2. `mms` (animated mesh) vertex position decode — 17 candidate decoders
-   tried, none yield coherent geometry. See [§7.4](docs/RCT3_OVL_FORMAT.md#74-why-positions-dont-work).
+2. People heads: place the bone-space `ssk` heads on the body (needs the
+   `sal`/`san` people animations, format doc §20.5).
 3. `txs` shader semantics — enrich `.mtl` output with alpha/spec/reflection
    flags per sub-mesh.
 4. OVL header version 6 — currently parser warns and continues.

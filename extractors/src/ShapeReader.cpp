@@ -4,7 +4,9 @@
 #include "ovl/OvlParser.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cmath>
 
 namespace ovl {
 
@@ -326,6 +328,193 @@ bool read_scenery_visual(const OvlParser& parser, OvlSide side,
             }
         }
         out.lods.push_back(std::move(lod));
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------- mms (§7)
+// Header (40 B at datapointer):
+//   +0x00 u32 vertex count        +0x04 u32 index count (u16 indices)
+//   +0x08 u32 position count      +0x0C u32 normal count
+//   +0x10 u32 type flag           +0x14 u32 morph count
+//   +0x18 ptr vertices (12 B: u16 position index, u16 normal index, f32 U, f32 V)
+//   +0x1C ptr u16 indices         +0x20 u32 (0)
+//   +0x24 ptr morphs (64 B: f32[3] bias, pad, f32[3] scale, pad, char* name,
+//         u32 keyframes, f32* times, ptr keyframe data, ptr attachment, 12 B)
+// A keyframe is position_count packed u32 (x = bits 21..31, y = 11..20,
+// z = 0..10, each `bias + n × scale`) then normal_count × 3 s8, padded to 4.
+bool read_morph_mesh(const OvlParser& parser, OvlSide side, std::size_t lf_index,
+                     MorphMesh& out, std::string& err) {
+    const auto& lf = parser.side(side).linkedfiles[lf_index];
+    out = MorphMesh{};
+    out.symbol = linked_symbol(parser, side, lf_index, false);
+    auto r = open_at(parser, lf.loaderreference.datapointer);
+    if (!r) { err = "mms header unresolved"; return false; }
+    const std::uint32_t vcount = r->read_u32();
+    const std::uint32_t icount = r->read_u32();
+    out.position_count = r->read_u32();
+    out.normal_count   = r->read_u32();
+    out.type_flag      = r->read_u32();
+    const std::uint32_t mcount = r->read_u32();
+    const std::uint32_t voff = r->read_u32();
+    const std::uint32_t ioff = r->read_u32();
+    (void)r->read_u32();
+    const std::uint32_t moff = r->read_u32();
+    if (vcount == 0 || vcount > 65536 || icount > 600000 || mcount > 4096 ||
+        out.position_count == 0 || out.position_count > vcount ||
+        out.normal_count > vcount) {
+        err = "implausible mms header";
+        return false;
+    }
+    auto rv = open_at(parser, voff);
+    if (!rv) { err = "mms vertices unresolved"; return false; }
+    out.verts.resize(vcount);
+    for (auto& v : out.verts) {
+        v.pos_index = rv->read_u16();
+        v.normal_index = rv->read_u16();
+        v.uv[0] = rv->read_f32();
+        v.uv[1] = rv->read_f32();
+        if (v.pos_index >= out.position_count ||
+            (out.normal_count && v.normal_index >= out.normal_count)) {
+            err = "mms vertex index out of range";
+            return false;
+        }
+    }
+    auto ri = open_at(parser, ioff);
+    if (!ri) { err = "mms indices unresolved"; return false; }
+    out.indices.resize(icount);
+    for (auto& i : out.indices) {
+        i = ri->read_u16();
+        if (i >= vcount) { err = "mms index out of range"; return false; }
+    }
+    for (std::uint32_t m = 0; m < mcount; ++m) {
+        const std::uint32_t rec = moff + m * 64;
+        auto rm = open_at(parser, rec);
+        if (!rm) { err = "mms morph unresolved"; return false; }
+        Morph mo;
+        for (int k = 0; k < 3; ++k) mo.bias[k] = rm->read_f32();
+        (void)rm->read_f32();
+        for (int k = 0; k < 3; ++k) mo.scale[k] = rm->read_f32();
+        (void)rm->read_f32();
+        const std::uint32_t name_ptr = rm->read_u32();
+        const std::uint32_t tcount = rm->read_u32();
+        const std::uint32_t toff = rm->read_u32();
+        mo.data_off = rm->read_u32();
+        mo.name = string_at_slot(parser, name_ptr, rec + 32);
+        if (tcount > 100000) { err = "implausible keyframe count"; return false; }
+        if (auto rt = open_at(parser, toff)) {
+            mo.times.resize(tcount);
+            for (auto& t : mo.times) t = rt->read_f32();
+        } else if (tcount) {
+            err = "mms times unresolved";
+            return false;
+        }
+        out.morphs.push_back(std::move(mo));
+    }
+    return true;
+}
+
+int find_morph(const MorphMesh& mesh, const std::string& name) {
+    const std::string want = lower(name);
+    for (std::size_t i = 0; i < mesh.morphs.size(); ++i)
+        if (lower(mesh.morphs[i].name) == want) return static_cast<int>(i);
+    return -1;
+}
+
+bool morph_pose(const OvlParser& parser, const MorphMesh& mesh, std::size_t morph,
+                std::size_t frame, std::vector<ShapeVertex>& out, std::string& err) {
+    if (morph >= mesh.morphs.size()) { err = "no such morph"; return false; }
+    const Morph& mo = mesh.morphs[morph];
+    if (frame >= std::max<std::size_t>(mo.times.size(), 1)) { err = "no such keyframe"; return false; }
+    auto r = open_at(parser, mo.data_off + static_cast<std::uint32_t>(frame) * mesh.frame_stride());
+    if (!r) { err = "mms keyframe unresolved"; return false; }
+    std::vector<std::array<float, 3>> pos(mesh.position_count), nrm(mesh.normal_count);
+    for (auto& p : pos) {
+        const std::uint32_t w = r->read_u32();
+        p[0] = mo.bias[0] + static_cast<float>(w >> 21) * mo.scale[0];
+        p[1] = mo.bias[1] + static_cast<float>((w >> 11) & 0x3FF) * mo.scale[1];
+        p[2] = mo.bias[2] + static_cast<float>(w & 0x7FF) * mo.scale[2];
+    }
+    for (auto& n : nrm) {
+        float len = 0;
+        for (int k = 0; k < 3; ++k) {
+            n[k] = static_cast<float>(static_cast<std::int8_t>(r->read_u8()));
+            len += n[k] * n[k];
+        }
+        len = std::sqrt(len);
+        if (len > 0) for (auto& c : n) c /= len;
+    }
+    out.assign(mesh.verts.size(), ShapeVertex{});
+    for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
+        const auto& mv = mesh.verts[i];
+        auto& v = out[i];
+        for (int k = 0; k < 3; ++k) v.pos[k] = pos[mv.pos_index][k];
+        if (mesh.normal_count)
+            for (int k = 0; k < 3; ++k) v.normal[k] = nrm[mv.normal_index][k];
+        v.uv[0] = mv.uv[0];
+        v.uv[1] = mv.uv[1];
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------- ssk (§20)
+// Header (28 B at datapointer):
+//   +0x00 u32 bone count          +0x04 char*[bones] bone names
+//   +0x08 u32[bones] vertex count per bone (runs, in order)
+//   +0x0C u32 triangle count      +0x10 ptr u16 indices (3 per triangle)
+//   +0x14 u32 vertex count        +0x18 ptr vertices (8 f32: pos, normal, U, V)
+// Vertex positions are in their bone's space.
+bool read_simple_skin(const OvlParser& parser, OvlSide side, std::size_t lf_index,
+                      SimpleSkin& out, std::string& err) {
+    const auto& lf = parser.side(side).linkedfiles[lf_index];
+    out = SimpleSkin{};
+    out.symbol = linked_symbol(parser, side, lf_index, false);
+    auto r = open_at(parser, lf.loaderreference.datapointer);
+    if (!r) { err = "ssk header unresolved"; return false; }
+    const std::uint32_t bcount = r->read_u32();
+    const std::uint32_t names = r->read_u32();
+    const std::uint32_t counts = r->read_u32();
+    const std::uint32_t tcount = r->read_u32();
+    const std::uint32_t ioff = r->read_u32();
+    const std::uint32_t vcount = r->read_u32();
+    const std::uint32_t voff = r->read_u32();
+    if (bcount == 0 || bcount > 256 || vcount > 65536 || tcount > 200000) {
+        err = "implausible ssk header";
+        return false;
+    }
+    auto rn = open_at(parser, names);
+    auto rc = open_at(parser, counts);
+    if (!rn || !rc) { err = "ssk bone table unresolved"; return false; }
+    std::uint32_t total = 0;
+    for (std::uint32_t b = 0; b < bcount; ++b) {
+        SimpleSkinBone bone;
+        const std::uint32_t p = rn->read_u32();
+        bone.name = string_at_slot(parser, p, names + b * 4);
+        bone.vertex_count = rc->read_u32();
+        total += bone.vertex_count;
+        out.bones.push_back(std::move(bone));
+    }
+    if (total != vcount) { err = "ssk bone runs don't add up to the vertex count"; return false; }
+    auto rv = open_at(parser, voff);
+    auto ri = open_at(parser, ioff);
+    if (!rv || !ri) { err = "ssk mesh unresolved"; return false; }
+    out.verts.resize(vcount);
+    std::uint8_t bone = 0;
+    std::uint32_t left = out.bones[0].vertex_count;
+    for (auto& v : out.verts) {
+        while (left == 0 && bone + 1u < bcount) left = out.bones[++bone].vertex_count;
+        for (auto& c : v.pos) c = rv->read_f32();
+        for (auto& c : v.normal) c = rv->read_f32();
+        v.uv[0] = rv->read_f32();
+        v.uv[1] = rv->read_f32();
+        v.bones[0] = bone;
+        v.weights[0] = 1.0f;
+        --left;
+    }
+    out.indices.resize(static_cast<std::size_t>(tcount) * 3);
+    for (auto& i : out.indices) {
+        i = ri->read_u16();
+        if (i >= vcount) { err = "ssk index out of range"; return false; }
     }
     return true;
 }

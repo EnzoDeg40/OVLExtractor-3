@@ -77,7 +77,8 @@ complete RCT3 installation (Main + all expansions) — zero parse errors.
 | `spl`  | Spline (Bézier rail / profile)   | Fully decoded (§15.1)                   |
 | `tks`  | TrackSection (one track piece)   | Fully decoded incl. Soaked/Wild ext (§15.2); connection rules §15.4 |
 | `trr`  | TrackedRide                      | Decoded: pieces, trains, track set path, speeds, groups (§15.5) |
-| `mms`  | Morphable Mesh                   | Topology + UVs OK, positions broken (§7)|
+| `mms`  | Morph Mesh (vertex animation)    | Fully decoded, every keyframe (§7)      |
+| `prt`, `ppg`, `phd`, `ssk` | People parts, part groups, heads, simple skins | Decoded (§20) |
 | `shs`  | Static Shape (rigid mesh)        | Fully decoded (§8)                      |
 | `bsh`  | Bone Shape (skinned mesh)        | Rest-pose mesh decoded (§8.6); skeletal animation open |
 | `ban`  | Bone Animation (keyframes)       | Tracks decoded → JSON sidecar (§8.7); skinned render open |
@@ -467,158 +468,93 @@ spanning the entire sample, so Audacity / SoundForge / DAWs round-trip
 it automatically.
 
 
-## 7. MMS — morphable mesh (positions BROKEN)
+## 7. MMS — morphable mesh (fully decoded)
 
-The `mms` loader holds morphable meshes for animals, characters, and ride
-cars. Indices and UVs decode correctly; **vertex positions do not**.
+The `mms` loader holds the vertex-animated meshes: every guest, staff and VIP
+body part (§20), the low-detail heads, and the small animals (duck, seagull,
+fish…). Each "morph" is one **animation**; every keyframe of it stores every
+vertex position and normal. Decoded on 2026-11-12 (all 785 meshes of
+`Characters/` and the 13 of `Animals/` decode; checked by rendering bodies,
+duck and seagull, and every keyframe of a walk cycle).
 
-### 7.1 MMS header (40 bytes at datapointer)
-
-```
-+0  u32  vertex_count
-+4  u32  index_count                — count of u16 indices, /3 = triangle count
-+8  u32  algo_unknown_1             — "lower for less vertices, can't be 0,
-                                       vertices leak if wrong" (legacy comment).
-                                       Probably controls position decode but
-                                       its exact role is unknown.
-+12 u32  algo_unknown_2             — usually == unknown_1
-+16 u32  type_flag                  — usually 0, 1 on some attachments
-+20 u32  morph_count                — number of morph animations (≥1 even for
-                                       "static" meshes)
-+24 u32  vertex_uv_offset           — points to base vertex+UV buffer (12B/vtx)
-+28 u32  index_offset               — points to u16 triangle list
-+32 u32  unknown_2                  — seen 0
-+36 u32  morph_data_offset          — points to morph descriptors (64B each)
-```
-
-### 7.2 Base vertex/UV buffer (12 bytes per vertex)
+### 7.1 Header (40 bytes at datapointer)
 
 ```
-+0 u16  unknown_a       — possibly bone or morph index
-+2 u16  unknown_b
-+4 float  U             — texture U in [0, 1]
-+8 float  V             — texture V in [0, 1]
++0x00 u32  vertex_count
++0x04 u32  index_count        — u16 indices, /3 = triangles
++0x08 u32  position_count     — distinct positions per keyframe (≤ vertex_count)
++0x0C u32  normal_count       — distinct normals per keyframe
++0x10 u32  type_flag          — usually 0, 1 on some attachments
++0x14 u32  morph_count        — animations (192 on a guest body part)
++0x18 ptr  vertices           — 12 B each (§7.2)
++0x1C ptr  indices            — u16 triangle list
++0x20 u32  0
++0x24 ptr  morphs             — 64 B each (§7.3)
 ```
 
-UVs work — they extract cleanly and match expected ranges.
+`position_count` / `normal_count` were the "algo_unknown_1/2" of older notes:
+vertices that share a position (UV seams) share one stored position, and
+likewise for normals.
 
-### 7.3 Morph descriptor (64 bytes per morph)
+### 7.2 Vertex (12 B)
 
 ```
-+0   32 bytes unknown
-+32  u32 name_ptr           — pointer to morph name string (e.g. "1Swim")
-+36  u32 times_count        — number of keyframes
-+40  u32 times_offset       — pointer to keyframe timings list
-+44  u32 positions_offset   — pointer to per-keyframe vertex positions ← KEY
-+48  u32 attachment_offset
-+52  12 bytes unknown
++0 u16  position index   — into each keyframe's positions
++2 u16  normal index     — into each keyframe's normals
++4 f32  U
++8 f32  V
 ```
 
-Morph 0 of any mesh is typically the "base" or "rest" animation — what
-we'd want for a static OBJ export. Each morph holds `times_count` keyframes.
+### 7.3 Morph (64 B) — one animation
 
-### 7.4 Why positions don't work
+```
++0x00 f32[3] bias        — model-space minimum of the animation
++0x0C u32    0
++0x10 f32[3] scale       — metres per quantisation step, per axis
++0x1C u32    0
++0x20 char*  name        — "IdleStandard", "Walk", "RideSitBarLoop", …
++0x24 u32    keyframe_count
++0x28 f32*   times       — seconds, one per keyframe
++0x2C ptr    keyframe data
++0x30 ptr    attachment extras (0 on most)
++0x34 12 B   0
+```
 
-The `MorhpMeshVertex` struct in `OVLExtractor-2/SFStructs.h:37` declares
-3 × uint8 per vertex (so 3 bytes per vertex per keyframe). `ModelExtractor`
-currently tries **17 different decoder candidates** on each MMS, writing
-one diagnostic OBJ per candidate next to the default (`<name>.<decoder>.obj`):
+### 7.4 Keyframe data
 
-| Decoder name       | Width | Interpretation                                |
-|--------------------|-------|-----------------------------------------------|
-| `int8_127_s3`      | 3 B   | signed int8 / 127 (default output)            |
-| `uint8_255_s3`     | 3 B   | unsigned int8 / 255 − 0.5                     |
-| `int8_127_s4`      | 4 B   | int8/127, 4-byte stride (1 padding)           |
-| `int16_s6`         | 6 B   | int16 / 32767                                 |
-| `float16_s6`       | 6 B   | IEEE 754 half-precision                       |
-| `float32_s12`      | 12 B  | full float32                                  |
-| `packed10_snorm`   | 4 B   | 3 × 10-bit SNORM in a u32                     |
-| `sm8_s3`           | 3 B   | sign-magnitude int8                           |
-| `sm8_s4`           | 4 B   | sign-magnitude int8 + 1 padding               |
-| `bias128_s3`       | 3 B   | `(u - 128) / 127`                             |
-| `bias128_s4`       | 4 B   | bias128 + 1 padding                           |
-| `int8_xzy`         | 3 B   | int8 with axis swap XZY (Z-up → Y-up)         |
-| `int8_flipy`       | 3 B   | int8 with Y axis negated                      |
-| `delta_int8`       | 3 B   | running sum of int8/127 deltas                |
-| `base_int8_a4`     | 12 B  | first 3 bytes of UV record as int8/127        |
-| `base_int16_xy`    | 12 B  | first 4 bytes of UV record as int16 XY        |
+Keyframes follow each other at a fixed stride of
+`align4(position_count × 4 + normal_count × 3)` bytes. One keyframe is:
 
-None produce coherent geometry across the sample set. Adjacent vertices DO
-share leading bytes on disk (consistent with a smooth mesh having close
-vertices), but the resulting triangles look scrambled in 3D viewers.
+- `position_count` × **u32**, each a quantised position:
+  `x = bias.x + (w >> 21) × scale.x` (11 bits),
+  `y = bias.y + ((w >> 11) & 0x3FF) × scale.y` (10 bits),
+  `z = bias.z + (w & 0x7FF) × scale.z` (11 bits).
+  The scales are the animation's extent / (2^bits − 1): a guest torso has
+  scale ≈ (1.3e-4, 3.6e-4, 1.2e-4) m, i.e. 0.26 × 0.37 × 0.25 m.
+- `normal_count` × **3 × s8**, a direction (not unit length: renormalise).
+- 0–3 pad bytes.
 
-The legacy OVLExtractor-2 explicitly left position decoding commented out
-(`Form1.h:2222-2235`) — they couldn't figure it out either. Cobra-tools
-has no RCT3 mesh support.
+Vertex *i* of a keyframe is `positions[pos_index_i]`, `normals[normal_index_i]`.
+Positions are model space (Direct3D, left-handed, Y up), so the body parts of
+one person line up without any bone: the guest's feet are at y = 0 and it
+faces +Z.
 
-Untested hypotheses:
-- **Per-keyframe scale/bias header** before the positions — the
-  `Algorithm Unknown 1/2` header fields might contain a scale factor
-- **Z-order swizzled** indices into a separate position table
-- **Compressed delta from a base pose** stored elsewhere (per-loader or
-  in a parent SID/SVD block)
+The game keeps the decoded positions in a 16-byte stride buffer and
+interpolates between keyframes (rerct3 `mesh-animation.md`, morph dispatch
+table `0x010ffa48`); the 11/10/11 split is the same bit layout the bone
+animations use for their packed quaternions (`Anim_BuildBoneMatrixFromKeyframes`).
 
-### 7.5 What ModelExtractor outputs for MMS
+### 7.5 What the tools output
 
-- Valid OBJ structure
-- Correct topology (faces reference correct vertex indices)
-- Correct UVs (`vt` lines match in-game UV mapping)
-- **Incorrect vertex positions** (cosmetically wrong, mesh appears shattered)
-- 17 sibling OBJs (one per decoder candidate) for A/B comparison
+- `--types model`: one `<name>.obj` per `mms` in a single pose —
+  `IdleStandard` keyframe 0 when the mesh has it (people), otherwise the first
+  morph's first keyframe — with UVs and normals.
+- `--types people`: §20.
 
-In bulk batch runs, `side_loop` in `ModelExtractor.cpp` skips MMS entirely
-to avoid flooding the output with noise variants — only `shs`/`bsh` are
-exported during full sweeps. To inspect a single MMS, set **`OVL_MMS=1`** (the
-mms branch is gated behind that env var) and extract the specific OVL; it emits
-`MMS_HDR` / `MORPH_DESC` / `VBUF` / `POS_BYTES` diagnostics to stderr.
-
-### 7.6 New evidence — `mms` is quantized to a bias+scale (not solved)
-
-`rct3dump` does **not** cover `mms`. Running the `OVL_MMS=1` path on `Mackeral`
-(6 v) and `Duck` (LODs of 63/49/20 v) surfaced concrete new findings:
-
-- **The morph descriptor carries a per-axis bias + scale.** Its first 32
-  "unknown" bytes are two float3s: `+0..+8` ≈ a min/offset (Mackeral
-  (−0.073, −0.060, −0.358); Duck (−0.107, −0.141, −0.251)) and `+16..+24` tiny
-  positives (~1e-4…3e-4) ≈ a scale. This **confirms the §7.4 "per-keyframe
-  scale/bias" hypothesis** and **refutes the legacy "raw 3×uint8 position"**:
-  positions are quantized, dequantized as `pos ≈ bias + raw·scale`.
-- **But naïve uint8/uint16 dequant doesn't give consistent geometry.**
-  `scale_z·65535 ≈ 16` over-ranges Z for a fish that's ~4.6 across; uint8
-  under-ranges everything. So the raw width/alignment likely varies, the
-  quantization isn't simple linear-full-range, or `positions_off` has a
-  sub-header before the data.
-- **`stride_id` (header +8, legacy "AU1") is not a byte stride** — it varies per
-  mesh (Mackeral 6 = vc; Duck LODs 47/38/15 ≈ 0.75·vc), more like a count of
-  unique/shared entries.
-- **The base buffer's `a`/`b` u16 fields look like a position remap** — they
-  descend with vertex index (Mackeral 5,4,3; Duck-L1 a=b=46,45,44; Duck-L2
-  a≠b: 17/20, 16/19), consistent with §7.4's "swizzled indices into a separate
-  position table" (vertex *i* may read `position[a_i]`).
-
-Net: **materially advanced** (the dequant constants are located, two hypotheses
-resolved) but **not solved**. Next step: pin `positions_off`'s exact byte span
-(to `index_off` / the next morph) to derive the true per-vertex stride, then
-test `pos = bias + raw·scale` with the `a`-remap and candidate widths.
-
-**Systematic brute-force (still unsolved).** `OVL_MMS=1` now also dumps the raw
-`positions`/`index`/`vbuf` blocks + `bias`/`scale` to `/tmp/mms_dump/`, and a
-scorer (`/tmp/mms_brute.py`) was run over the cross product of {u8, i8, u16,
-i16, half, f32, packed-10} × {strides 3/4/6/12} × {byte offsets 0–16} ×
-{sequential, `a`-remapped}, scoring each decode by the index buffer's triangle
-edge coherence (mean edge ÷ bbox diagonal — scale/bias-invariant). **No
-per-vertex format produced a coherent mesh** (best ≈ 0.36, indistinguishable
-from random scatter). A **delta** (cumulative-sum) decode scored much lower
-(i16 ≈ 0.146) — but rendering it confirms that's a *metric artifact* (delta
-naturally shortens consecutive-vertex edges even when the topology is wrong; the
-duck still renders shattered). Calibration on 300 real `shs`/`bsh` meshes shows
-the metric itself is weak (real meshes span 0.10–0.74, median 0.52, because
-many are low-poly with large triangles), so edge-coherence alone can't rank
-candidates. Conclusion: the position stream is **not** a simple per-vertex
-quantization at `positions_off`; it's likely a non-trivial compression (true
-delta-from-base with a separate base, a block/range codec keyed by
-`stride_id`≈0.75·vc, or positions reached through another indirection). Genuinely
-hard — left open with the dump tooling in place for a future attempt.
+History: older versions of this section tried 17 per-vertex position decoders
+(int8, half, packed 10-bit…) on the stream as a vertex array; none worked
+because positions are indexed (`position_count` < `vertex_count`) and the
+packing is 11/10/11 bits with a per-animation bias and scale.
 
 
 ## 8. SHS — Static Shape mesh (fully decoded)
@@ -940,7 +876,8 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 | Item | Impact when solved |
 |---|---|
 | `RCT1_icons:tex` | Referenced by 20 `gsi` of `Main`, defined by no OVL of the install (an unshipped RCT1 icon sheet). |
-| `mms` position decode | Unlocks readable 3D meshes for animated objects (animals, characters, ride cars). Advanced this session: positions are quantized to a bias+scale found in the morph descriptor (§7.6); exact raw width/remap still TBD. |
+| People head placement | `ssk` heads are in bone space (§20.5); placing them needs the `Bip01 Head` bone of the pose (the `sal`/`san` people animations, not decoded) or an alignment on the low-detail `mms` head. |
+| `ppg` / `prt` / `phd` unknown words | Listed raw in the JSON (§20). |
 | `txs` specular/reflection | Alpha is solved (ftx alpha plane §3.5 + txs class). Still approximate: `*Specular*` → glTF roughness 0.5, `*Chrome*` / `*Reflection*` → metallic 0.8. The environment maps they sample (`chrome:ftx`, `two:ftx`) are not in any OVL — presumably built into the engine — so chrome parts export untextured. |
 | Recolor | Recolorable ftx export with their blue/magenta/yellow mask ramps (§3.8). Applying player/default colours needs the item's default colours (probably in `sid`). |
 | `UseAdTexture:ftx` | Placeholder the generic stall signs bind; the game substitutes the chosen advert at runtime. Exported untextured. |
@@ -1865,3 +1802,107 @@ The order of the `Terrain_NN` symbols is **not** the order of the interface keys
 The six rock grounds (13–18) take the six cliffs' icons and textures.
 
 `--types terrain` writes the pair's records to one `<ovl>.terrain.json`.
+
+
+## 20. People (`Characters/`): parts, part groups, heads (`--types people`)
+
+Guests, staff, VIPs and entertainers are assembled from parts. Files under
+`Characters/<group>/` (`AF` adult female, `AM` adult male, `TF`/`TM` teens,
+`CF`/`CM` children, plus one folder per staff type and VIP):
+
+| File | Holds |
+|---|---|
+| `<id>_Body_Stub`, `_Legs_Stub`, `_Head_Stub`, `_SwimSuit…_Stub` | the `ppg` part group |
+| `<id>_Body_Main`, `_Legs_Main`, `_SwimSuit…_Main` | `prt` parts + their `mms` meshes + the clothing `tex` |
+| `<id>_Head_Main` | `phd` head, `ssk` detailed heads (2 LODs × 6 expressions), `mms` low-detail head |
+| `<id>_Skin` | the `tex` used by skin parts and the head (skin tone + hair) |
+| `<id>_Bikini`, `_OnePiece`, `_SwimSuit`, `_Inflatable` | swimsuit / rubber ring `tex` |
+| `Shared/` | attachments (hats, held items) |
+
+### 20.1 Colours: 16 variants per texture
+
+Every guest texture is a 4 × 4 grid of 64 px cells (256 × 256; rings 512 × 512).
+A part's UVs cover cell 0, the **top-left cell** of the upright texture (checked
+by rendering: AF06's cell 0 puts the green T-shirt's logo upright on the chest).
+At draw time the game adds `((p & 3) × 0.25, ((p >> 2) & 3) × −0.25)` to the UVs
+(`PeoplePart_TransformAndCopyBatch`, rerct3 `peeps.md`), `p` being one of the
+person's palette bytes (§20.2) — so `p` reads the grid left to right, top to
+bottom. A `_Skin` texture cell bundles skin tone, hair colour and the bare-skin
+parts of that head's outfit; skin tone and hair are not separate choices.
+
+### 20.2 `prt` — PeoplePart (20 B)
+
+```
++0x00 u32   1
++0x04 u32   0
++0x08 tex*  texture
++0x0C mms*  mesh
++0x10 u32   palette: 0 skin, 1 upper clothes, 2 lower clothes,
+                     3 upper swimsuit, 4 lower swimsuit
+```
+
+The palette values match the person's save fields `SkinPalette`,
+`UpperClothingPalette`, `LowerClothingPalette`, `UpperSwimSuitPalette`,
+`LowerSwimSuitPalette` (Person +0xC0…+0xC4). A `Body` part has three meshes,
+each its own `prt`: `Body` (clothes), `SkinBody` (bare arms, skin texture) and
+`OptionalBody` (an extra piece the person may or may not show).
+
+### 20.3 `ppg` — PeoplePartGroup (0x54 B)
+
+```
++0x00 u32, +0x04 u32, +0x08 u32
++0x0C u8[4]   (02 01 01 01 bodies, 02 01 00 00 heads)
++0x10 u32     1 on heads
++0x14 ptr
++0x18 f32     LOD distance (100)
++0x1C 3 × LOD record   clothes: high, medium, low
++0x34 phd*    head (heads only)
++0x38 3 × LOD record   swimsuit
++0x50 phd*    swimsuit head (heads only)
+
+LOD record (8 B): u8 count, u8 optional_count, u16 0, prt** (count + optional_count)
+```
+
+A body's high LOD lists `Body_L1, SkinBody_L1, AttachmentL, AttachmentR` and
+the optional `OptionalBody_L1`. Head groups only fill their low LOD (the `mms`
+head + hat attachment); the high and medium heads come from the `phd`.
+
+### 20.4 `phd` — PeopleHead (0xC0 B)
+
+```
++0x00 f32[16]  matrix 0
++0x40 f32[16]  matrix 1
++0x80 u32 1, +0x84 u32 0
++0x88 tex*     skin texture
++0x8C sal*     head animations
++0x90 ssk*[6]  LOD 1: neutral, Angry, Happy, Sad, Scared, Sick
++0xA8 ssk*[6]  LOD 2: same order
+```
+
+### 20.5 `ssk` — SimpleSkin (28 B)
+
+```
++0x00 u32      bone count
++0x04 char**   bone names ("Bip01 Neck", "Bip01 Head", "Bip01 Ponytail1"…)
++0x08 u32*     vertex count per bone (vertices are in bone order)
++0x0C u32      triangle count
++0x10 u16*     indices (3 per triangle)
++0x14 u32      vertex count
++0x18 f32*     vertices: 8 floats (position, normal, U, V)
+```
+
+Rigid skinning, one bone per vertex; positions are in their bone's space, so a
+detailed head is not placed on the body without the pose's bone matrices.
+
+### 20.6 Output
+
+`--types people` writes, per pair:
+
+- `<ovl>.people.json`: every `prt`, `ppg`, `phd` (fields above, unknown words
+  raw), every `mms` (counts and its animations: name, keyframes, length) and
+  every `ssk` (bones and vertex runs);
+- one `<mesh>.glb` per `mms` (pose `IdleStandard` keyframe 0) and per `ssk`
+  (bone space), with the part's texture embedded when it lives in the same
+  pair (clothes do; `_Skin` textures are separate OVLs). Positions are mirrored
+  on Z like `--types scenery` (§14); UVs address cell 0.
+

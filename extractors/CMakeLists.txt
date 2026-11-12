@@ -8,6 +8,7 @@ add_library(ovlextractors STATIC
     src/ShapeReader.cpp
     src/SoundExtractor.cpp
     src/TerrainExtractor.cpp
+    src/PeopleExtractor.cpp
     src/TextExtractor.cpp
     src/TextureExtractor.cpp
     src/TextureIndex.cpp

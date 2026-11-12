@@ -132,4 +132,65 @@ bool read_scenery_visual(const OvlParser& parser, OvlSide side,
                          std::size_t lf_index, SceneryVisual& out,
                          std::string& err);
 
+// ---------------------------------------------------------------- mms (§7)
+// A MorphMesh: every vertex is (position index, normal index, U, V) and every
+// keyframe of every morph (= animation) stores all positions and normals.
+struct MorphVertex {
+    std::uint16_t pos_index = 0;
+    std::uint16_t normal_index = 0;
+    float         uv[2] = {0, 0};
+};
+
+struct Morph {
+    std::string         name;            // animation, e.g. "IdleStandard", "Walk"
+    float               bias[3] = {0, 0, 0};
+    float               scale[3] = {0, 0, 0};
+    std::vector<float>  times;           // one per keyframe, seconds
+    std::uint32_t       data_off = 0;    // internal offset of keyframe 0
+};
+
+struct MorphMesh {
+    std::string                 symbol;  // without ":mms"
+    std::uint32_t               position_count = 0;
+    std::uint32_t               normal_count = 0;
+    std::uint32_t               type_flag = 0;
+    std::vector<MorphVertex>    verts;
+    std::vector<std::uint32_t>  indices;
+    std::vector<Morph>          morphs;
+    // Bytes per keyframe: positions (u32 each) then normals (3 × s8 each),
+    // padded to 4.
+    std::uint32_t frame_stride() const {
+        return (position_count * 4 + normal_count * 3 + 3) & ~3u;
+    }
+};
+
+bool read_morph_mesh(const OvlParser& parser, OvlSide side, std::size_t lf_index,
+                     MorphMesh& out, std::string& err);
+
+// Positions and normals of every vertex (MorphMesh::verts order) at keyframe
+// `frame` of morph `morph`, in model space (Direct3D, like read_shape).
+bool morph_pose(const OvlParser& parser, const MorphMesh& mesh, std::size_t morph,
+                std::size_t frame, std::vector<ShapeVertex>& out, std::string& err);
+
+// Index of the morph named `name` (case-insensitive), or -1.
+int find_morph(const MorphMesh& mesh, const std::string& name);
+
+// ---------------------------------------------------------------- ssk (§20)
+// A SimpleSkin: rigid skinned mesh, each bone owns a run of vertices stored in
+// that bone's space.
+struct SimpleSkinBone {
+    std::string   name;            // e.g. "Bip01 Head"
+    std::uint32_t vertex_count = 0;
+};
+
+struct SimpleSkin {
+    std::string                 symbol;   // without ":ssk"
+    std::vector<SimpleSkinBone> bones;
+    std::vector<ShapeVertex>    verts;
+    std::vector<std::uint32_t>  indices;
+};
+
+bool read_simple_skin(const OvlParser& parser, OvlSide side, std::size_t lf_index,
+                      SimpleSkin& out, std::string& err);
+
 }  // namespace ovl

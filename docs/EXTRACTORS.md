@@ -19,9 +19,10 @@ extractors/              libovlextractors — strategy per loader tag
   ├─ SoundExtractor      snd → .wav (PCM, optional `smpl` loop chunk)
   ├─ TextureExtractor    ftx/tex/fts/ftt → .tga + .ovltex + .json
   ├─ AtlasExtractor      gsi → cropped sprite .tga
-  ├─ ModelExtractor      shs/bsh → .obj + .mtl, ban → .anim.json (mms diagnostic only)
+  ├─ ModelExtractor      shs/bsh/mms → .obj + .mtl, ban → .anim.json
+  ├─ PeopleExtractor     prt/ppg/phd/mms/ssk → .people.json + one .glb per mesh (§5.5)
   ├─ SceneryExtractor    svd → self-contained .glb per scenery item (§5.4)
-  ├─ ShapeReader         shared in-memory readers: shs/bsh (+ bones), ban, svd
+  ├─ ShapeReader         shared in-memory readers: shs/bsh (+ bones), ban, svd, mms, ssk
   ├─ GltfWriter          dependency-free glTF 2.0 .glb writer + PNG encoder
   └─ TextureIndex        symbol → OVL JSON map + lookup helper
 
@@ -303,19 +304,14 @@ Survey on a 40-OVL random sample: **75 / 76 (99 %)** of SHS files extract.
 The one failure is an empty placeholder (`vc = ic = 0`). Sub-mesh
 distribution: 29× single, 19× double, 20× triple, 7× quad.
 
-### 5.2 `mms` — diagnostic only
+### 5.2 `mms` — one pose as OBJ
 
-Because position decode is unsolved (§7.4 of the format doc), MMS handling
-is intentionally noisy and **skipped in bulk batches** (`side_loop` only
-dispatches on `shs`). When `process_mms` is invoked manually it writes:
-
-- `<symbol>.obj` — default (int8/127 stride 3) positions
-- `<symbol>.<decoder>.obj` — one OBJ per candidate decoder (17 variants)
-- Diagnostic dumps to stderr: full 40-byte MMS header (`MMS_HDR ...`) and
-  first 48 bytes of the position stream (`POS_BYTES ...`)
-
-so you can A/B-compare candidate position encodings against the topology
-+ UV-correct mesh in any 3D viewer.
+`read_morph_mesh` / `morph_pose` (ShapeReader) decode the header, the
+indexed vertices and any keyframe of any morph (format doc §7). The model
+extractor writes one `<symbol>.obj` per `mms`, posed at `IdleStandard`
+keyframe 0 when the mesh has that animation (people), else at the first
+morph's first keyframe; Z mirrored like `shs`, UV `v` flipped, normals
+included. All 785 `Characters/` meshes and the 13 of `Animals/` extract.
 
 ### 5.3 SHS survey mode
 
@@ -428,6 +424,20 @@ blender -b --python scripts/blender_ride.py -- design.layout.json out/glb \
 other tools. `scripts/trk_to_gltf.py --track-json out/track` uses the exact
 footprints.
 
+### 5.5 PeopleExtractor — `--types people`
+
+For the `Characters/` OVLs (format doc §20). Per pair it writes
+`<ovl>.people.json` (parts with their texture, mesh and palette slot; part
+groups with their three clothes and three swimsuit LODs; heads with their
+matrices and 12 `ssk`; every `mms` with its animation list; every `ssk` with
+its bone runs) and one `.glb` per `mms` (pose `IdleStandard` keyframe 0) and
+per `ssk` (bone space). The part's `tex` is embedded when it is in the same
+pair, upright, its UVs on palette cell 0 (top-left). A whole-folder run
+over `Characters/` (598 pairs) writes 1 799 meshes with no error.
+
+Assembling one person means reading several pairs: the `ppg` (`_Stub`) names
+the `prt` (`_Main`), whose skin parts use the `_Skin` texture of the head.
+
 ## 6. Cross-OVL texture resolution
 
 A `shs` mesh and the `:ftx` it references usually live in **different**
@@ -524,7 +534,7 @@ ovlextract [options] <input>
 | `--texture-index FILE` | Load the JSON map from a previous `--build-index` run (enables `map_Kd` emission) |
 | `--assets-root DIR` | Root directory the texture index was built against (required with `--auto-textures`) |
 | `--auto-textures` | When extracting models with `--texture-index`, also extract each referenced texture from its source OVL |
-| `-t,--types TYPE` | Resource type to extract (`sound`, `texture`, `atlas`, `font`, `text`, `terrain`, `model`, `scenery`, `track`, `dump`, `all`). Repeatable. |
+| `-t,--types TYPE` | Resource type to extract (`sound`, `texture`, `atlas`, `font`, `text`, `terrain`, `people`, `model`, `scenery`, `track`, `dump`, `all`). Repeatable. |
 | `--all-lods` | With `scenery`: also write a `.glb` per lower LOD |
 | `-o,--output-dir DIR` | Output directory (default: `./extracted/<basename>/` for single file, `./extracted/` for directory input) |
 | `--overwrite` | Overwrite existing output files (default skip) |
