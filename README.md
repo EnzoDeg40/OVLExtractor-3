@@ -53,6 +53,13 @@ This project addresses both:
   per language) — the whole `gui/` tree extracts (docs §17–18). And the way
   back: `scripts/ovl_text_pack.py` re-encodes a language pair from a JSON of
   strings of any length, verified in the running game (docs §18.1).
+- ✅ **Writer core** (`OvlImage`, `OvlBuilder`): the way back, for every
+  type. `OvlImage` reads and rewrites all 14 952 game files byte for byte;
+  `OvlBuilder` lays out a pair from data blocks + pointers, symbols, loaders
+  and symbol references and rebuilds 7 403 / 7 476 game pairs byte for byte
+  (`ovl_roundtrip --rebuild`). First type on top: `ovlwrite text
+  strings.json out` builds a `txt` pair from scratch — verified in the game.
+  See `docs/LIBOVLNG_WRITER.md`.
 - ✅ **Scenery packager** (`--types scenery`: `svd` → `.glb`): one
   self-contained glTF 2.0 per scenery item — most detailed LOD, embedded
   PNG textures, opaque / alpha-mask / blend materials, skeleton and

@@ -1750,6 +1750,11 @@ The unique side only declares the loader and three empty blocks; its tail
 repeats the common's total size three times. The writer emits it without the
 tail. Keeping the symbol set of the template means the symbol hashes travel
 unchanged, so no hash function is needed; new symbols are refused.
+(The hash is djb2 over the lower-cased `name:tag` — see
+[LIBOVLNG_WRITER.md](LIBOVLNG_WRITER.md) §1 — so new symbols can now be added.)
+The C++ writer `ovlwrite text strings.json out` (core `TextOvl`, on top of
+`OvlBuilder`) builds a pair from scratch, without a template; see
+LIBOVLNG_WRITER.md §5.
 
 Verified on the Mac build (`RCT3_Exe` 3.3.4): the game loads a re-packed
 `French.common.ovl` whose strings changed length — the main menu shows the new

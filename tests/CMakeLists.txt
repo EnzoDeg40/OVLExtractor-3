@@ -16,6 +16,7 @@ add_executable(ovl_tests
     test_header_parsing.cpp
     test_gltf_writer.cpp
     test_gui_resources.cpp
+    test_ovl_writer.cpp
 )
 
 target_link_libraries(ovl_tests

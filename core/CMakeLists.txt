@@ -1,6 +1,9 @@
 add_library(ovlcore STATIC
     src/BinaryReader.cpp
     src/OvlParser.cpp
+    src/OvlImage.cpp
+    src/OvlBuilder.cpp
+    src/TextOvl.cpp
 )
 
 target_include_directories(ovlcore
