@@ -78,6 +78,7 @@ complete RCT3 installation (Main + all expansions) — zero parse errors.
 | `tks`  | TrackSection (one track piece)   | Fully decoded incl. Soaked/Wild ext (§15.2); connection rules §15.4 |
 | `trr`  | TrackedRide                      | Decoded: pieces, trains, track set path, speeds, groups (§15.5) |
 | `mms`  | Morph Mesh (vertex animation)    | Fully decoded, every keyframe (§7)      |
+| `ter`  | TerrainType (land tool surface) | Fully decoded (§19); `--types terrain` → `.terrain.json` |
 | `prt`, `ppg`, `phd`, `ssk` | People parts, part groups, heads, simple skins | Decoded (§20) |
 | `shs`  | Static Shape (rigid mesh)        | Fully decoded (§8)                      |
 | `bsh`  | Bone Shape (skinned mesh)        | Rest-pose mesh decoded (§8.6); skeletal animation open |
