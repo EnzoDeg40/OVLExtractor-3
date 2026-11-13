@@ -157,4 +157,33 @@ std::array<OvlImage, 2> build_text_ovl(std::vector<TextEntry> entries, std::uint
     return b.build();
 }
 
+std::u16string utf16(const std::string& u) {
+    std::u16string out;
+    for (std::size_t i = 0; i < u.size();) {
+        const auto c = static_cast<unsigned char>(u[i]);
+        std::uint32_t cp = 0;
+        int n = 0;
+        if (c < 0x80) { cp = c; n = 0; }
+        else if ((c & 0xE0) == 0xC0) { cp = c & 0x1Fu; n = 1; }
+        else if ((c & 0xF0) == 0xE0) { cp = c & 0x0Fu; n = 2; }
+        else if ((c & 0xF8) == 0xF0) { cp = c & 0x07u; n = 3; }
+        else throw OvlError("bad UTF-8");
+        if (i + std::size_t(n) >= u.size() && n > 0) throw OvlError("truncated UTF-8");
+        for (int k = 1; k <= n; ++k) {
+            const auto cc = static_cast<unsigned char>(u[i + std::size_t(k)]);
+            if ((cc & 0xC0) != 0x80) throw OvlError("bad UTF-8");
+            cp = cp << 6 | (cc & 0x3Fu);
+        }
+        i += std::size_t(n) + 1;
+        if (cp >= 0x10000) {
+            cp -= 0x10000;
+            out += char16_t(0xD800 + (cp >> 10));
+            out += char16_t(0xDC00 + (cp & 0x3FF));
+        } else {
+            out += char16_t(cp);
+        }
+    }
+    return out;
+}
+
 }  // namespace ovl

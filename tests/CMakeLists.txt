@@ -26,6 +26,11 @@ target_link_libraries(ovl_tests
         Catch2::Catch2WithMain
 )
 
+if(TARGET rct3modkit)
+    target_sources(ovl_tests PRIVATE test_modkit.cpp)
+    target_link_libraries(ovl_tests PRIVATE rct3modkit)
+endif()
+
 target_compile_features(ovl_tests PRIVATE cxx_std_17)
 ovl_set_compile_warnings(ovl_tests)
 

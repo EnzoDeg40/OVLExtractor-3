@@ -24,6 +24,8 @@ Image make(int w, int h);
 // Uncompressed or RLE true-colour TGA (24 / 32 bit), either row order.
 Image read_tga(const std::filesystem::path& p);
 void  write_tga(const Image& im, const std::filesystem::path& p);
+// TGA, PNG, JPEG or BMP, by content (PNG / JPEG / BMP through stb_image).
+Image read_image(const std::filesystem::path& p);
 
 // Square crop (clamped to the image) then box / bilinear resize.
 Image crop(const Image& im, int x, int y, int w, int h);

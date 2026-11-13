@@ -142,7 +142,8 @@ decoder consumed — and (2) decode → encode into a fresh pair → decode → 
 | svd | 6 332 / 6 332 |
 | sid | 5 880 / 5 994 (the 114 others are ride pieces with sounds: not supported yet) |
 
-`ovlwrite scenery-clone` re-encodes a game item under a new name (optionally
+`ovlwrite scenery-clone` (`rct3mod::build_scenery_item`, a `[[scenery]]`
+table in a mod.toml) re-encodes a game item under a new name (optionally
 re-tinting its textures and changing its price). Verified in the game:
 the red **"Dé OVL3 (OVLExtractor-3)"**, cloned from the Vanilla Dice, is listed
 under Scenery → Scenery items at its own price, previews and places in a
@@ -174,10 +175,13 @@ park. What it took — the rules the game enforces:
 ### 6.1 Path types: `ovlwrite path-clone` (verified in the game, 2026-11-13)
 
 ```bash
-sips -s format tga photo.jpg --out photo.tga
 ovlwrite path-clone --assets "$ASSETS" --from Asphalt --name Enzo --title "Enzo" \
-    --image photo.tga --crop 480,950,2640 --icon-crop 560,1200,1750
+    --image photo.jpg --crop 480,950,2640 --icon-crop 560,1200,1750
 ```
+
+(the code is `rct3mod::build_path_type`, `modkit/src/PathType.cpp`; for
+mods, the same thing as a `[[path]]` table of a `mod.toml` and
+`rct3mod install`, docs/MODKIT.md)
 
 writes `Path/Enzo/` (25 pairs): the game then lists **"Enzo : €12"** among
 the path types and lays it in a park. What the game does and what the

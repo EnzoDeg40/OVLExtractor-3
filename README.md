@@ -71,6 +71,12 @@ This project addresses both:
   ground pages (256-colour ftx, DXT3 tex), and as its menu icon. Verified in the game: the path
   « Enzo » is listed with the others and placed in a park
   (`docs/LIBOVLNG_WRITER.md` §6.1).
+- ✅ **Mod kit** (`modkit/`, `rct3mod`): a mod is a folder with a
+  `mod.toml` and pictures; `rct3mod build / install / uninstall / list`
+  turns it into OVLs and installs them into the game's Assets, tracking every
+  file and never overwriting the game's or another mod's. Content types so
+  far: path types and scenery items (the two writers above, now library
+  builders); pictures in TGA, PNG, JPEG or BMP. Guide: `docs/MODKIT.md`.
 - ✅ **Scenery packager** (`--types scenery`: `svd` → `.glb`): one
   self-contained glTF 2.0 per scenery item — most detailed LOD, embedded
   PNG textures, opaque / alpha-mask / blend materials, skeleton and
@@ -128,6 +134,7 @@ ctest --test-dir build --output-on-failure
 | Option | Default | Effect |
 |---|---|---|
 | `OVL_BUILD_CLI` | `ON`  | Build the `ovlextract` CLI binary |
+| `OVL_BUILD_MODKIT` | `ON`  | Build the mod kit (`rct3modkit` library, `rct3mod` and `ovlwrite`); fetches toml++ |
 | `OVL_BUILD_TESTS` | `ON`  | Build Catch2 unit tests |
 | `OVL_BUILD_GUI` | `OFF` | Build the `ovlextract_gui` Qt 6 desktop app — needs Qt 6.5+ (Widgets / OpenGL / OpenGLWidgets). On macOS with Homebrew: `cmake -B build -DOVL_BUILD_GUI=ON -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase)"` |
 | `OVL_ENABLE_SANITIZERS` | `OFF` | ASan + UBSan in Debug builds |
@@ -293,7 +300,13 @@ OVLExtractor-3/
 │   │   ├── ModelExtractor.hpp
 │   │   └── TextureIndex.hpp
 │   └── src/
-├── cli/                        ovlextract — CLI11 single-header
+├── modkit/                     librct3modkit + rct3mod — mods from mod.toml
+│   ├── include/rct3mod/
+│   │   ├── Content.hpp         PathType, SceneryItem and their builders
+│   │   └── Mod.hpp             mod.toml, build, install / uninstall
+│   ├── src/
+│   └── rct3mod.cpp             the modder's CLI (docs/MODKIT.md)
+├── cli/                        ovlextract, ovlwrite, checks — CLI11 single-header
 ├── gui/                        ovlextract_gui — Qt 6 Widgets desktop app
 │   └── src/
 │       ├── main.cpp
@@ -312,8 +325,9 @@ OVLExtractor-3/
 
 The split is intentional: `core/` has **zero** UI / runtime dependencies and
 can be embedded into other projects (Qt, command-line, web), while
-`extractors/` contains the per-resource decoding strategies. The CLI and GUI
-are independent executables linking those two libraries — building one does
+`extractors/` contains the per-resource decoding strategies and `modkit/`
+the way back for modders (content built from game objects, mod manifests,
+install). The CLI and GUI are independent executables linking those libraries — building one does
 not require the other.
 
 ### Running the GUI

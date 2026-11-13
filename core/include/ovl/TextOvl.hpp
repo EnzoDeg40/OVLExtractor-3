@@ -30,4 +30,7 @@ void add_texts(OvlBuilder& b, std::vector<TextEntry> entries);
 // Reads a flat JSON object {"Name": "text", ...} (what `--types text` writes).
 std::vector<TextEntry> read_text_json(const std::string& json);
 
+// UTF-8 to UTF-16 (the game's text encoding); throws on malformed input.
+std::u16string utf16(const std::string& utf8);
+
 }  // namespace ovl
