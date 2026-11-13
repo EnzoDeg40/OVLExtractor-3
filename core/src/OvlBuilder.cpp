@@ -43,6 +43,12 @@ std::uint32_t OvlBuilder::add_loader_type(const ImageLoader& l) {
     return std::uint32_t(loader_types_.size() - 1);
 }
 
+std::optional<std::uint32_t> OvlBuilder::find_loader_type(const std::string& tag) const {
+    for (std::uint32_t i = 0; i < loader_types_.size(); ++i)
+        if (loader_types_[i].tag == tag) return i;
+    return std::nullopt;
+}
+
 void OvlBuilder::add_file_reference(OvlSide side, const std::string& ref) {
     side_[idx(side)].references.push_back(ref);
 }

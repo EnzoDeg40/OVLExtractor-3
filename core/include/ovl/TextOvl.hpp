@@ -7,6 +7,7 @@
 // the first loader carries the {u32 1} extra chunk (and its v5 record), as
 // libOVLng's ovlTXTManager does.
 
+#include "ovl/OvlBuilder.hpp"
 #include "ovl/OvlImage.hpp"
 
 #include <array>
@@ -22,6 +23,9 @@ struct TextEntry {
 
 // Entries are written in name order (std::map order, as libOVLng).
 std::array<OvlImage, 2> build_text_ovl(std::vector<TextEntry> entries, std::uint32_t version = 5);
+
+// Same, into an existing builder (alongside other loaders).
+void add_texts(OvlBuilder& b, std::vector<TextEntry> entries);
 
 // Reads a flat JSON object {"Name": "text", ...} (what `--types text` writes).
 std::vector<TextEntry> read_text_json(const std::string& json);

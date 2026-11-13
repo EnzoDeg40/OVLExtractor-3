@@ -91,3 +91,38 @@ TEST_CASE("Text writer reproduces ContentPack0001 byte for byte (minus debug tai
         REQUIRE(Bytes(game.begin(), game.begin() + std::ptrdiff_t(ours.size())) == ours);
     }
 }
+
+#include "ovl/PairView.hpp"
+#include "ovl/SceneryCodec.hpp"
+
+TEST_CASE("Scenery codecs round-trip the game's Dice (ftx, shs, svd, sid)", "[writer][real]") {
+    auto vis = rct3_asset("Style/Vanilla/Scenery/Dice/Dice.common.ovl");
+    auto sty = rct3_asset("Style/Vanilla/Style.common.ovl");
+    if (!fs::exists(vis) || !fs::exists(sty)) SKIP("RCT3 Assets not installed");
+    auto V = PairView::load(vis);
+    auto S = PairView::load(sty);
+    Ftx f = decode_ftx(V, V.find("Dice:ftx")->data);
+    Shs s = decode_shs(V, V.find("Dicehigh:shs")->data);
+    Svd d = decode_svd(V, V.find("Dice:svd")->data);
+    Sid i = decode_sid(S, S.find("Dice:sid")->data);
+    REQUIRE(f.width() == 128);
+    REQUIRE(s.meshes.size() == 1);
+    REQUIRE(s.meshes[0].ftx == std::optional<std::string>("Dice:ftx"));
+    REQUIRE(d.lods.size() == 4);
+    REQUIRE(i.svds == std::vector<std::string>{"Dice:svd"});
+    REQUIRE(i.icon == std::optional<std::string>("DiceIcon:gsi"));
+    REQUIRE(i.ovl_path == std::optional<std::string>("Style\\Vanilla\\Scenery\\Dice\\Dice"));
+    REQUIRE(i.cost() == 2100);
+
+    OvlBuilder b(5);
+    encode_ftx(b, "Dice", f);
+    encode_shs(b, "Dicehigh", s);
+    encode_svd(b, "Dice", d);
+    encode_sid(b, "Dice", i);
+    auto im = b.build();
+    PairView W(im[0], im[1]);
+    REQUIRE(decode_ftx(W, W.find("Dice:ftx")->data) == f);
+    REQUIRE(decode_shs(W, W.find("Dicehigh:shs")->data) == s);
+    REQUIRE(decode_svd(W, W.find("Dice:svd")->data) == d);
+    REQUIRE(decode_sid(W, W.find("Dice:sid")->data) == i);
+}

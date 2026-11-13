@@ -62,6 +62,7 @@ public:
     // --- file level -------------------------------------------------------
     // Loader types are listed in both files' headers; returns the type number.
     std::uint32_t add_loader_type(const ImageLoader& l);
+    std::optional<std::uint32_t> find_loader_type(const std::string& tag) const;
     void add_file_reference(OvlSide side, const std::string& ref);
 
     // --- data -------------------------------------------------------------

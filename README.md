@@ -60,6 +60,11 @@ This project addresses both:
   (`ovl_roundtrip --rebuild`). First type on top: `ovlwrite text
   strings.json out` builds a `txt` pair from scratch — verified in the game.
   See `docs/LIBOVLNG_WRITER.md`.
+- ✅ **Scenery writer** (`SceneryCodec`: ftx, shs, svd, sid): every game
+  object of these types round-trips through decode → encode → decode
+  (`ovl_scenery_check`); `ovlwrite scenery-clone` turns a game item into a new
+  one (own name, price, tinted textures) that the game lists and places —
+  see `docs/LIBOVLNG_WRITER.md` §6 for the Style rules it needs.
 - ✅ **Scenery packager** (`--types scenery`: `svd` → `.glb`): one
   self-contained glTF 2.0 per scenery item — most detailed LOD, embedded
   PNG textures, opaque / alpha-mask / blend materials, skeleton and

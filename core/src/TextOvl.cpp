@@ -105,15 +105,16 @@ std::vector<TextEntry> read_text_json(const std::string& s) {
     }
 }
 
-std::array<OvlImage, 2> build_text_ovl(std::vector<TextEntry> entries, std::uint32_t version) {
+void add_texts(OvlBuilder& b, std::vector<TextEntry> entries) {
     std::sort(entries.begin(), entries.end(),
               [](const TextEntry& a, const TextEntry& b) { return a.name < b.name; });
     for (std::size_t i = 1; i < entries.size(); ++i)
         if (entries[i].name == entries[i - 1].name)
             throw OvlError("duplicate text symbol: " + entries[i].name);
 
-    OvlBuilder b(version);
-    const auto txt = b.add_loader_type({"FGDK", "Text", 2, "txt"});
+    std::uint32_t txt;
+    if (auto t = b.find_loader_type("txt")) txt = *t;
+    else txt = b.add_loader_type({"FGDK", "Text", 2, "txt"});
 
     // Pack the strings, remembering where each one landed.
     std::vector<Loc> where;
@@ -148,6 +149,11 @@ std::array<OvlImage, 2> build_text_ovl(std::vector<TextEntry> entries, std::uint
         }
         b.add_loader_ref(OvlSide::Common, std::move(spec));
     }
+}
+
+std::array<OvlImage, 2> build_text_ovl(std::vector<TextEntry> entries, std::uint32_t version) {
+    OvlBuilder b(version);
+    add_texts(b, std::move(entries));
     return b.build();
 }
 

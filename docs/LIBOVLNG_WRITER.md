@@ -120,11 +120,62 @@ payloads, which fields are pointers, the string order) and lets the builder
 regenerate the rest, so a match proves the container rules for every type in
 the game — not only `txt`.
 
-## 6. Next steps
+## 6. Scenery writer: ftx, shs, svd, sid (verified in the game, 2026-11-13)
 
-1. Scenery chain in game-load order: `ftx` + `txs` → `shs` → `svd` → `sid`
-   (+ `gsi` icon, `txt` name) — the minimal custom scenery object. Verify in
-   the game, then round-trip: extract → glTF → re-create → load.
-2. Then per need: `bsh`/`ban` (animated scenery), `sta`, `anr`, track types.
-   Use the matching `Manager*.cpp` of libOVLng as the field reference.
+`core/…/SceneryCodec.hpp` decodes and encodes the four types of a scenery
+item. Each struct is kept as raw bytes with its pointer / symbol-ref fields
+zeroed (unknown scalar fields survive untouched), the pointed-to data decoded
+beside it; the encoders place data like the game (ftx struct in common
+chunk 4, planes in common chunk 0; shs / svd / sid structs in unique chunk 2,
+shs geometry in common chunk 4, sid squares in common chunk 2). Struct sizes:
+ftx 36, frame 28; shs 0x38, mesh 40; svd 0x34 / 0x38 Soaked / 0x3C Wild, LOD
+0x48; sid 0xD4 / 0xE4 (structure_version 1) / 0xEC (2), square 20.
+
+`ovl_scenery_check <Assets>` runs, on every object of the game, (1) a
+coverage check — every relocated or symbol-ref slot of the struct is one the
+decoder consumed — and (2) decode → encode into a fresh pair → decode → equal:
+
+| type | ok |
+|---|---|
+| ftx | 1 594 / 1 594 |
+| shs | 16 306 / 16 306 |
+| svd | 6 332 / 6 332 |
+| sid | 5 880 / 5 994 (the 114 others are ride pieces with sounds: not supported yet) |
+
+`ovlwrite scenery-clone` re-encodes a game item under a new name (optionally
+re-tinting its textures and changing its price). Verified in the game:
+the red **"Dé OVL3 (OVLExtractor-3)"**, cloned from the Vanilla Dice, is listed
+under Scenery → Scenery items at its own price, previews and places in a
+park. What it took — the rules the game enforces:
+
+1. **Discovery**: the game walks `Style/` recursively and loads only files
+   named `Style.common.ovl` (`FUN_100a8cb04`). A pair with any other name is
+   never opened.
+2. **StyleIndex**: a Style pair must define the data symbol `StyleIndex:int`
+   (0 Vanilla, 1 Wild West, 2 Spooky, 3 Space, 4 Adventure, 5 Atlantis,
+   6 Island Paradise, 7 Jungle, 8 Prehistoric). Without it the style is not
+   registered and its items are not listed. A file that also defines
+   `StyleInternalName:txt` creates a theme (with `StyleName`, `StyleIcon`,
+   `FenceName`, `MapColourRed/Green/Blue:flt`); without it the items are added
+   to the theme of that index (as `Vanilla/CapeTyphoon` and `Vanilla/Safari`
+   do). The old Importer wrote only `StyleIndex`.
+3. **File references**: a symbol that lives in another OVL (here
+   `DiceIcon:gsi` in `Style/SceneryIcons`) only resolves if the pair lists
+   that file in its references — relative, without extension, **with
+   backslashes** (`..\..\SceneryIcons`). Otherwise the item is silently
+   dropped from the menus.
+4. **Two pairs**: the sid's `ovl_path` names the pair holding the visual
+   (svd, shs, ftx), which the game loads when the item is used. It must not
+   be the Style pair itself: selecting the item then stops the game with
+   `Resource_SymbolSource::operator= Detected cycle`. So: `Style.common.ovl`
+   (sid, name txt, StyleIndex) + `<Name>.common.ovl` (visual), as the game's
+   own files are split.
+
+## 7. Next steps
+
+1. From scratch instead of cloned: ftx from a PNG (palette quantisation),
+   shs from glTF / OBJ (the inverse of `--types scenery`), a minimal sid
+   built from parameters, an icon (gsi + tex/flic/btbl) of our own.
+2. Then per need: `bsh`/`ban` (animated scenery), `sta`, `anr`, track types,
+   sid sounds. Use the matching `Manager*.cpp` of libOVLng as the reference.
 3. v5.1 in the builder if a type needs it (22 game pairs use it).

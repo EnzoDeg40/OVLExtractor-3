@@ -23,3 +23,8 @@ add_executable(ovlwrite src/ovlwrite.cpp)
 target_link_libraries(ovlwrite PRIVATE ovlcore)
 target_compile_features(ovlwrite PRIVATE cxx_std_17)
 ovl_set_compile_warnings(ovlwrite)
+
+add_executable(ovl_scenery_check src/ovl_scenery_check.cpp)
+target_link_libraries(ovl_scenery_check PRIVATE ovlcore)
+target_compile_features(ovl_scenery_check PRIVATE cxx_std_17)
+ovl_set_compile_warnings(ovl_scenery_check)
