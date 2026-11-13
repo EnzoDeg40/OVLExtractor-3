@@ -171,9 +171,49 @@ park. What it took — the rules the game enforces:
    (sid, name txt, StyleIndex) + `<Name>.common.ovl` (visual), as the game's
    own files are split.
 
+### 6.1 Path types: `ovlwrite path-clone` (verified in the game, 2026-11-13)
+
+```bash
+sips -s format tga photo.jpg --out photo.tga
+ovlwrite path-clone --assets "$ASSETS" --from Asphalt --name Enzo --title "Enzo" \
+    --image photo.tga --crop 480,950,2640
+```
+
+writes `Path/Enzo/` (24 pairs): the game then lists **"Enzo : €12"** among
+the path types and lays it in a park. What the game does and what the
+command relies on:
+
+1. **Discovery**: the game lists the folders of `Path\` and, for each folder
+   `X`, loads `Path\X\X_Stub` (ptd + one sid per piece) and
+   `Path\X\X_Texture` (the ground pages) — decompile `FUN_1006108bc` and
+   its callees. No file of the game has to change; a new folder is enough.
+2. **Cloning** (`core/…/PairClone.hpp`, the `ovl_roundtrip --rebuild` code
+   moved to the library, with hooks): every string that contains `<From>`
+   is renamed — symbols the folder defines, piece names in the ptd, the
+   sids' `ovl_path`, tex names, file references (`Asphalt_Scenery` →
+   `Enzo_Scenery`). Symbols the folder does not define stay the game's
+   (`Icon_PathType_Asphalt:gsi` in `Path/PathIcons`, `BasicPath:rcg`, the
+   `SceneryItem_Asphalt_*:txt` piece names, the `pathasphalt` support type),
+   except the path's name `Name_PathType_<From>:txt`, written into the stub
+   as a new `txt` with `--title`.
+3. **Textures** (`core/…/ImageCodec.hpp`):
+   - On flat ground the path is drawn with the two **ground pages**
+     (`texture_a` / `texture_b` of the ptd: `tex` + inline v2 `flic`, DXT3
+     256², 8 mip levels, stored bottom-up). The colours are replaced by the
+     picture (page B tinted), the alpha mask of each level (the tile
+     shapes) is kept.
+   - The 3D pieces (raised paths, slopes, edges) sample the `ftx` sheet
+     `Asphaltsheet1` (256², indexed): its walking surface is u 0–0.5,
+     v 0.5–1 (up-facing vertices of `Asphalt_Flat`), where the picture goes;
+     the quadrant above gets a tinted copy; the sheet is re-quantised to
+     256 colours (median cut).
+4. The four variants of each piece shape all name the same piece, as in
+   the game's paths; the icon is the source path's.
+
 ## 7. Next steps
 
-1. From scratch instead of cloned: ftx from a PNG (palette quantisation),
+1. From scratch instead of cloned: ftx from an image (quantisation is in
+   `ImageCodec` since the path writer),
    shs from glTF / OBJ (the inverse of `--types scenery`), a minimal sid
    built from parameters, an icon (gsi + tex/flic/btbl) of our own.
 2. Then per need: `bsh`/`ban` (animated scenery), `sta`, `anr`, track types,

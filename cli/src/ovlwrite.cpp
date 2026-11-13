@@ -11,7 +11,16 @@
 //       name, into <Assets>/<out>/: <NewName>.common/unique.ovl (visual) and
 //       Style.common/unique.ovl (item, display name, StyleIndex). <out> must be
 //       a folder under Style/. Paths are relative to <Assets>.
+//
+//   ovlwrite path-clone --assets <Assets> --from <PathType> --name <NewName>
+//                       --title <display name> --image <picture.tga>
+//                       [--crop x,y,size] [--overwrite 1] [--preview <dir>]
+//       Copies the path type Path/<From>/ to Path/<NewName>/ under new symbol
+//       names, with the picture on the walking surface (the pieces' ftx sheet)
+//       and on the ground pages (tex), and <title> as its name in the menus.
+#include "ovl/ImageCodec.hpp"
 #include "ovl/OvlImage.hpp"
+#include "ovl/PairClone.hpp"
 #include "ovl/PairView.hpp"
 #include "ovl/SceneryCodec.hpp"
 #include "ovl/TextOvl.hpp"
@@ -186,6 +195,180 @@ int clone_cmd(int argc, char** argv) {
     return 0;
 }
 
+// ---- path-clone ---------------------------------------------------------------
+// A new path type from a game one: every pair of Path/<From>/ is re-encoded
+// under the new name (clone_pair renames each symbol, string and file
+// reference that contains <From>), and the textures are replaced by an image.
+// The game finds path types by walking Path\* and loading Path\X\X_Stub
+// (decompile FUN_1006108bc), then Path\X\X_Texture for the ground pages
+// (FUN_1006... "_Texture"), so a new folder is all it takes.
+
+std::string replace_all(std::string s, const std::string& a, const std::string& b) {
+    for (std::size_t p = 0; (p = s.find(a, p)) != std::string::npos; p += b.size()) s.replace(p, a.size(), b);
+    return s;
+}
+
+img::Image tinted(const img::Image& im, float r, float g, float b) {
+    img::Image o = im;
+    for (std::size_t i = 0; i < o.px.size(); i += 4) {
+        const float l = (0.299f * o.px[i] + 0.587f * o.px[i + 1] + 0.114f * o.px[i + 2]) / 255.f;
+        o.px[i] = std::uint8_t(std::min(255.f, l * r));
+        o.px[i + 1] = std::uint8_t(std::min(255.f, l * g));
+        o.px[i + 2] = std::uint8_t(std::min(255.f, l * b));
+    }
+    return o;
+}
+
+img::Image flipped_v(const img::Image& im) {
+    img::Image o = img::make(im.w, im.h);
+    for (int y = 0; y < im.h; ++y) std::copy_n(im.at(0, im.h - 1 - y), std::size_t(im.w) * 4, o.at(0, y));
+    return o;
+}
+
+int path_clone_cmd(int argc, char** argv) {
+    std::map<std::string, std::string> opt;
+    for (int i = 2; i + 1 < argc; i += 2) opt[argv[i]] = argv[i + 1];
+    for (auto k : {"--assets", "--from", "--name", "--title", "--image"})
+        if (!opt.count(k)) throw std::runtime_error(std::string("missing ") + k);
+    const fs::path assets = opt["--assets"];
+    const std::string from = opt["--from"], nn = opt["--name"];
+    const fs::path src = assets / "Path" / from, dst = assets / "Path" / nn;
+    if (!fs::is_directory(src)) throw std::runtime_error("no path type folder " + src.string());
+    if (fs::exists(dst) && !opt.count("--overwrite"))
+        throw std::runtime_error(dst.string() + " exists (pass --overwrite 1 to replace it)");
+
+    // The photo: a square crop (--crop x,y,size in source pixels; default the
+    // centred largest square).
+    img::Image photo = img::read_tga(opt["--image"]);
+    {
+        int cx = 0, cy = 0, cs = std::min(photo.w, photo.h);
+        cx = (photo.w - cs) / 2;
+        cy = (photo.h - cs) / 2;
+        if (opt.count("--crop") && std::sscanf(opt["--crop"].c_str(), "%d,%d,%d", &cx, &cy, &cs) != 3)
+            throw std::runtime_error("--crop x,y,size");
+        photo = img::crop(photo, cx, cy, cs, cs);
+    }
+
+    // Pairs of the folder and the symbols they define.
+    std::vector<fs::path> pairs;
+    for (auto& e : fs::directory_iterator(src)) {
+        auto n = e.path().filename().string();
+        const std::string suf = ".common.ovl";
+        if (n.size() > suf.size() && n.compare(n.size() - suf.size(), suf.size(), suf) == 0)
+            pairs.push_back(e.path());
+    }
+    std::sort(pairs.begin(), pairs.end());
+    std::set<std::string> defined;
+    for (auto& p : pairs) {
+        const PairView pv = PairView::load(p);  // objects() refers into it
+        for (auto& o : pv.objects())
+            if (!o.name.empty()) defined.insert(o.name);
+    }
+
+    const std::string type_name = "Name_PathType_" + from + ":txt";
+    auto rename = [&](const std::string& s) {
+        if (s.find(':') != std::string::npos) {
+            // Symbols: ours when the folder defines them (or the path type's
+            // name, which we write); the game's otherwise (icons, research
+            // categories, piece names in the text files, shared textures).
+            if (defined.count(s) || s == type_name) return replace_all(s, from, nn);
+            return s;
+        }
+        return replace_all(s, from, nn);  // piece names, ovl paths, tex names
+    };
+
+    fs::create_directories(dst);
+    int written = 0;
+    for (auto& p : pairs) {
+        const std::string stem = p.filename().string().substr(0, p.filename().string().size() - 11);
+        const fs::path up = p.parent_path() / (stem + ".unique.ovl");
+        std::array<OvlImage, 2> im{read_image_file(p), read_image_file(up)};
+        PairView v(im[0], im[1]);
+        const std::string out_stem = replace_all(stem, from, nn);
+
+        // ftx: the top surface of the pieces samples u 0-0.5, v 0.5-1 of the
+        // sheet (Asphalt_Flat's up-facing vertices): the photo goes there, a
+        // tinted copy in the quadrant above it; the rest (kerbs, wood, metal)
+        // stays.
+        struct Patch { std::uint32_t addr; Bytes data; };
+        std::vector<Patch> patches;
+        for (auto& o : v.objects()) {
+            if (o.tag != "ftx") continue;
+            Ftx f = decode_ftx(v, o.data);
+            if (f.frames.size() != 1) continue;
+            const int w = int(f.width()), h = int(f.height());
+            const auto& fr = f.frames[0];
+            img::Image sheet = img::make(w, h);
+            for (int i = 0; i < w * h; ++i) {
+                const std::uint8_t* c = &fr.palette[4 * std::size_t(fr.texture[std::size_t(i)])];
+                std::uint8_t* d = &sheet.px[4 * std::size_t(i)];
+                d[0] = c[2]; d[1] = c[1]; d[2] = c[0]; d[3] = 255;
+            }
+            img::paste(sheet, img::resize(photo, w / 2, h / 2), 0, h / 2);
+            img::paste(sheet, tinted(img::resize(photo, w / 2, h / 2), 255, 120, 230), 0, 0);
+            auto q = img::quantise(sheet);
+            const std::uint32_t frame = *v.ptr(o.data + 0x20);
+            patches.push_back({*v.ptr(frame + 0x10), q.palette_bgra});
+            patches.push_back({*v.ptr(frame + 0x14), q.indices});
+            if (opt.count("--preview")) img::write_tga(sheet, fs::path(opt["--preview"]) / (rename(base(o.name)) + ".tga"));
+        }
+
+        CloneHooks h;
+        h.rename = rename;
+        h.rename_reference = [&](const std::string& r) { return replace_all(r, from, nn); };
+        h.patch_block = [&](std::uint32_t start, Bytes& data) {
+            for (auto& pt : patches)
+                if (pt.addr >= start && pt.addr + pt.data.size() <= start + data.size())
+                    std::copy(pt.data.begin(), pt.data.end(), data.begin() + std::ptrdiff_t(pt.addr - start));
+        };
+        // tex ground pages (inline v2 flics): new colours, same alpha mask, every
+        // mip level; pages are stored bottom-up.
+        int page = 0;
+        h.patch_extra = [&](OvlSide, std::uint32_t, std::vector<Bytes>& chunks) {
+            if (chunks.size() != 1 || chunks[0].size() < 32) return;
+            Bytes& e = chunks[0];
+            auto r32 = [&](std::size_t i) { return std::uint32_t(e[i] | e[i + 1] << 8 | e[i + 2] << 16 | std::uint32_t(e[i + 3]) << 24); };
+            const std::uint32_t fmt = r32(0), mips = r32(12);
+            if (fmt != 0x13 || r32(4) == 0 || mips == 0 || mips > 16) return;
+            const img::Image src_page = page++ % 2 ? tinted(photo, 200, 255, 140) : photo;
+            std::size_t q = 16;
+            for (std::uint32_t m = 0; m < mips && q + 16 <= e.size(); ++m) {
+                const int w = int(r32(q)), hh = int(r32(q + 4));
+                const std::size_t n = std::size_t(r32(q + 8)) * r32(q + 12);
+                if (w > 0 && hh > 0 && q + 16 + n <= e.size()) {
+                    img::Image old = img::decode_dxt3(&e[q + 16], w, hh);
+                    img::Image col = flipped_v(img::resize(src_page, w, hh));
+                    for (std::size_t i = 3; i < col.px.size(); i += 4) col.px[i] = old.px[i];
+                    auto enc = img::encode_dxt3(col);
+                    if (enc.size() == n) std::copy(enc.begin(), enc.end(), e.begin() + std::ptrdiff_t(q + 16));
+                }
+                q += 16 + n;
+            }
+        };
+
+        OvlBuilder b(5);
+        try {
+            b = clone_pair(im, h);
+        } catch (const std::exception& ex) {
+            // A pair with no data at all (Path/<From>/<From>: header only).
+            if (v.objects().empty()) {
+                fs::copy_file(p, dst / (out_stem + ".common.ovl"), fs::copy_options::overwrite_existing);
+                fs::copy_file(up, dst / (out_stem + ".unique.ovl"), fs::copy_options::overwrite_existing);
+                ++written;
+                continue;
+            }
+            throw std::runtime_error(p.filename().string() + ": " + ex.what());
+        }
+        if (v.find(from + ":ptd")) add_texts(b, {{"Name_PathType_" + nn, utf16(opt["--title"])}});
+        auto out = b.build();
+        write_image_file(out[0], dst / (out_stem + ".common.ovl"));
+        write_image_file(out[1], dst / (out_stem + ".unique.ovl"));
+        ++written;
+    }
+    std::cout << written << " pairs -> " << dst.string() << "\n";
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -193,7 +376,8 @@ int main(int argc, char** argv) {
         std::string cmd = argc > 1 ? argv[1] : "";
         if (cmd == "text") return text_cmd(argc, argv);
         if (cmd == "scenery-clone") return clone_cmd(argc, argv);
-        std::cerr << "usage: ovlwrite text ... | scenery-clone ...  (see the header of ovlwrite.cpp)\n";
+        if (cmd == "path-clone") return path_clone_cmd(argc, argv);
+        std::cerr << "usage: ovlwrite text ... | scenery-clone ... | path-clone ...  (see the header of ovlwrite.cpp)\n";
         return 2;
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << "\n";

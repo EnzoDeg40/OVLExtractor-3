@@ -2027,6 +2027,12 @@ Same record as libOVLng `Research {ResearchCategory*, unk1, unk2}` — other tag
 | ext +0x158 | char*[16][4] | flat_fc … slope_mid_tc | closed-end (tunnel) variants |
 | ext +0x258 | char* | paving | |
 
+How the game finds them: it lists the folders of `Path\` and loads `Path\X\X_Stub` (the ptd and
+the 19 piece sids) then `Path\X\X_Texture` (the two ground `tex` named by `texture_a` / `texture_b`,
+which draw the path on flat ground; the piece sids name their visual pairs by `ovl_path`)
+(`FUN_1006108bc`). A new folder is a new path type: `ovlwrite path-clone` (LIBOVLNG_WRITER.md §6.1),
+verified in the game.
+
 Evidence: path.h; loader-structs.md "PathType (ptd) & QueueType (qtd) — VERIFIED"; Mac path-type resolver
 (`"Missing scenery pieces for path type "`, decompiled.c ~1067640): 19×4 pieces from word 6, 16×4 from
 word 0x56 and paving at word 0x96 only when `flags >= 0x01000000`, research at +0x148/+0x14C.

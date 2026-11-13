@@ -6,6 +6,8 @@ add_library(ovlcore STATIC
     src/TextOvl.cpp
     src/PairView.cpp
     src/SceneryCodec.cpp
+    src/PairClone.cpp
+    src/ImageCodec.cpp
 )
 
 target_include_directories(ovlcore

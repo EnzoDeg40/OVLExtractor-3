@@ -65,6 +65,12 @@ This project addresses both:
   (`ovl_scenery_check`); `ovlwrite scenery-clone` turns a game item into a new
   one (own name, price, tinted textures) that the game lists and places —
   see `docs/LIBOVLNG_WRITER.md` §6 for the Style rules it needs.
+- ✅ **Path writer** (`ovlwrite path-clone`): a new path type from a game
+  one and a picture (TGA) — every pair of `Path/<From>/` re-encoded under new
+  names by `clone_pair`, the picture on the walking surface and on the
+  ground pages (256-colour ftx, DXT3 tex). Verified in the game: the path
+  « Enzo » is listed with the others and placed in a park
+  (`docs/LIBOVLNG_WRITER.md` §6.1).
 - ✅ **Scenery packager** (`--types scenery`: `svd` → `.glb`): one
   self-contained glTF 2.0 per scenery item — most detailed LOD, embedded
   PNG textures, opaque / alpha-mask / blend materials, skeleton and
