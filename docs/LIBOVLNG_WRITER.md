@@ -176,10 +176,10 @@ park. What it took — the rules the game enforces:
 ```bash
 sips -s format tga photo.jpg --out photo.tga
 ovlwrite path-clone --assets "$ASSETS" --from Asphalt --name Enzo --title "Enzo" \
-    --image photo.tga --crop 480,950,2640
+    --image photo.tga --crop 480,950,2640 --icon-crop 560,1200,1750
 ```
 
-writes `Path/Enzo/` (24 pairs): the game then lists **"Enzo : €12"** among
+writes `Path/Enzo/` (25 pairs): the game then lists **"Enzo : €12"** among
 the path types and lays it in a park. What the game does and what the
 command relies on:
 
@@ -200,15 +200,23 @@ command relies on:
    - On flat ground the path is drawn with the two **ground pages**
      (`texture_a` / `texture_b` of the ptd: `tex` + inline v2 `flic`, DXT3
      256², 8 mip levels, stored bottom-up). The colours are replaced by the
-     picture (page B tinted), the alpha mask of each level (the tile
+     picture (both pages), the alpha mask of each level (the tile
      shapes) is kept.
    - The 3D pieces (raised paths, slopes, edges) sample the `ftx` sheet
      `Asphaltsheet1` (256², indexed): its walking surface is u 0–0.5,
-     v 0.5–1 (up-facing vertices of `Asphalt_Flat`), where the picture goes;
-     the quadrant above gets a tinted copy; the sheet is re-quantised to
+     v 0.5–1 (up-facing vertices of `Asphalt_Flat`), where the picture goes,
+     and again in the quadrant above (the sides); the sheet is re-quantised to
      256 colours (median cut).
-4. The four variants of each piece shape all name the same piece, as in
-   the game's paths; the icon is the source path's.
+4. **Icon**: every path type's menu icon is a 40 px disc in one shared page,
+   `Path/PathIcons` (`PathIcons:tex`, a btbl page in DXT3 256², 9 mip
+   levels; one `gsi` rect per type). The command clones that pair as
+   `Path/<Name>/<Name>Icons` with every symbol renamed (the source's icon
+   becomes `Icon_PathType_<Name>:gsi`, the nine others `<Name>Icon_*`),
+   paints the picture (`--icon-crop`) into that rect keeping its round
+   alpha, rebuilds the mip chain, and replaces the stub's file reference
+   `../PathIcons` with `<Name>Icons`.
+5. The four variants of each piece shape all name the same piece, as in
+   the game's paths.
 
 ## 7. Next steps
 

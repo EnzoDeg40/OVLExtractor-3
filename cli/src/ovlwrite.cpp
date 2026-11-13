@@ -14,10 +14,12 @@
 //
 //   ovlwrite path-clone --assets <Assets> --from <PathType> --name <NewName>
 //                       --title <display name> --image <picture.tga>
-//                       [--crop x,y,size] [--overwrite 1] [--preview <dir>]
+//                       [--crop x,y,size] [--icon-crop x,y,size]
+//                       [--overwrite 1] [--preview <dir>]
 //       Copies the path type Path/<From>/ to Path/<NewName>/ under new symbol
 //       names, with the picture on the walking surface (the pieces' ftx sheet)
-//       and on the ground pages (tex), and <title> as its name in the menus.
+//       and on the ground pages (tex), <title> as its name in the menus and
+//       the picture (--icon-crop, default --crop) as its icon.
 #include "ovl/ImageCodec.hpp"
 #include "ovl/OvlImage.hpp"
 #include "ovl/PairClone.hpp"
@@ -208,17 +210,6 @@ std::string replace_all(std::string s, const std::string& a, const std::string& 
     return s;
 }
 
-img::Image tinted(const img::Image& im, float r, float g, float b) {
-    img::Image o = im;
-    for (std::size_t i = 0; i < o.px.size(); i += 4) {
-        const float l = (0.299f * o.px[i] + 0.587f * o.px[i + 1] + 0.114f * o.px[i + 2]) / 255.f;
-        o.px[i] = std::uint8_t(std::min(255.f, l * r));
-        o.px[i + 1] = std::uint8_t(std::min(255.f, l * g));
-        o.px[i + 2] = std::uint8_t(std::min(255.f, l * b));
-    }
-    return o;
-}
-
 img::Image flipped_v(const img::Image& im) {
     img::Image o = img::make(im.w, im.h);
     for (int y = 0; y < im.h; ++y) std::copy_n(im.at(0, im.h - 1 - y), std::size_t(im.w) * 4, o.at(0, y));
@@ -266,12 +257,13 @@ int path_clone_cmd(int argc, char** argv) {
     }
 
     const std::string type_name = "Name_PathType_" + from + ":txt";
+    const std::string icon_name = "Icon_PathType_" + from + ":gsi";
     auto rename = [&](const std::string& s) {
         if (s.find(':') != std::string::npos) {
             // Symbols: ours when the folder defines them (or the path type's
             // name, which we write); the game's otherwise (icons, research
             // categories, piece names in the text files, shared textures).
-            if (defined.count(s) || s == type_name) return replace_all(s, from, nn);
+            if (defined.count(s) || s == type_name || s == icon_name) return replace_all(s, from, nn);
             return s;
         }
         return replace_all(s, from, nn);  // piece names, ovl paths, tex names
@@ -287,9 +279,8 @@ int path_clone_cmd(int argc, char** argv) {
         const std::string out_stem = replace_all(stem, from, nn);
 
         // ftx: the top surface of the pieces samples u 0-0.5, v 0.5-1 of the
-        // sheet (Asphalt_Flat's up-facing vertices): the photo goes there, a
-        // tinted copy in the quadrant above it; the rest (kerbs, wood, metal)
-        // stays.
+        // sheet (Asphalt_Flat's up-facing vertices): the photo goes there and
+        // in the quadrant above it (sides); the rest (kerbs, wood, metal) stays.
         struct Patch { std::uint32_t addr; Bytes data; };
         std::vector<Patch> patches;
         for (auto& o : v.objects()) {
@@ -305,7 +296,7 @@ int path_clone_cmd(int argc, char** argv) {
                 d[0] = c[2]; d[1] = c[1]; d[2] = c[0]; d[3] = 255;
             }
             img::paste(sheet, img::resize(photo, w / 2, h / 2), 0, h / 2);
-            img::paste(sheet, tinted(img::resize(photo, w / 2, h / 2), 255, 120, 230), 0, 0);
+            img::paste(sheet, img::resize(photo, w / 2, h / 2), 0, 0);
             auto q = img::quantise(sheet);
             const std::uint32_t frame = *v.ptr(o.data + 0x20);
             patches.push_back({*v.ptr(frame + 0x10), q.palette_bgra});
@@ -315,7 +306,11 @@ int path_clone_cmd(int argc, char** argv) {
 
         CloneHooks h;
         h.rename = rename;
-        h.rename_reference = [&](const std::string& r) { return replace_all(r, from, nn); };
+        h.rename_reference = [&](const std::string& r) {
+            // The stub's icon now comes from our own icon pair, beside it.
+            if (r == "../PathIcons" || r == "..\\PathIcons") return nn + "Icons";
+            return replace_all(r, from, nn);
+        };
         h.patch_block = [&](std::uint32_t start, Bytes& data) {
             for (auto& pt : patches)
                 if (pt.addr >= start && pt.addr + pt.data.size() <= start + data.size())
@@ -323,14 +318,13 @@ int path_clone_cmd(int argc, char** argv) {
         };
         // tex ground pages (inline v2 flics): new colours, same alpha mask, every
         // mip level; pages are stored bottom-up.
-        int page = 0;
         h.patch_extra = [&](OvlSide, std::uint32_t, std::vector<Bytes>& chunks) {
             if (chunks.size() != 1 || chunks[0].size() < 32) return;
             Bytes& e = chunks[0];
             auto r32 = [&](std::size_t i) { return std::uint32_t(e[i] | e[i + 1] << 8 | e[i + 2] << 16 | std::uint32_t(e[i + 3]) << 24); };
             const std::uint32_t fmt = r32(0), mips = r32(12);
             if (fmt != 0x13 || r32(4) == 0 || mips == 0 || mips > 16) return;
-            const img::Image src_page = page++ % 2 ? tinted(photo, 200, 255, 140) : photo;
+            const img::Image& src_page = photo;
             std::size_t q = 16;
             for (std::uint32_t m = 0; m < mips && q + 16 <= e.size(); ++m) {
                 const int w = int(r32(q)), hh = int(r32(q + 4));
@@ -363,6 +357,64 @@ int path_clone_cmd(int argc, char** argv) {
         auto out = b.build();
         write_image_file(out[0], dst / (out_stem + ".common.ovl"));
         write_image_file(out[1], dst / (out_stem + ".unique.ovl"));
+        ++written;
+    }
+    // The menu icon: Path/PathIcons holds every path type's icon (40 px discs
+    // in one 256² DXT3 bitmap-table page, PathIcons:tex, one gsi rect each).
+    // Clone it beside the stub as <Name>Icons with every symbol renamed (the
+    // source's icon becomes Icon_PathType_<Name>, the others <Name>Icon_*
+    // so nothing collides), and paint the face into that icon's rect,
+    // keeping its round alpha.
+    {
+        const fs::path ip = assets / "Path" / "PathIcons.common.ovl";
+        std::array<OvlImage, 2> im{read_image_file(ip), read_image_file(assets / "Path" / "PathIcons.unique.ovl")};
+        PairView v(im[0], im[1]);
+        const auto* g = v.find(icon_name);
+        if (!g) throw std::runtime_error("no " + icon_name + " in Path/PathIcons");
+        const std::uint32_t rect = *v.ptr(g->data + 8);
+        const int l = int(v.u32(rect)), t = int(v.u32(rect + 4)), r = int(v.u32(rect + 8)), bo = int(v.u32(rect + 12));
+        img::Image face = img::read_tga(opt["--image"]);
+        {
+            int cx = 0, cy = 0, cs = std::min(face.w, face.h);
+            cx = (face.w - cs) / 2;
+            cy = (face.h - cs) / 2;
+            const std::string c = opt.count("--icon-crop") ? opt["--icon-crop"] : opt.count("--crop") ? opt["--crop"] : "";
+            if (!c.empty() && std::sscanf(c.c_str(), "%d,%d,%d", &cx, &cy, &cs) != 3)
+                throw std::runtime_error("--icon-crop x,y,size");
+            face = img::resize(img::crop(face, cx, cy, cs, cs), r - l, bo - t);
+        }
+        CloneHooks h;
+        h.rename = [&](const std::string& s) {
+            if (s == icon_name) return "Icon_PathType_" + nn + ":gsi";
+            if (s.rfind("Icon_PathType_", 0) == 0) return nn + "Icon_" + s.substr(14);
+            if (s == "PathIcons:tex") return nn + "Icons:tex";
+            return s;
+        };
+        h.patch_extra = [&](OvlSide, std::uint32_t, std::vector<Bytes>& chunks) {
+            // btbl: {0, 0, FlicHeader{format, w, h, mips}} + the mip chain.
+            if (chunks.size() != 2 || chunks[0].size() != 24) return;
+            auto r32 = [&](const Bytes& e, std::size_t i) { return std::uint32_t(e[i] | e[i + 1] << 8 | e[i + 2] << 16 | std::uint32_t(e[i + 3]) << 24); };
+            const int w = int(r32(chunks[0], 12)), hh = int(r32(chunks[0], 16)), mips = int(r32(chunks[0], 20));
+            if (r32(chunks[0], 8) != 0x13) throw std::runtime_error("PathIcons page is not DXT3");
+            Bytes& px = chunks[1];
+            img::Image page = flipped_v(img::decode_dxt3(px.data(), w, hh));  // upright
+            for (int y = 0; y < face.h; ++y)
+                for (int x = 0; x < face.w; ++x)
+                    std::copy_n(face.at(x, y), 3, page.at(l + x, t + y));
+            std::size_t o = 0;
+            img::Image lvl = page;
+            for (int m = 0; m < mips; ++m) {
+                auto enc = img::encode_dxt3(flipped_v(lvl));
+                if (o + enc.size() > px.size()) break;
+                std::copy(enc.begin(), enc.end(), px.begin() + std::ptrdiff_t(o));
+                o += enc.size();
+                lvl = img::half(lvl);
+            }
+            if (opt.count("--preview")) img::write_tga(page, fs::path(opt["--preview"]) / (nn + "Icons.tga"));
+        };
+        auto out = clone_pair(im, h).build();
+        write_image_file(out[0], dst / (nn + "Icons.common.ovl"));
+        write_image_file(out[1], dst / (nn + "Icons.unique.ovl"));
         ++written;
     }
     std::cout << written << " pairs -> " << dst.string() << "\n";
