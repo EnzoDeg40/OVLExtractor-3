@@ -112,7 +112,8 @@ Output per linked file:
 
 Recolorable textures (`recolorable` ≠ 0) come out in their blue / magenta /
 yellow remap-mask colours — see format docs §3.8. Animated textures
-(`frame_count` > 1) are decoded at frame 0.
+(`frame_count` > 1) write every frame: frame 0 as `<symbol>.tga`, frame k as
+`<symbol>_fNN.tga`, with `fps` and `frame_sequence` in the `.json` (§3.9).
 
 Full-install check: 1594 / 1594 ftx decode (≈ 15 s, 618 MB of output).
 
@@ -428,8 +429,9 @@ footprints.
 
 For the `Characters/` OVLs (format doc §20). Per pair it writes
 `<ovl>.people.json` (parts with their texture, mesh and palette slot; part
-groups with their three clothes and three swimsuit LODs; heads with their
-matrices and 12 `ssk`; every `mms` with its animation list; every `ssk` with
+groups with their person type / sub type / slot, selection weight, optional
+part chances and three clothes and three swimsuit LODs; heads with their hat
+and face attachment matrices and 12 `ssk`; every `mms` with its animation list; every `ssk` with
 its bone runs) and one `.glb` per `mms` (pose `IdleStandard` keyframe 0) and
 per `ssk` (bone space). The part's `tex` is embedded when it is in the same
 pair, upright, its UVs on palette cell 0 (top-left). A whole-folder run
@@ -437,6 +439,31 @@ over `Characters/` (598 pairs) writes 1 799 meshes with no error.
 
 Assembling one person means reading several pairs: the `ppg` (`_Stub`) names
 the `prt` (`_Main`), whose skin parts use the `_Skin` texture of the head.
+
+### 5.6 DataExtractor — `--types data` → `<ovl>.data.json`
+
+Every data-only loader type with a declarative layout (format doc §21): path,
+queue and pool types, changing rooms, fences, shelters, viewing galleries,
+carried items and condiments, research categories, particle skins, wild
+animal items and species, entertainers, people animations (`san` / `sal`),
+wild-animal clips, clip sets and skinned models (`modelanim`, `wad`, `mdl`),
+scenery items, stalls, special attractions, people parts / groups / heads /
+skins and manifold meshes — 27 tags. One `<ovl>.data.json` per pair holds
+`{"<tag>": [ {"symbol": …, every field…} ]}`, pointers followed, symbol
+references as `"name:tag"`, keyframes and vertices as number arrays.
+
+```bash
+./build/cli/ovlextract --types data -o out "$ASSETS"        # 719 files, 215 MB, ≈13 s
+./build/cli/ovl_layout_check "$ASSETS"                     # every object of the 27 tags: 0 issues
+./build/cli/ovl_layout_check "$ASSETS" pty --dump pty      # one object's JSON
+./build/cli/ovl_survey "$ASSETS" was --words 32            # per-word statistics to lay out a struct
+```
+
+A layout is a list of fields (`f(off, name, kind)`, `zero()`, `raw()`,
+`sub()` for inline / pointed structs and arrays, `custom()` for anything
+else) registered per group in `extractors/src/DataExtractor_<Group>.cpp`.
+`ovl_layout_check` proves it against the game: all bytes claimed, every
+pointer and symbol-reference slot consumed, zero fields zero (§21.1).
 
 ## 6. Cross-OVL texture resolution
 

@@ -9,6 +9,7 @@
 #include "ovl/extract/FontExtractor.hpp"
 #include "ovl/extract/TerrainExtractor.hpp"
 #include "ovl/extract/PeopleExtractor.hpp"
+#include "ovl/extract/DataExtractor.hpp"
 #include "ovl/extract/TextExtractor.hpp"
 #include "ovl/extract/TextureExtractor.hpp"
 #include "ovl/extract/TextureIndex.hpp"
@@ -221,6 +222,7 @@ struct Actions {
     bool text = false;
     bool terrain = false;
     bool people = false;
+    bool data = false;
     bool texture = false;
     bool atlas = false;
     bool model = false;
@@ -330,6 +332,11 @@ int process_one(const std::filesystem::path& input,
     if (a.people) {
         rc |= do_extract_simple<ovl::PeopleExtractor>(parser, out_dir, a.overwrite, a.verbose,
                                                       "people", "file(s)");
+        did_anything = true;
+    }
+    if (a.data) {
+        rc |= do_extract_simple<ovl::DataExtractor>(parser, out_dir, a.overwrite, a.verbose,
+                                                    "data", "json(s)");
         did_anything = true;
     }
     if (a.atlas) {
@@ -530,15 +537,18 @@ int main(int argc, char** argv) {
                  "model's output directory so .mtl map_Kd paths resolve. "
                  "Requires --assets-root.");
     app.add_option("-t,--types", types,
-                   "Resource types to extract: sound, texture, atlas, font, text, terrain, people, model, scenery, track, dump, all (repeatable). "
+                   "Resource types to extract: sound, texture, atlas, font, text, terrain, people, data, model, scenery, track, dump, all (repeatable). "
                    "`scenery` packages each scenery item (svd: stalls, shops, decorations…) "
                    "as a self-contained .glb — mesh, textures, materials, skeleton, animations. "
                    "`track` exports track sections (tks), tracked rides (trr) and splines as JSON. "
                    "`font` writes each fct as .font.json + its glyph page; `text` writes every txt string of the pair to one .txt.json; "
                    "`terrain` writes the pair's ground and cliff types (ter) to one .terrain.json; "
                    "`people` writes guest/staff parts, part groups and heads (prt, ppg, phd) to one .people.json "
-                   "plus a .glb per mms / ssk mesh.")
-        ->check(CLI::IsMember({"sound", "texture", "atlas", "font", "text", "terrain", "people", "model", "scenery", "track", "dump", "all"}));
+                   "plus a .glb per mms / ssk mesh; "
+                   "`data` writes every data-only type with a declarative layout (path / queue / pool types, "
+                   "carried items, research categories, particles, animals, animations, scenery items, stalls, "
+                   "people parts…) field by field to one .data.json.")
+        ->check(CLI::IsMember({"sound", "texture", "atlas", "font", "text", "terrain", "people", "data", "model", "scenery", "track", "dump", "all"}));
     app.add_flag("--all-lods", a.all_lods,
                  "With --types scenery, also write a .glb for every lower level of detail "
                  "(the most detailed one is always written).");
@@ -565,6 +575,7 @@ int main(int argc, char** argv) {
     a.text = wants("text");
     a.terrain = wants("terrain");
     a.people = wants("people");
+    a.data = wants("data");
     a.texture = wants("texture");
     a.atlas = wants("atlas");
     a.model = wants("model");

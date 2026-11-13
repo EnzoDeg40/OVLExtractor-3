@@ -1,6 +1,13 @@
 add_library(ovlextractors STATIC
     src/AtlasExtractor.cpp
+    src/DataExtractor.cpp
+    src/DataExtractor_Anims.cpp
+    src/DataExtractor_Items.cpp
+    src/DataExtractor_Paths.cpp
+    src/DataExtractor_People.cpp
+    src/DataExtractor_Scenery.cpp
     src/DumpExtractor.cpp
+    src/Layout.cpp
     src/FontExtractor.cpp
     src/GltfWriter.cpp
     src/ModelExtractor.cpp

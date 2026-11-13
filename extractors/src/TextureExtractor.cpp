@@ -51,7 +51,26 @@ struct FtxHeader {
     std::uint32_t palette_ptr = 0;
     std::uint32_t pixel_internal_offset = 0;   // index plane
     std::uint32_t alpha_ptr = 0;
+    std::uint32_t fps = 0;
+    std::vector<std::uint32_t> sequence;  // offsets[]: frame index per step
 };
+
+// Header of frame k of an animated flexitexture (FlexiTextureStruct k).
+bool read_ftx_frame(const OvlParser& parser, const FtxHeader& base, std::uint32_t k, FtxHeader& h) {
+    h = base;
+    auto fp = parser.offset_to_position(base.frames_ptr + 28 * k);
+    if (!fp.found) return false;
+    BinaryReader fr(parser.side(fp.currentOVL).ovlname);
+    fr.seek(fp.position);
+    fr.read_u32();  // scale
+    h.width = fr.read_u32();
+    h.height = fr.read_u32();
+    h.recolorable = fr.read_u32();
+    h.palette_ptr = fr.read_u32();
+    h.pixel_internal_offset = fr.read_u32();
+    h.alpha_ptr = fr.read_u32();
+    return true;
+}
 
 bool read_ftx_header(const OvlParser& parser, std::uint32_t datapointer, FtxHeader& h) {
     auto pr = parser.offset_to_position(datapointer);
@@ -61,12 +80,20 @@ bool read_ftx_header(const OvlParser& parser, std::uint32_t datapointer, FtxHead
     h.format      = r.read_u32();
     h.width       = r.read_u32();
     h.height      = r.read_u32();
-    r.read_u32();                       // fps
+    h.fps         = r.read_u32();
     h.recolorable = r.read_u32();
-    r.read_u32();                       // offset_count
-    r.read_u32();                       // offsets ptr
+    const std::uint32_t offset_count = r.read_u32();
+    const std::uint32_t offsets_ptr  = r.read_u32();
     h.frame_count = r.read_u32();
     h.frames_ptr  = r.read_u32();
+    if (offset_count > 0 && offset_count < 4096) {
+        auto op = parser.offset_to_position(offsets_ptr);
+        if (op.found) {
+            BinaryReader orr(parser.side(op.currentOVL).ovlname);
+            orr.seek(op.position);
+            for (std::uint32_t k = 0; k < offset_count; ++k) h.sequence.push_back(orr.read_u32());
+        }
+    }
     auto fp = parser.offset_to_position(h.frames_ptr);
     if (!fp.found) return false;
     BinaryReader fr(parser.side(fp.currentOVL).ovlname);
@@ -101,6 +128,10 @@ void write_json_sidecar(const std::filesystem::path& path,
       << "  \"height\": " << h.height << ",\n"
       << "  \"recolorable\": " << h.recolorable << ",\n"
       << "  \"frame_count\": " << h.frame_count << ",\n"
+      << "  \"fps\": " << h.fps << ",\n"
+      << "  \"frame_sequence\": [";
+    for (std::size_t k = 0; k < h.sequence.size(); ++k) o << (k ? ", " : "") << h.sequence[k];
+    o << "],\n"
       << "  \"has_alpha_plane\": " << (h.alpha_ptr ? "true" : "false") << ",\n"
       << "  \"pixel_internal_offset\": " << h.pixel_internal_offset << ",\n"
       << "  \"raw_block_size\": " << raw_block_size << "\n"
@@ -688,6 +719,23 @@ bool extract_one(const OvlParser& parser,
         write_tga(out_dir / (base + ".tga"), h.width, h.height, bgra);
     } else {
         ctx.log("skip (palette decode failed): " + symbol);
+    }
+    // Animated flexitextures (docs §3.9): frames 1.. go to <name>_fNN.tga
+    // (frame 0 is <name>.tga); the play order is frame_sequence in the .json.
+    for (std::uint32_t k = 1; k < h.frame_count && k < 1024; ++k) {
+        FtxHeader fh;
+        std::vector<std::uint8_t> fb;
+        bool fa = false;
+        char suffix[16];
+        std::snprintf(suffix, sizeof suffix, "_f%02u", k);
+        if (!read_ftx_frame(parser, h, k, fh) || !sane_dimensions(fh.width, fh.height) ||
+            !decode_indexed8(parser, fh, fb, fa)) {
+            ctx.log("skip (frame " + std::to_string(k) + " unresolved): " + symbol);
+            continue;
+        }
+        if (fa) write_tga(out_dir / (base + suffix + "_rgba.tga"), fh.width, fh.height, fb);
+        for (std::size_t i = 3; i < fb.size(); i += 4) fb[i] = 255;
+        write_tga(out_dir / (base + suffix + ".tga"), fh.width, fh.height, fb);
     }
 
     write_json_sidecar(json_out, h, symbol, std::string(ldr.tag), block_size);

@@ -28,3 +28,13 @@ add_executable(ovl_scenery_check src/ovl_scenery_check.cpp)
 target_link_libraries(ovl_scenery_check PRIVATE ovlcore)
 target_compile_features(ovl_scenery_check PRIVATE cxx_std_17)
 ovl_set_compile_warnings(ovl_scenery_check)
+
+add_executable(ovl_survey src/ovl_survey.cpp)
+target_link_libraries(ovl_survey PRIVATE ovlcore)
+target_compile_features(ovl_survey PRIVATE cxx_std_17)
+ovl_set_compile_warnings(ovl_survey)
+
+add_executable(ovl_layout_check src/ovl_layout_check.cpp)
+target_link_libraries(ovl_layout_check PRIVATE ovlextractors)
+target_compile_features(ovl_layout_check PRIVATE cxx_std_17)
+ovl_set_compile_warnings(ovl_layout_check)

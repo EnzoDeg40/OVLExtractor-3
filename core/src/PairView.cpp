@@ -40,7 +40,9 @@ PairView::PairView(const OvlImage& common, const OvlImage& unique) : img_{common
             symname[tab[s][0] + a] = cstr(u32(tab[s][0] + a));
         const auto& loaders = img_[s].loaders;
         std::uint32_t nres = 0;
-        std::size_t extra_pos = img_[s].version == 4 ? 4 : 0;
+        // v4 and v5 subversion 1 put one 0 word before the extra-data chunks.
+        std::size_t extra_pos =
+            (img_[s].version == 4 || (img_[s].version == 5 && img_[s].v5_subversion == 1)) ? 4 : 0;
         const Bytes& post = img_[s].post_relocations;
         for (std::uint32_t a = 0; a + 20 <= tabsize[s][1]; a += 20) {
             const std::uint32_t L = tab[s][1] + a;
@@ -88,6 +90,22 @@ const Bytes& PairView::block_at(std::uint32_t a, std::uint32_t& off) const {
             return *it->data;
         }
     throw OvlError("address outside the pair: " + std::to_string(a));
+}
+
+std::uint32_t PairView::block_remaining(std::uint32_t a) const {
+    try {
+        std::uint32_t off;
+        const Bytes& b = block_at(a, off);
+        return std::uint32_t(b.size()) - off;
+    } catch (const OvlError&) {
+        return 0;
+    }
+}
+
+std::uint32_t PairView::block_start(std::uint32_t a) const {
+    std::uint32_t off;
+    block_at(a, off);
+    return a - off;
 }
 
 std::uint32_t PairView::u32(std::uint32_t a) const {

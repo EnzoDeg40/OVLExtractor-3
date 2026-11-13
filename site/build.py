@@ -52,7 +52,7 @@ DEFAULT_ASSETS = os.path.expanduser(
 )
 ORDER = ['extracted', 'partial', 'decoded', 'unknown']
 BIG_PAIR = 80  # resources per pair above which only counts are shipped
-TAG = re.compile(r'`([a-z]{3,4})`')
+TAG = re.compile(r'`([a-z]{3,9})`')
 NUMBERED = re.compile(r'^\d+(\.\d+)*\.?\s*')
 
 
@@ -129,7 +129,7 @@ class Docs:
                     self.sections.append(dict(f=rel, t=title, l=no))
                     continue
                 # A registry row: | `tag`, `tag2` | meaning | status |
-                row = re.match(r'\|\s*((?:`[a-z]{3,4}`[,\s]*)+)\|([^|]*)\|([^|]*)\|', line)
+                row = re.match(r'\|\s*((?:`[a-z]{3,9}`[,\s]*)+)\|([^|]*)\|([^|]*)\|', line)
                 if row and rel.endswith('RCT3_OVL_FORMAT.md'):
                     for tag in TAG.findall(row.group(1)):
                         self.registry.setdefault(
@@ -162,7 +162,7 @@ def code_hits(folder: str) -> dict[str, list[dict]]:
         seen: set[str] = set()
         with open(os.path.join(folder, name), encoding='utf-8', errors='replace') as fh:
             for no, line in enumerate(fh, 1):
-                for tag in re.findall(r'"([a-z]{3,4})"', line):
+                for tag in re.findall(r'"([a-z]{3,9})"', line):
                     if tag not in seen:
                         seen.add(tag)
                         hits[tag].append(dict(k='code', f=rel, l=no))

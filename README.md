@@ -89,6 +89,11 @@ This project addresses both:
   of every keyframe of every animation (format doc §7); exported in one pose.
 - ✅ **People** (`--types people`): guest/staff part groups, parts, heads and
   their meshes → `.people.json` + `.glb` per mesh (format doc §20).
+- ✅ **Game data** (`--types data`): the 27 data-only loader types (paths,
+  queues, pools, fences, shelters, carried items, research, particles, wild
+  animals and their models and clips, people animations, scenery items,
+  stalls, people parts…) field by field → `<ovl>.data.json`; every object of
+  the game is checked by `ovl_layout_check` (format doc §21).
 - ✅ **Qt 6 GUI** (`ovlextract_gui`): file picker, tree of resources grouped
   by category (textures / models / sounds / atlas / other), texture preview,
   embedded OpenGL viewer for shs meshes, "open externally" playback for snd
@@ -173,6 +178,7 @@ The `input` argument accepts:
 | `--types atlas` | `<symbol>.tga` per `gsi`, cropped from its parent texture (`ftx` or `tex` page) |
 | `--types font` | `<fct>.font.json` (face, metrics, glyph table with upright pixel rects) + `<fct>.tga` (glyph page) |
 | `--types text` | `<ovl>.txt.json` — every `txt` string of the pair as UTF-8 |
+| `--types data` | `<ovl>.data.json` — every field of every data-only object of the pair (27 tags, format doc §21) |
 | `--types scenery` | `<svd>.glb` (best LOD, textures embedded, skin + animations) + `<svd>.json` manifest per scenery item; `--all-lods` adds the other LODs |
 | `--types track`   | `<set>.tracks.json`, `<ride>.ride.json`, `<train>.train.json`, `<anr>.flatride.json`, `<ovl>.sids.json` / `.splines.json` (docs §15–16) |
 | `--types model`   | `<symbol>.obj` + `<symbol>.mtl` per `shs` static mesh, sub-meshes as `g`/`usemtl` groups; with `--texture-index` the `.mtl` gets `map_Kd` lines, with `--auto-textures` the referenced `.tga` files are pulled in too |
@@ -387,16 +393,13 @@ License: same as the upstream OVLExtractor-2 (see `LICENSE`).
 
 The biggest open work items, in priority order:
 
-1. Decode `tex` (Texture) loader — wrapper structure is known (see
-   [RCT3_OVL_FORMAT.md §4](docs/RCT3_OVL_FORMAT.md#4-tex-wrapper-format-partially-red-not-decoded))
-   but the pointer chain to the actual indexed pixel data is not yet
-   located. Unlocks ~3 600 atlas sprites.
-2. People heads: place the bone-space `ssk` heads on the body (needs the
-   `sal`/`san` people animations, format doc §20.5).
-3. `txs` shader semantics — enrich `.mtl` output with alpha/spec/reflection
+1. People heads: place the bone-space `ssk` heads on the body with the
+   decoded `san` pose (Bip01 Neck × Bip01 Head, format doc §20.5, §21.4).
+2. Default colours: recolour `--types scenery` output with the `sid`
+   default colours (decoded, §21.5) — needs the `sid` → `svd` link across pairs.
+3. `txs` shader semantics — enrich `.mtl` output with spec/reflection
    flags per sub-mesh.
-4. OVL header version 6 — currently parser warns and continues.
-5. Polish the Qt 6 GUI: cross-platform launcher (`brew install qtbase` /
+4. Polish the Qt 6 GUI: cross-platform launcher (`brew install qtbase` /
    `apt install qt6-base-dev` / vcpkg notes), DXT3/5 texture preview once
    the decoder lands, optional texture-mapped 3D viewer.
 6. CI matrix (GitHub Actions: Linux + macOS + Windows).

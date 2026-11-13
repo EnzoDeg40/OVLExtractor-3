@@ -54,6 +54,11 @@ public:
     }
     const Object*              find(const std::string& name_tag) const;
 
+    // Bytes from a to the end of the data block holding a (0 if outside the pair).
+    std::uint32_t block_remaining(std::uint32_t a) const;
+    // Start address of the data block holding a.
+    std::uint32_t block_start(std::uint32_t a) const;
+
     // Relocated slots and symbol-ref slots inside [a, a + n).
     std::vector<std::uint32_t> slots_in(std::uint32_t a, std::uint32_t n) const;
 

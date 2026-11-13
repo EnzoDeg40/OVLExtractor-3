@@ -36,11 +36,6 @@
       "section": "7. MMS",
       "note": "Positions indexées, packées en 11/10/11 bits contre le biais et l'échelle du morph, normales s8×3 : chaque image clé de chaque animation est décodée (785 maillages Characters, 13 Animals). --types model écrit une pose, --types people un .glb par maillage."
     },
-    "sid": {
-      "status": "partial",
-      "section": "13.4 Scenery visual",
-      "note": "Empreinte, svd et coût lus pour les pièces de rail ; prix, couleurs par défaut et placement non décodés."
-    },
     "txs": {
       "status": "partial",
       "section": "12. `txs` shader styles",
@@ -69,29 +64,10 @@
       "section": "15.7 Trains",
       "note": "Voiture d'un train : svd, pièces mobiles, animations, roues, dans le JSON du train."
     },
-    "sta": {
-      "status": "partial",
-      "section": "Shop metadata",
-      "note": "Lu comme métadonnées de boutique (nom, description, articles vendus) dans le manifeste .glb ; le reste du bloc n'est pas décodé."
-    },
-    "sat": {
-      "status": "partial",
-      "section": "Shop metadata",
-      "note": "Comme sta, pour les attractions spéciales."
-    },
-    "cid": {
-      "status": "partial",
-      "section": "Shop metadata",
-      "note": "Article porté : seul le nom est lu, pour la liste des articles d'une boutique."
-    },
     "txt": {
       "status": "extracted",
       "section": "18. Text",
       "note": "Chaîne UTF-16LE → .txt.json par OVL (--types text) : 12 388 chaînes par langue, 38 726 au total."
-    },
-    "psi": {
-      "status": "decoded",
-      "note": "Pré-résolu seulement, aucune sortie."
     },
     "btbl": {
       "status": "decoded",

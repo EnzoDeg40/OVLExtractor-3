@@ -79,12 +79,17 @@ std::string ref(const OvlParser& parser, std::uint32_t slot) {
 
 // ------------------------------------------------------------ records (§20)
 
-// PeoplePart (prt), 20 B: u32 (1), u32 (0), tex*, mms*, u32 palette.
-// palette is the Person colour byte the part's UVs are offset by: 0 skin,
-// 1 upper clothing, 2 lower clothing, 3 upper swimsuit, 4 lower swimsuit.
+// PeoplePart (prt), 20 B: u32 (1, never read), u32 runtime cache slot (0 on
+// disk), tex*, mms*, u32 palette. palette is the Person colour byte the
+// part's UVs are offset by: 0 skin, 1 upper clothing, 2 lower clothing,
+// 3 upper swimsuit, 4 lower swimsuit. Three stray objects of
+// Characters/CF/CF01/SS_SkinLegs_CF01 use another order (tex* at +0, 0, 0,
+// u32 1, mms* at +0x10) and no palette: `stray` is set, palette -1.
 struct PartRec {
     std::string   symbol, texture, mesh;
-    std::uint32_t unk0 = 0, unk4 = 0, palette = 0;
+    std::uint32_t unk0 = 0;
+    int           palette = 0;
+    bool          stray = false;
 };
 
 // One level of detail of a part group: {u8 count, u8 optional, u16, prt*[]}.
@@ -93,37 +98,52 @@ struct LodRec {
 };
 
 // PeoplePartGroup (ppg), 0x54 B:
-//   +0x00 u32, +0x04 u32, +0x08 u32, +0x0C u8[4], +0x10 u32 (1 for heads),
-//   +0x14 ptr, +0x18 f32 LOD distance,
+//   +0x00 u32 (1, 2 on Wild!), +0x04 u32 expansion (0 base, 1 Soaked!, 2 Wild!),
+//   +0x08 u32, +0x0C u8 person_type, u8 sub_type (0 male, 1 female),
+//   u8 slot (0 head, 1 body, 2 legs, 3 swimsuit body, 4 swimsuit legs),
+//   u8 optional_part_count, +0x10 u32 (1 on four heads),
+//   +0x14 f32*[optional_part_count] chance of each optional part,
+//   +0x18 f32 selection weight (weighted random pick among the groups of a
+//   person type / sub type / slot),
 //   +0x1C 3 LOD records (clothes) + phd* (heads),
 //   +0x38 3 LOD records (swimsuit) + phd* (heads).
 struct GroupRec {
     std::string              symbol;
-    std::uint32_t            unk0 = 0, unk4 = 0, unk8 = 0, unk10 = 0;
-    std::uint8_t             flags[4] = {0, 0, 0, 0};
-    float                    lod_distance = 0;
+    std::uint32_t            unk0 = 0, expansion = 0, unk8 = 0, unk10 = 0;
+    std::uint8_t             person_type = 0, sub_type = 0, slot = 0, optional_count = 0;
+    std::vector<float>       optional_chances;
+    float                    weight = 0;
     LodRec                   lods[3], swim_lods[3];
     std::string              head, swim_head;
 };
 
-// PeopleHead (phd), 0xC0 B: two 4×4 matrices, u32 (1), u32 (0), tex*, sal*,
+// PeopleHead (phd), 0xC0 B: hat and face attachment matrices (4×4, applied
+// after the Bip01 Head bone), u32 (1, never read), u32 runtime cache slot
+// (0 on disk), tex*, sal*,
 // ssk*[6] for LOD 1 and ssk*[6] for LOD 2 (neutral, Angry, Happy, Sad,
 // Scared, Sick).
 struct HeadRec {
     std::string              symbol, texture, animations;
     float                    m[2][16] = {};
-    std::uint32_t            unk80 = 0, unk84 = 0;
+    std::uint32_t            unk80 = 0;
     std::vector<std::string> skins[2];
 };
 
 bool read_part(const OvlParser& parser, std::uint32_t base, PartRec& p) {
     auto r = open_at(parser, base);
     if (!r) return false;
+    if (!ref(parser, base).empty()) {
+        p.stray = true;
+        p.palette = -1;
+        p.texture = ref(parser, base);
+        p.mesh = ref(parser, base + 16);
+        return true;
+    }
     p.unk0 = r->read_u32();
-    p.unk4 = r->read_u32();
     (void)r->read_u32();
     (void)r->read_u32();
-    p.palette = r->read_u32();
+    (void)r->read_u32();
+    p.palette = static_cast<int>(r->read_u32());
     p.texture = ref(parser, base + 8);
     p.mesh = ref(parser, base + 12);
     return true;
@@ -147,12 +167,19 @@ bool read_group(const OvlParser& parser, std::uint32_t base, GroupRec& g) {
     auto r = open_at(parser, base);
     if (!r) return false;
     g.unk0 = r->read_u32();
-    g.unk4 = r->read_u32();
+    g.expansion = r->read_u32();
     g.unk8 = r->read_u32();
-    for (auto& f : g.flags) f = r->read_u8();
+    g.person_type = r->read_u8();
+    g.sub_type = r->read_u8();
+    g.slot = r->read_u8();
+    g.optional_count = r->read_u8();
     g.unk10 = r->read_u32();
-    (void)r->read_u32();
-    g.lod_distance = r->read_f32();
+    const std::uint32_t chances = r->read_u32();
+    g.weight = r->read_f32();
+    if (g.optional_count && chances) {
+        if (auto c = open_at(parser, chances))
+            for (int k = 0; k < g.optional_count; ++k) g.optional_chances.push_back(c->read_f32());
+    }
     for (int k = 0; k < 3; ++k) {
         if (!read_lod(parser, base + 0x1C + k * 8, g.lods[k])) return false;
         if (!read_lod(parser, base + 0x38 + k * 8, g.swim_lods[k])) return false;
@@ -168,7 +195,7 @@ bool read_head(const OvlParser& parser, std::uint32_t base, HeadRec& h) {
     for (auto& m : h.m)
         for (float& f : m) f = r->read_f32();
     h.unk80 = r->read_u32();
-    h.unk84 = r->read_u32();
+    (void)r->read_u32();
     h.texture = ref(parser, base + 0x88);
     h.animations = ref(parser, base + 0x8C);
     for (int lod = 0; lod < 2; ++lod)
@@ -313,7 +340,7 @@ ExtractResult PeopleExtractor::extract(const OvlParser& parser, const ExtractCon
         o << (i ? "," : "") << "\n    {\"symbol\": " << js(p.symbol)
           << ", \"texture\": " << js(p.texture) << ", \"mesh\": " << js(p.mesh)
           << ", \"palette\": " << p.palette << ", \"unk0\": " << p.unk0
-          << ", \"unk4\": " << p.unk4 << "}";
+          << (p.stray ? ", \"stray_layout\": true" : "") << "}";
     }
     o << "\n  ],\n  \"part_groups\": [";
     auto lods_json = [&](const LodRec (&lods)[3]) {
@@ -333,10 +360,11 @@ ExtractResult PeopleExtractor::extract(const OvlParser& parser, const ExtractCon
     for (std::size_t i = 0; i < groups.size(); ++i) {
         const auto& g = groups[i];
         o << (i ? "," : "") << "\n    {\"symbol\": " << js(g.symbol)
-          << ", \"lod_distance\": " << jf(g.lod_distance)
-          << ", \"flags\": [" << int(g.flags[0]) << ", " << int(g.flags[1]) << ", "
-          << int(g.flags[2]) << ", " << int(g.flags[3]) << "]"
-          << ", \"unk0\": " << g.unk0 << ", \"unk4\": " << g.unk4
+          << ", \"person_type\": " << int(g.person_type) << ", \"sub_type\": " << int(g.sub_type)
+          << ", \"slot\": " << int(g.slot) << ", \"weight\": " << jf(g.weight)
+          << ", \"expansion\": " << g.expansion << ", \"optional_part_chances\": [";
+        for (std::size_t k = 0; k < g.optional_chances.size(); ++k) o << (k ? ", " : "") << jf(g.optional_chances[k]);
+        o << "], \"unk0\": " << g.unk0
           << ", \"unk8\": " << g.unk8 << ", \"unk10\": " << g.unk10
           << ",\n     \"lods\": " << lods_json(g.lods)
           << ",\n     \"swim_lods\": " << lods_json(g.swim_lods)
@@ -348,11 +376,11 @@ ExtractResult PeopleExtractor::extract(const OvlParser& parser, const ExtractCon
         o << (i ? "," : "") << "\n    {\"symbol\": " << js(h.symbol)
           << ", \"texture\": " << js(h.texture) << ", \"animations\": " << js(h.animations);
         for (int m = 0; m < 2; ++m) {
-            o << ", \"matrix" << m << "\": [";
+            o << (m ? ", \"face_attachment\": [" : ", \"hat_attachment\": [");
             for (int k = 0; k < 16; ++k) o << (k ? ", " : "") << jf(h.m[m][k]);
             o << "]";
         }
-        o << ", \"unk80\": " << h.unk80 << ", \"unk84\": " << h.unk84;
+        o << ", \"unk80\": " << h.unk80;
         for (int lod = 0; lod < 2; ++lod) {
             o << ", \"skins_lod" << lod + 1 << "\": [";
             for (std::size_t k = 0; k < h.skins[lod].size(); ++k)

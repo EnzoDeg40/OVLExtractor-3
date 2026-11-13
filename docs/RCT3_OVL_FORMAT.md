@@ -71,20 +71,43 @@ complete RCT3 installation (Main + all expansions) — zero parse errors.
 | `gsi`  | Graphic Sprite Info (atlas rect) | Fully decoded (§5); every sprite of the game crops |
 | `fct`  | Font (face, glyph table, glyph page) | Fully decoded (§17)                 |
 | `txt`  | Text (UTF-16LE string)           | Fully decoded (§18)                     |
-| `psi`  | Particle Sprite Info             | Pre-resolved only, not extracted        |
+| `psi` | ParticleSkin (particle sprite set) | Fully decoded (§21.3): texture, type, mode, animation speed, sprite UV rectangles |
 | `snd`  | Sound (.wav)                     | Fully decoded (§6)                      |
-| `sid`  | SceneryItemData (placement/size/flags) | Footprint / svd / cost subset decoded for track pieces (§15.3) |
+| `sid` | SceneryItem (placement, size, price, colours) | Fully decoded (§21.5, §13.4, §15.3): footprint squares and height bits, support connections, cost and removal cost, breakdown timer, default colours, svds / icon / group, parameters, sounds and their scripts, flat-ride fields, add-on pack, billboard aspect; `unk_44`, `unk_E4` have no reader in the game |
 | `spl`  | Spline (Bézier rail / profile)   | Fully decoded (§15.1)                   |
 | `tks`  | TrackSection (one track piece)   | Fully decoded incl. Soaked/Wild ext (§15.2); connection rules §15.4 |
 | `trr`  | TrackedRide                      | Decoded: pieces, trains, track set path, speeds, groups (§15.5) |
 | `mms`  | Morph Mesh (vertex animation)    | Fully decoded, every keyframe (§7)      |
 | `ter`  | TerrainType (land tool surface) | Fully decoded (§19); `--types terrain` → `.terrain.json` |
-| `prt`, `ppg`, `phd`, `ssk` | People parts, part groups, heads, simple skins | Decoded (§20) |
+| `prt` | PeoplePart | Fully decoded (§20.2, §21.6): texture, mesh, palette slot; the constant `unk_00` (1) is never read |
+| `ppg` | PeoplePartGroup | Fully decoded (§20.3, §21.6): person type / sub type / slot, expansion, optional-part chances, selection weight, 2 × 3 LOD part lists, heads; `unk_00`, `unk_08`, `unk_10` are never read |
+| `phd` | PeopleHead | Fully decoded (§20.4, §21.6): hat and face attachment matrices, texture, `sal`, 2 × 6 expression skins; the constant `unk_80` (1) is never read |
+| `ssk` | SimpleSkin (rigid head mesh) | Fully decoded (§20.5, §21.6): bones, vertex runs, triangles, vertices |
 | `shs`  | Static Shape (rigid mesh)        | Fully decoded (§8)                      |
 | `bsh`  | Bone Shape (skinned mesh)        | Rest-pose mesh decoded (§8.6); skeletal animation open |
 | `ban`  | Bone Animation (keyframes)       | Tracks decoded → JSON sidecar (§8.7); skinned render open |
 | `svd`  | SceneryItemVisual (LOD + mesh refs) | Struct known via rct3dump (§13); not extracted |
-| `was`, `asd`, `vwg`, `ent`, `mdl`, `ptd`, `qtd`, `ter`, `sta` | Various game data | Structs partly known via rct3dump (§13); not extracted |
+| `ptd` | PathType | Fully decoded (§21.2): flags, names, textures, 19 × 4 piece names, research, extended tunnel pieces and paving; `unk_154` (always 1) is never read |
+| `qtd` | QueueType | Fully decoded (§21.2): names, texture, 7 piece names, research |
+| `pty` | PoolType | Fully decoded (§21.2): 89 piece names, research, cost / refund per segment type, water surface offset, edge inset, 6 × 6 swim splines; `unk_1B8`, `unk_1C0` (0.1, 1.0) have no reader |
+| `chg` | ChangingRoom | Fully decoded (§21.2): Attraction, scenery item, spline |
+| `enc` | EnclosureType (fence) | Fully decoded (§21.2): names, 9 piece names, fence / gallery cost and refund, 4 splines, strength, animal offset, height |
+| `asd` | AnimalShelterDesc | Fully decoded (§21.2): hut placement, troughs, eat / drink / sleep splines, food type, proxy tiles |
+| `vwg` | ViewingGallery | Fully decoded (§21.2): Attraction |
+| `cid` | CarriedItem | Fully decoded (§21.3): names, icon, shapes, flags, carry type, hunger / thirst, cost and three values, litter, extras, billboard, Soaked! morphs; `unk_00`, `unk_08`, `unk_80`, `unk_94` have no reader |
+| `ced` | CarriedItemExtra (condiment) | Fully decoded (§21.3): name, icon, hunger, thirst; `unk_0C` (Mustard 4), `unk_18` (spicy 0.3) have no reader |
+| `rcg` | ResearchCategory | Fully decoded (§21.3): state, names, initial level, development cost, dependencies |
+| `wai` | WildAnimalItem (enrichment item) | Fully decoded (§21.3): name, shape, cost / refund, wear rate, size, icon, texts, animal flags, weight; `unk_04/08/0C` (always 2), `unk_28`, `unk_40..4C` have no reader |
+| `was` | WildAnimalSpecies | Fully decoded (§21.3): 4 variants (model, animations, size, texts, icon, sound table), genetics, stats; 13 variant words and a sound-record word have no reader |
+| `ent` | EntertainerDesc | Fully decoded (§21.3): speed factors, people parts, height, names, uniform colours, VIP thoughts, animation masks, pose times and offsets |
+| `san` | SimpleAnim (people head / neck keyframes) | Fully decoded (§21.4): times, per-channel translation and rotation axes for every key |
+| `sal` | SimpleAnimList (bones and animations of one head) | Fully decoded (§21.4): bone names and parents, animation names, `san` references |
+| `modelanim` | ModelAnim (wild-animal clip) | Fully decoded (§21.4): bone names (extra chunk), translation and quaternion keys at 30 fps |
+| `wad` | WildAnimalAnimData (clip set and locomotion) | Fully decoded (§21.4): clip references, durations, speeds, head-look chains, run blend speeds; 6 scalars (+0x18…+0x24, +0x30, +0x34) have no reader |
+| `mdl` | Model (wild-animal skinned model) | Fully decoded (§21.4): bounds, bones (bind pose, inverse bind, parents, names), materials, every LOD's meshes (vertices: position, normal, 4 bone weights, colour, UV) and indices; mesh `unk_0C` (0), `unk_0E` (0xFFFF) have no reader |
+| `sta` | Stall | Fully decoded (§21.5): Attraction (cost, refund, upkeep…), scenery item, items sold and their prices, appeal per guest age and gender |
+| `sat` | SpecialAttraction | Fully decoded (§21.5): Attraction, scenery item |
+| `mam` | ManifoldMesh (water-cut proxy of underwater paths) | Fully decoded (§21.6): bounding box, vertices, triangle indices |
 
 What "fully decoded" buys you, per loader, is documented in
 [EXTRACTORS.md](EXTRACTORS.md).
@@ -270,7 +293,12 @@ item. Pure swatches (index 41): `0 #2f4343, 1 #839797, 2 #d3dbdb, …, 12
 
 `frame_count > 1` textures hold one `FlexiTextureStruct` per frame (each with
 its own palette / index / alpha pointers) and a frame sequence in `offsets[]`
-played at `fps`. The extractor decodes frame 0 only.
+played at `fps`. `--types texture` writes frame 0 as `<name>.tga` and frame k
+as `<name>_fNN.tga` (plus `_rgba` copies when the frame has an alpha plane);
+the `.json` sidecar carries `fps` and `frame_sequence` (the `offsets[]` play
+order). The install has 20 animated flexitextures (2 to 16 frames: the queue
+TV `TVSeq` is a 16-frame on-ride video at 5 fps, `lavabubble`, `UfoLights`,
+`flexilight`…); all their 140 extra frames decode.
 
 
 ## 4. TEX texture format — bitmap-table pages
@@ -877,14 +905,11 @@ in [EXTRACTORS.md](EXTRACTORS.md).
 | Item | Impact when solved |
 |---|---|
 | `RCT1_icons:tex` | Referenced by 20 `gsi` of `Main`, defined by no OVL of the install (an unshipped RCT1 icon sheet). |
-| People head placement | `ssk` heads are in bone space (§20.5); placing them needs the `Bip01 Head` bone of the pose (the `sal`/`san` people animations, not decoded) or an alignment on the low-detail `mms` head. |
-| `ppg` / `prt` / `phd` unknown words | Listed raw in the JSON (§20). |
+| People head placement (glTF) | The pose is decoded (`san` channels Bip01 Neck / Head, §20.5, §21.4); `--types people` still writes the `ssk` heads in bone space. Applying neck × head to place them is an exporter change, not a reading one. |
 | `txs` specular/reflection | Alpha is solved (ftx alpha plane §3.5 + txs class). Still approximate: `*Specular*` → glTF roughness 0.5, `*Chrome*` / `*Reflection*` → metallic 0.8. The environment maps they sample (`chrome:ftx`, `two:ftx`) are not in any OVL — presumably built into the engine — so chrome parts export untextured. |
-| Recolor | Recolorable ftx export with their blue/magenta/yellow mask ramps (§3.8). Applying player/default colours needs the item's default colours (probably in `sid`). |
+| Recolor (glTF) | Recolorable ftx export with their blue/magenta/yellow mask ramps (§3.8). The items' default colours are decoded (`sid` `default_colour_1..3`, §21.5, in `.data.json`); applying them by default in `--types scenery` needs the `sid` → `svd` link across pairs (the sid lives in the Style pair). |
 | `UseAdTexture:ftx` | Placeholder the generic stall signs bind; the game substitutes the chosen advert at runtime. Exported untextured. |
-| `sid` / `sta` gameplay fields | Name, description and sold items are surfaced (§13.4). Prices, footprint, default colours (for recolor) and the `sid` placement data are not decoded yet. |
-| Animated ftx | Only frame 0 is decoded (§3.9). |
-| OVL header v6 | Currently parser warns and continues; some Wild! / Soaked! OVLs may be affected. |
+| OVL header v6 | Not in this install: the 14 952 files of the Mac Complete Edition (Soaked! and Wild! included) are v1, v4 or v5 (header words checked on every file). `OvlParser` still only warns on v6; nothing to extract here. |
 | Dice vertical stretch | Minor cosmetic question, not investigated. |
 
 
@@ -1839,8 +1864,8 @@ parts of that head's outfit; skin tone and hair are not separate choices.
 ### 20.2 `prt` — PeoplePart (20 B)
 
 ```
-+0x00 u32   1
-+0x04 u32   0
++0x00 u32   1 (never read)
++0x04 u32   0 on disk: runtime slot (the loader stores a cache handle there)
 +0x08 tex*  texture
 +0x0C mms*  mesh
 +0x10 u32   palette: 0 skin, 1 upper clothes, 2 lower clothes,
@@ -1853,14 +1878,28 @@ The palette values match the person's save fields `SkinPalette`,
 each its own `prt`: `Body` (clothes), `SkinBody` (bare arms, skin texture) and
 `OptionalBody` (an extra piece the person may or may not show).
 
+Three objects of `Characters/CF/CF01/SS_SkinLegs_CF01` use another order
+(tex* at +0x00, 0, 0, u32 1, mms* at +0x10, no palette); they duplicate well
+formed parts of `CF01_SwimSuitLegs1/2_Main` and are flagged `stray_layout`.
+
 ### 20.3 `ppg` — PeoplePartGroup (0x54 B)
 
 ```
-+0x00 u32, +0x04 u32, +0x08 u32
-+0x0C u8[4]   (02 01 01 01 bodies, 02 01 00 00 heads)
-+0x10 u32     1 on heads
-+0x14 ptr
-+0x18 f32     LOD distance (100)
++0x00 u32     1 (2 on Wild! groups; never read)
++0x04 u32     expansion: 0 base, 1 Soaked!, 2 Wild!
++0x08 u32     1 on most swimsuit groups and the lifeguard (never read)
++0x0C u8      person_type: 0 child, 1 teen, 2 adult, 3 VIP, 4 handyman,
+              5 mechanic, 6 security guard, 7 entertainer, 8 vendor,
+              9 animal keeper, 10 paramedic, 11 park inspector, 12 lifeguard
++0x0D u8      sub_type: 0 male, 1 female
++0x0E u8      slot: 0 head, 1 body, 2 legs, 3 swimsuit body, 4 swimsuit legs
++0x0F u8      optional_part_count
++0x10 u32     1 on the AF01, AM05, CM05, TM05 heads only (never read)
++0x14 f32*    optional_part_chances[optional_part_count]: at setup
+              rand() < chance[i] sets bit i of the optional-part mask
++0x18 f32     weight: weighted random pick among the groups registered for
+              one (person_type, sub_type, slot) (`FUN_1006b893a` registers,
+              `FUN_1006b7ffe` picks)
 +0x1C 3 × LOD record   clothes: high, medium, low
 +0x34 phd*    head (heads only)
 +0x38 3 × LOD record   swimsuit
@@ -1876,9 +1915,9 @@ head + hat attachment); the high and medium heads come from the `phd`.
 ### 20.4 `phd` — PeopleHead (0xC0 B)
 
 ```
-+0x00 f32[16]  matrix 0
-+0x40 f32[16]  matrix 1
-+0x80 u32 1, +0x84 u32 0
++0x00 f32[16]  hat attachment (point 2), applied after the Bip01 Head bone
++0x40 f32[16]  face attachment (point 3: sunglasses)
++0x80 u32 1 (never read), +0x84 u32 0 on disk: runtime cache slot
 +0x88 tex*     skin texture
 +0x8C sal*     head animations
 +0x90 ssk*[6]  LOD 1: neutral, Angry, Happy, Sad, Scared, Sick
@@ -1897,18 +1936,847 @@ head + hat attachment); the high and medium heads come from the `phd`.
 +0x18 f32*     vertices: 8 floats (position, normal, U, V)
 ```
 
-Rigid skinning, one bone per vertex; positions are in their bone's space, so a
-detailed head is not placed on the body without the pose's bone matrices.
+Rigid skinning, one bone per vertex; positions are in their bone's space.
+The pose comes from the head's `sal` / `san` (§21.4): channel 0 is Bip01 Neck,
+channel 1 Bip01 Head, and the head's transform is [R|t] of the neck times
+[R|t] of the head (the head sits at (0.073, 0, 0) in the neck frame).
 
 ### 20.6 Output
 
 `--types people` writes, per pair:
 
-- `<ovl>.people.json`: every `prt`, `ppg`, `phd` (fields above, unknown words
-  raw), every `mms` (counts and its animations: name, keyframes, length) and
+- `<ovl>.people.json`: every `prt`, `ppg`, `phd` (fields above; the three
+  constants nobody reads keep their `unk` names), every `mms` (counts and its animations: name, keyframes, length) and
   every `ssk` (bones and vertex runs);
 - one `<mesh>.glb` per `mms` (pose `IdleStandard` keyframe 0) and per `ssk`
   (bone space), with the part's texture embedded when it lives in the same
   pair (clothes do; `_Skin` textures are separate OVLs). Positions are mirrored
   on Z like `--types scenery` (§14); UVs address cell 0.
 
+
+## 21. Data-only types (`--types data`)
+
+Every loader type that is pure game data — no pixels, no sound, no mesh that
+another exporter already turns into a standard file — has a declarative
+layout in `extractors/src/DataExtractor_*.cpp` (engine:
+`extractors/include/ovl/extract/Layout.hpp`). `--types data` writes one
+`<ovl>.data.json` per pair, `{"<tag>": [{"symbol": …, fields…}, …]}`: every
+field of every struct, pointers followed (strings, arrays, sub-structs),
+symbol references as `"name:tag"` (a reference with an empty name, `":gsi"`,
+is a real null reference in the game data), keyframes and vertices as number
+arrays. Over the whole install: 719 files, 215 MB, 13 s.
+
+### 21.1 How a layout is proven
+
+`ovl_layout_check <Assets> [tag…]` decodes every object of every registered
+tag and reports, per tag, objects with issues and the fields still named
+`unk*`. An object passes when
+
+- every byte of every struct instance (top level and every sub-struct
+  reached) is claimed by exactly one field;
+- every relocated pointer slot and every symbol-reference slot inside it is
+  consumed by a field that follows it — no pointer is read as a number;
+- every field declared zero is 0.
+
+All 27 tags pass on every object of the Mac Complete Edition (12 819
+objects). `unk_*` names are left only on values for which no reader was
+found in the Mac game (`decompile/ghidra/decompiled.c`); each is listed in
+its section with its values. Field names come from the game's consumers
+first, libOVLng (`include/*.h`, `Manager*.cpp`) and rerct3 second, value
+statistics last (`ovl_survey <Assets> <tag…>` prints, per struct word, how
+often it is a pointer, a reference, zero, a float, and its common values).
+
+The Mac build is 64-bit but keeps the 32-bit on-disk structs: each pointer
+slot is a 32-bit handle passed through `FUN_1001f2550`, so the offsets its
+consumers read are file offsets.
+
+### 21.2 Paths, queues, pools, changing rooms, enclosures
+
+Layouts: `extractors/src/DataExtractor_Paths.cpp`. All seven loaders are no-op relocators
+(rerct3 loader-structs.md / animals.md; Mac TypeHandler ctors e.g. `FUN_100654cba` "PoolType"/"pty"),
+so the on-disk struct is what the consumer reads. Mac consumers resolve every 32-bit relocated slot
+with `FUN_1001f2550`; offsets below are on-disk offsets as read by those consumers.
+
+#### Shared: `Research` (12 B, array behind `research`)
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| +0x00 | ref `rcg` | category | |
+| +0x04 | i32 | runtime_slot | −1 on disk; overwritten at load by `FUN_1005729ce` (category registration) |
+| +0x08 | f32 | min_progress | `FUN_100572a52`: available when `min_progress <= category+0x15C` |
+
+Same record as libOVLng `Research {ResearchCategory*, unk1, unk2}` — other tags with
+`ResearchCategoryCount/ResearchCategory*` (stalls, attractions…) should use it too.
+
+#### `ptd` — PathType (10 objects, 10 pairs)
+
+336 B; 604 B (`PathType2`) when `flags & 0x01000000` (2 objects: `0x01000001`, `0x01000003`).
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| +0x000 | hex32 | flags | 0x1 always, 0x2 underwater, 0x01000000 extended |
+| +0x004 | char* | internal_name | |
+| +0x008 | ref `txt` | name | |
+| +0x00C | ref `gsi` | icon | |
+| +0x010 / +0x014 | char* | texture_a / texture_b | `tex` names in `<name>_Texture` |
+| +0x018 | char*[19][4] | flat … slope_mid | 19 shape groups (path.h order), 4 variants each; JSON key per group |
+| +0x148 | u32 | research_count | |
+| +0x14C | Research* | research | |
+| ext +0x150 | zero | | libOVLng `unk1`, 0 |
+| ext +0x154 | u32 | unk_154 | libOVLng `unk2`, 1 in both objects; not read by the path consumer |
+| ext +0x158 | char*[16][4] | flat_fc … slope_mid_tc | closed-end (tunnel) variants |
+| ext +0x258 | char* | paving | |
+
+Evidence: path.h; loader-structs.md "PathType (ptd) & QueueType (qtd) — VERIFIED"; Mac path-type resolver
+(`"Missing scenery pieces for path type "`, decompiled.c ~1067640): 19×4 pieces from word 6, 16×4 from
+word 0x56 and paving at word 0x96 only when `flags >= 0x01000000`, research at +0x148/+0x14C.
+
+#### `qtd` — QueueType (5 objects, 5 pairs)
+
+52 B: `+0x00 internal_name char*`, `+0x04 name txt`, `+0x08 icon gsi`, `+0x0C texture` (`ftx` ref,
+`Ground<name>`), `+0x10..+0x28 straight, turn_l, turn_r, slope_up, slope_down, slope_straight_1,
+slope_straight_2` (char*), `+0x2C research_count`, `+0x30 research` (Research*). Source path.h / QueueSet1.
+
+#### `pty` — PoolType (1 object, 1 pair: `Pool/Default/Default_Stub`)
+
+600 B (block remaining 14056 → next `sid` at 13456). Desc pointer cached at PoolTypeDatabaseEntry+0x168.
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| +0x000 | char* | internal_name | "Default" |
+| +0x004 | ref `txt` | name | |
+| +0x008 | ref `gsi` | icon | |
+| +0x00C | char*[89] | pieces | scenery `sid` names (Base, Corner3Top…, Jacuzzi, Railing); `FUN_100374e50` loop `< 0x59`, "Missing scenery pieces for pool type " |
+| +0x170 | u32 | research_count | `FUN_1005729ce(entry+0x70, +0x170, +0x174)` |
+| +0x174 | Research* | research | |
+| +0x178 / +0x17C | i32 | type0_cost_base / _per_depth | `FUN_10096f6a8` (cost): SegmentType 0 → `base + per_depth × Depth` |
+| +0x180 / +0x184 | i32 | type0_refund_base / _per_depth | `FUN_10096f90a` (refund), same formula |
+| +0x188 / +0x18C | i32 | type1to4_cost_base / _per_depth | SegmentType 1..4 |
+| +0x190 / +0x194 | i32 | type1to4_refund_base / _per_depth | |
+| +0x198 / +0x19C | i32 | type5to9_cost / _refund | SegmentType 5..9, flat |
+| +0x1A0 / +0x1A4 | i32 | type4_cost_extra / type4_refund_extra | added for SegmentType 4 |
+| +0x1A8 / +0x1AC | i32 | type2_cost_per_height / refund | × SpecialHeight for SegmentType 2 |
+| +0x1B0 / +0x1B4 | i32 | type3_cost_per_height / refund | × 3·(SpecialHeight/3) for SegmentType 3 |
+| +0x1B8 | f32 | unk_1B8 | 0.1; no reader found |
+| +0x1BC | f32 | water_surface_offset | 0.2; added to SurfaceHeight × unit in segment geometry |
+| +0x1C0 | f32 | unk_1C0 | 1.0; no reader found |
+| +0x1C4 | f32 | edge_inset | 0.9; per-side inset in segment geometry |
+| +0x1C8 | ref `spl`[6][6] | swim_splines | per tile shape {corner3, edge, corner1, corner2, end, full} × {straight, 5 curve variants}; grouping from the spline names |
+
+SegmentType / Depth / SpecialHeight are PoolSegment persistent fields (+0x15C / +0x174 / +0x160).
+The segment-type enum names are not recovered, hence `typeN_*`.
+
+#### `chg` — ChangingRoom (4 objects, 1 pair: `Style/Vanilla/CapeTyphoon/Style`)
+
+12 B `{+0x00 Attraction_S* attraction, +0x04 scenery sid, +0x08 spline spl}` (stall.h / ManagerCHG),
+Attraction_S (64 B) right behind it (76 B per room). Attraction type 0x212.
+
+Attraction block (same as the scenery group's): `+0x00 type`, `+0x04 name txt`, `+0x08 description txt`,
+`+0x0C icon gsi`, `+0x10 cost i32`, `+0x14 refund i32`, `+0x18/+0x1C zero`, `+0x20 base_upkeep`
+(4960), `+0x24 spline`, `+0x28 path_count`, `+0x2C paths` (spl ref array), `+0x30 flags`,
+`+0x34 max_height` (−1), `+0x38 addon_pack`, `+0x3C unk_3C` (libOVLng `unk12`, 0 here),
+Wild only `+0x40 ui_deactivation`.
+
+#### `vwg` — ViewingGallery (1 object, 1 pair: `Enclosures/Fences/Fences`)
+
+4 B `{Attraction_W* attraction}` + Attraction_W (68 B, type 0x314, addon 2) behind it.
+
+#### `enc` — EnclosureType (3 objects, 3 pairs: Wood / Chain / Electric `_Stub`)
+
+92 B (block 2276 → next `sid` at 2184).
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| +0x00 | char* | internal_name | |
+| +0x04 | ref `txt` | name | |
+| +0x08 | ref `gsi` | icon | |
+| +0x0C..+0x2C | char* ×9 | full, end, corner, edge, corner_inner, gate, view_left, view_mid, view_right | scenery `sid` names; resolve loop `< 9`, "Missing scenery pieces for Enclosure type " |
+| +0x30 / +0x34 | i32 | fence_cost / fence_refund | 500/−400, 1000/−800, 2000/−1700; `n·+0x30 + m·+0x34` (~1251049) |
+| +0x38 / +0x3C | i32 | gallery_cost / gallery_refund | 4000/−3500 …; × count in ViewingGalleryInstance (~1507011) |
+| +0x40..+0x4C | ref `spl` ×4 | spline_right_top, spline_right_bottom, spline_left_top, spline_left_bottom | Wood has null bottoms |
+| +0x50 | f32 | strength | 0 / 2 / 3; consumers pick the weakest fence with `strength >= required` |
+| +0x54 | f32 | animal_offset | 0.2 / 0.14 / 0.5; added to an animal's stand position next to the fence |
+| +0x58 | f32 | height | 1 / 2.2 / 4; animal escape test compares it to a threshold |
+
+Corrects loader-structs.md (88 B, 8 pieces): 9 pieces, costs start at +0x30.
+
+#### `asd` — AnimalShelterDesc (6 objects, 1 pair: `Enclosures/Shelters/Shelters`)
+
+84 B + its eat/drink/sleep spline arrays right behind it (116 or 120 B per shelter); the proxy tile
+lists sit in another block. Desc cached at AnimalShelter+0xB8 (`FUN_100a5be04`).
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| +0x00 | ref `sid` | shelter | |
+| +0x04 / +0x08 / +0x0C | i32 | hut_x / hut_z / hut_rotation | placement args of the hut (`+0x10`) |
+| +0x10 | ref `sid` | hut | WardensShed |
+| +0x14 / +0x18 | f32 / i32 | food_trough_offset / food_trough_slot | Trough vtable+0x40 init, trough 0 |
+| +0x1C / +0x20 | f32 / i32 | drink_trough_offset / drink_trough_slot | trough 1 |
+| +0x24 / +0x28 | u32 / spl ref* | eat_spline_count / eat_splines | `FUN_100a153ac` spline kind 2 |
+| +0x2C / +0x30 | | drink_spline_count / drink_splines | kind 3 |
+| +0x34 / +0x38 | | sleep_spline_count / sleep_splines | kind 4 |
+| +0x3C | ref `spl` | trough_transition_spline | kind 5 |
+| +0x40 | u32 | food_type | `FUN_100475724`: 0 foodmeat, 1 foodhay, 2 foodleaves |
+| +0x44 / +0x48 | u32 / {i32 x, i32 z}* | proxy_tile_count / proxy_tiles | one `invisibleproxy` sid placed per tile around the shelter |
+| +0x4C | ref `spl` | male_spline | kind 7 |
+| +0x50 | ref `spl` | female_spline | kind 8 |
+
+The exact meaning of the trough offset/slot pair (distance along / edge index?) and of hut_rotation
+is inferred from the call shapes, not traced into the callee.
+
+
+### 21.3 Carried items, research, particles, wild animals, entertainers
+
+Layouts are in `extractors/src/DataExtractor_Items.cpp` (`register_items`). `ovl_layout_check` reports 0 issues for all
+7 tags (362 objects). Every loader here is a relocate-only no-op, so the struct on disk is the struct the consumer
+reads. "Mac FUN_x" means `decompile/ghidra/decompiled.c`. All pointers in the Mac binary are 32-bit OVL handles,
+resolved with `FUN_1001f2550`.
+
+#### `cid` — CarriedItem (179 objects, 4 pairs)
+
+156 B (0x9C). Structs sit back to back. Each one is followed by its own `extras` array (4 × `extra_count` B), so the
+stride is 156 + 4·n. Source: libOVLng `carrieditems.h` / `ManagerCID.cpp`. The price fields were named from the data.
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | u32 | unk_00 | 1 in every object. libOVLng: "always 1". No reader found |
+| 0x04 | u32 | addon_pack | 0 vanilla, 1 Soaked!, 2 Wild! |
+| 0x08 | u32 | unk_08 | 0. 2 for the Donut and Fries size families (MoreCarriedItems). No reader found |
+| 0x0C | Ref txt | name | |
+| 0x10 | Ref txt | plural_name | |
+| 0x14 | Ref gsi | icon | 40×40, `:gsi` = none |
+| 0x18 | Ref shs | shape | null (0) for hidden and billboard items |
+| 0x1C | Ref shs | shape_alt | always equal to `shape` |
+| 0x20 | f32 | lod_distance | 0 hidden, 40 shape items, 80 umbrellas, 200 billboards, 500 open umbrella |
+| 0x24 | Ref cid | used_version | empty wrapper / open umbrella, `:cid` = none |
+| 0x28 | hex | flags | 1 food, 2 drink, 4 used, 8 map, 0x10 voucher, 0x20 open umbrella, 0x40 umbrella, 0x80 balloon, 0x200 souvenir, 0x1000 kiddie, 0x2000 camera, 0x8000 camcorder, 0x10000 sun block, 0x20000 inflatable, 0x80000 swimsuit |
+| 0x2C | i32 | age_class | -1. Soaked! wearables: 3 kids, 12 teens, 48 adults |
+| 0x30 | u32 | carry_type | 1 not visible, 2 hand, 4 body, 6 two hands, 8 head, 16 sunglasses, 36 swimsuit |
+| 0x34 | f32 | hunger | |
+| 0x38 | f32 | thirst | |
+| 0x3C | f32 | light_protection_factor | sun blockers 4 / 15 / 50 |
+| 0x40 | u32 | cost | stall purchase cost, in 1/100 currency. Smallest of the four price words (libOVLng unk17) |
+| 0x44 | u32 | value | price guests accept in normal weather (unk18) |
+| 0x48 | u32 | value_wet | Umbrella 450 vs 250, coffee and hot chocolate > value, lemonade and ice cream < value (unk19) |
+| 0x4C | u32 | value_hot | lemonade and ice cream > value, coffee < value (unk20) |
+| 0x50 | f32 | litter_rate | 0. 0.01 for litter items (empty cups, wrappers) |
+| 0x54 | i32 | litter_kind | -1. 1 wrapper / stick, 2 box / bottle |
+| 0x58 | u32 | default_colour | flexi colour index: 0, 7 for Balloon |
+| 0x5C | u32 | extra_count | |
+| 0x60 | → Ref[n] ced | extras | condiments, written right after the struct |
+| 0x64..0x6C | zero | | libOVLng unk26..28. 0 everywhere |
+| 0x70 | u32 | shaped | 1, 0 for billboard items |
+| 0x74 | Ref ftx | billboard_texture | null unless billboard |
+| 0x78 | f32 | billboard_scale_x | |
+| 0x7C | f32 | billboard_scale_y | |
+| 0x80 | u32 | unk_80 | 0. 16 inflatables + swimsuits, 32 sunglasses (libOVLng unk33). No reader found |
+| 0x84..0x90 | char* ×4 | male_morph_body, male_morph_legs, female_morph_body, female_morph_legs | Soaked! wearables, "" otherwise |
+| 0x94 | u32 | unk_94 | 0. 1 for SwimSuitV1 (libOVLng unk38) |
+| 0x98 | char* | texture_option | "Inflatable", "DefaultFlexiColours", "SwimSuitV1/2", "" |
+
+Evidence for the price words: across 179 items, the four words keep the same order of size, rising with item size
+(Small … XL). The two weather words move in opposite directions for hot drinks and for cold drinks or ice cream, and
+for the umbrella. The consumer was not traced: `CarriedItem` is read in too many peep functions to single one out.
+
+#### `ced` — CarriedItemExtra (41 objects, 1 pair)
+
+28 B. Source: libOVLng `struct CarriedItemExtra`.
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | zero | | |
+| 0x04 | Ref txt | name | |
+| 0x08 | Ref gsi | icon | 20×20 |
+| 0x0C | u32 | unk_0C | 0, 4 for Mustard only |
+| 0x10 | f32 | hunger | 0 … 0.3 |
+| 0x14 | f32 | thirst | -0.3 … 0.3 |
+| 0x18 | f32 | unk_18 | 0, 0.3 for Parmesan, Chilli, ChilliSauce, Marshmallow (libOVLng guesses nausea) |
+
+#### `rcg` — ResearchCategory (58 objects, 1 pair)
+
+40 B (`ResearchCategoryDesc`). Consumers: Mac FUN_10053c522 creates the ResearchCategoryInstance. It copies
++0x0C → CurrentLevel and +0x10 → DevelopCost, and sets IsHidden = (+0 == 2). FUN_10053c61c hands the count and pointer at
++0x14 and +0x18 to FUN_1005729ce, and writes the instance pointer back to +0x1C. FUN_100572a52 unlocks a category
+when each dependency's CurrentLevel ≥ the dependency's +8 float. The name at +4 is used for the duplicate-name check
+(rerct3 inventions.md).
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | u32 | initial_state | 2 = hidden. 0 / 1 visible |
+| 0x04 | char* | name | system name |
+| 0x08 | Ref txt | display_name | |
+| 0x0C | f32 | initial_level | percent researched at start (0, 10, 20, 25, 50) |
+| 0x10 | f32 | develop_cost | 10 or 1 |
+| 0x14 | u32 | dependency_count | 0..2 |
+| 0x18 | → ResearchDependency[n] | dependencies | |
+| 0x1C | zero | | runtime: ResearchCategoryInstance |
+| 0x20, 0x24 | zero | | |
+
+ResearchDependency, 12 B: +0 `category` Ref rcg; +4 `runtime_handle` i32, -1 on disk, overwritten by
+FUN_100890de6; +8 `required_level` f32, percent.
+
+#### `psi` — ParticleSkin (41 objects, 1 pair)
+
+28 B. Sources: rerct3 particles.md, OVLExtractor-2 `SFStructs.h` ParticleSkin / SpriteCoords.
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | u32 | sprite_count | 1..16 |
+| 0x04 | → (→SpriteCoords)[n] | sprites | an array of pointers, each to {f32 left, top, right, bottom} (atlas UV) |
+| 0x08 | Ref tex | texture | |
+| 0x0C | u32 | type | 0 normal, 1 special colour handling |
+| 0x10 | u32 | mode | 0 animated, 1 static |
+| 0x14 | f32 | animation_speed | 0.125 … 2.0 |
+| 0x18 | zero | | |
+
+#### `wai` — WildAnimalItem (7 objects, 1 pair)
+
+92 B. Source: libOVLng `wildanimalitem.h`. The consumer (WildAnimalItemManager, Mac FUN_1007877c8 …) was not traced
+down to field reads.
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | zero | | |
+| 0x04, 0x08, 0x0C | u32 | unk_04, unk_08, unk_0C | 2 in every object |
+| 0x10 | char* | short_name | |
+| 0x14 | Ref shs | shape | |
+| 0x18 | f32 | lod_distance | 200 |
+| 0x1C | i32 | cost | |
+| 0x20 | i32 | refund | positive = money back |
+| 0x24 | f32 | wear_rate | reciprocal durability: 0.2 food, 0.1 ball / box, 0.05 dummy / tyre, 0.033 rock |
+| 0x28 | u32 | unk_28 | 0 ball / rock, 1 box / dummy, 2 iced meat / mango / tyre |
+| 0x2C..0x34 | f32 ×3 | size_x, size_y, size_z | |
+| 0x38 | Ref gsi | icon | |
+| 0x3C | Ref txt | name | |
+| 0x40..0x4C | f32 ×4 | unk_40..unk_4C | 0.7 … 1.5, mostly 1 |
+| 0x50 | hex | animal_flags | 1 plant eaters, 2 meat eaters, 4 big animals (libOVLng) |
+| 0x54 | Ref txt | description | |
+| 0x58 | f32 | weight | 0.2 … 1.0 (libOVLng: "guess") |
+
+#### `was` — WildAnimalSpecies (22 objects, 2 pairs)
+
+There is a 64 B head. Then four 0x58 B variants, each followed by its `sound_count` × 44 B sound table (stride
+88 + 44·n). The genetics (24 B) and stats (36 B) blocks sit elsewhere in the pair. The head labels come from
+OVLExtractor-2 Form1.h. Stats come from rerct3 animals.md (WildAnimalSpeciesStats_FormatStatValueByIndex,
+byte-exact). Genetics use the index order of Mac FUN_100aa23bc / FUN_100aa24fc (WildAnimalGeneticStat_* keys over
+the animal's runtime copy at +0x178). Variant sizes come from Mac FUN_1002fb8b2, which builds a box of ±size around
+the animal. Sounds come from Mac FUN_1002fcc72 (picks by `event` and `looping`) and FUN_1002fc092 (plays an
+"AnimalSound").
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | zero | | |
+| 0x04 | char* | name | "lion" |
+| 0x08 | Ref txt | display_name | |
+| 0x0C | Ref txt | description | |
+| 0x10 | Ref gsi | icon | |
+| 0x14 | char* | data_path | "WildAnimals\lion\lion_data" |
+| 0x18..0x24 | → Variant ×4 | adult_male, adult_female, baby_male, baby_female | |
+| 0x28 | → Genetics | genetics | |
+| 0x2C | → Stats | stats | |
+| 0x30 | char* | shelter | AnimalShelterDesc name ("bigcatshelter"). Mac FUN_10047c3a0 |
+| 0x34 | u32 | primate | 1 only for chimp, gorilla, mandrill and orangutan. Passed as a bool by Mac FUN_1004a963e |
+| 0x38 | f32 | escape_height | Mac FUN_1005532ae fires an event when the enclosure's float at +0x50 is below this value |
+| 0x3C | Ref txt | naming_name | Name_WildAnimalSpecies_*_ForAnimalNaming |
+
+Variant (0x58 B):
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | Ref mdl | model | |
+| 0x04 | Ref wad | animations | |
+| 0x08, 0x0C, 0x10 | f32 | size_x, size_y, size_z | full extents. Also summed for the visual LOD (Mac FUN_1002fc894) |
+| 0x14 | u32 | unk_14 | 33000 … 60000, cubs above adults |
+| 0x18 | f32 | unk_18 | 0.55 … 0.9 |
+| 0x1C | Ref txt | description | |
+| 0x20, 0x24 | f32 | unk_20, unk_24 | adults about 1, cubs about 0.5 |
+| 0x28, 0x2C | u32 | unk_28, unk_2C | adults 1/1 … 1/3, cubs 0/5 |
+| 0x30 | Ref gsi | icon | |
+| 0x34, 0x38 | f32 | unk_34, unk_38 | always equal. Adults above cubs (lion 3.0 / 1.47) |
+| 0x3C..0x48 | f32 ×4 | unk_3C..unk_48 | mostly 0. Bears 0.61 ×2 |
+| 0x4C | u32 | unk_4C | 0..3 |
+| 0x50 | u32 | sound_count | 14..19 |
+| 0x54 | → AnimalSound[n] | sounds | |
+
+AnimalSound (44 B): +0 `sound` Ref snd; +4 `event` (animation / action id: 9 eat, 12 drink, 15 sleep …);
++8 `start_time` f32 (stored on the one-shot when > 0); +0x0C/+0x10 `pitch_min/max` (random factor, scales rate and
+length); +0x14/+0x18 `volume_min/max`; +0x1C/+0x20 `distance_min/max` (< 0 = engine default); +0x24 `unk_24`
+(0 everywhere, passed to the sound-instance constructor); +0x28 `looping` (1 looping object, 0 one-shot).
+
+Genetics (24 B): `hunger`, `peep_enjoyment`, `social`, `water_body_requirement`, `adolescence_period`, `active` (u32).
+Stats (36 B): `prey_count`, `prey` (→ char*[n] species names), `breeding_happiness_req`, `breeding_space_req`,
+`vertical_step_reach` f32, `diet_type` (0 meat, 1 hay, 2 foliage), `months_between_births`, `babies_pre_pregnancy_av`,
+`gestation_period`.
+
+The variant `unk_*` words have no reader: the only code that holds a variant pointer is WildAnimalVisual (+0xD8).
+It reads +0x00, +0x04, +0x08..+0x10, +0x50 and +0x54 only. The AI side never selects a variant through the species
+pointer (Mac FUN_1005539aa returns it; its 39 callers read +0x2C, +0x30, +0x34, +0x38 and +0x3C only).
+
+#### `ent` — Entertainer = EntertainerDesc (14 objects, 14 pairs)
+
+256 B. There are 7 Characters/Entertainers/Entertainer%d and 7 Characters/VIPStats/VIP%d. In the VIP pairs the
+struct does not start the block: the thought table (12 B × n) and its txt refs come first, and +0xA8 points to the
+block start. In the 8 objects with no VIP data, the words +0xA4..+0xFC are 0, apart from +0xAC. Consumers (Mac):
+parts FUN_1002d4398 / FUN_100a37e60; speed factors FUN_1002d5fbc / FUN_100a693b6
+(`speed = base × factors[table[anim_state]]`); debug name FUN_1005df742; height FUN_1003be553, which returns it per
+person type and adds it to the position for the eye / camera height; thoughts FUN_1006d035c; animation masks
+FUN_1002d5c2c; +0xB8/+0xBC FUN_100994be0; +0xC0..+0xFC FUN_1009949ac. Guests reach the desc through person +0x168
+(3 VIP, 7 entertainer) and +0x169 (index).
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | zero | | |
+| 0x04 | u32 | speed_factor_count | 15 |
+| 0x08 | → f32[n] | speed_factors | per motion class, multiplies the base walk speed |
+| 0x0C | u32 | part_count | 5 |
+| 0x10 | → char*[n] | parts | people parts: head, body, legs, swim body, swim legs |
+| 0x14 | char* | debug_name | "Panda", "Joe Sluggerball" |
+| 0x18 | f32 | height | 1.44 … 2.18 |
+| 0x1C | Ref txt | display_name | |
+| 0x20 | Ref gsi | costume_icon | `:gsi` for VIPs |
+| 0x24 | Ref gsi ×16 | lower_colours | `<Name>Lower_UniformColour_N` |
+| 0x64 | Ref gsi ×16 | upper_colours | `<Name>Upper_UniformColour_N` |
+| 0xA4 | u32 | thought_count | |
+| 0xA8 | → Thought[n] | thoughts | VIPs only |
+| 0xAC | u32 | anim_count | bit length of each mask (329, 348) |
+| 0xB0 | u32 | anim_mask_count | |
+| 0xB4 | → AnimMask[n] | anim_masks | |
+| 0xB8, 0xBC | i32 | pose_time_0, pose_time_1 | FUN_100994be0(0 / 1): value / constant, compared with the animation timer |
+| 0xC0 | {f32 z, f32 y} ×8 | pose_offsets | FUN_1009949ac(pose 2..9) returns (0, y, z), the local offset of a pose. Non-VIPs use the built-in tables |
+
+Thought (12 B): +0 `thought` (id the guest code asks for), +4 `text_count`, +8 → txt refs[n] (one picked as
+`index % n`). AnimMask (16 B): +0 `flag_word` (which of the guest's three animation flag words gets the bits),
++4 `flags_if_set`, +8 `flags_out_of_range` (used when the animation id ≥ `anim_count`), +0xC → u32 bitmask of
+⌈anim_count / 32⌉ words, one bit per animation id. The JSON gives the mask as hex words.
+
+
+### 21.4 Animations and wild-animal models
+
+Layouts in `extractors/src/DataExtractor_Anims.cpp` (`register_anims`). `ovl_layout_check` → 0 issues on
+all five tags. Evidence: Mac decompile (`decompile/ghidra/decompiled.c`) + whole-corpus statistics.
+
+#### `san` — SimpleAnim (3 010 objects, 14 pairs)
+
+People head animations (`Characters/*/Shared/Head_*`). Loader is a no-op relocator
+(`FUN_10040b036` registers "san"; Load = `return`). 16 B structs back to back.
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | u32 | key_count | 1–30 |
+| 0x04 | u32 | channel_count | = `bone_count` of the owning `sal` (2, 3 or 4) |
+| 0x08 | f32* | times | `key_count` key times in s; first key is not at 0, last key may repeat (equal times, 1 157 cases) |
+| 0x0C | rec* | channels | `key_count × channel_count` value records, key-major: record(k, c) = values + (k·channels + c)·24 |
+
+Value record (24 B):
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | f32[3] | translation | bone position in the parent (channel 0: model space) |
+| 0x0C | i16[3] | x_axis | unit vector × 32767: column 0 of the bone rotation (bone local X in the parent frame) |
+| 0x12 | i16[3] | y_axis | column 1; z = x × y |
+
+Not tangents (rerct3 lead was wrong): over all 70 789 records both vectors are unit length (max deviation
+2.4e-5) and orthogonal (max |dot| 3.7e-5). Column, not row, interpretation: `Bip01 Head` (channel 1)
+sits at `(0.073, 0, 0)` in the neck frame and neck x_axis ≈ (0, 1, 0), so the head lands 7 cm above the
+neck, as it must. JSON: `channels[c] = {translation[k][3], x_axis[k][3], y_axis[k][3]}` (decoded floats,
+scale 1/32767 applied).
+
+**Channel → bone mapping.** Channel *c* is `sal.bone_names[c]`: always `Bip01 Neck` (parent −1),
+`Bip01 Head` (parent 0), then optionally `Bip01 Ponytail1`, `Bip01 Ponytail11` (4-channel heads AF/PF/TF/VF)
+or `Bip01 Glasses` (JS). Head placement for §20: `M_head = [R(neck)|t(neck)] · [R(head)|t(head)]`,
+R = (x_axis, y_axis, x_axis × y_axis) as columns.
+
+#### `sal` — SimpleAnimList (27 objects, 14 pairs)
+
+40 B. Referenced by `phd+0x8C`. Lists every animation of one head (one `L1` and one `SS_` swimsuit list per head).
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | u32 | bone_count | 2–4 |
+| 0x04 | char** | bone_names | channel names of every `san` of the list |
+| 0x08 | i32* | bone_parents | −1 = root, else index into bone_names |
+| 0x0C | u32[4] | — | 0 everywhere |
+| 0x1C | u32 | anim_count | 0x3B–0xC3 |
+| 0x20 | char** | anim_names | "Walk", "HoldHandKidBoth", … (the people animation names) |
+| 0x24 | san&[n] | anims | symbol refs, same order as anim_names |
+
+#### `modelanim` — ModelAnim (1 125 objects, 19 pairs)
+
+Wild-animal clips (`WildAnimals/*_anims`). 88 B + 1 extra-data chunk. Loader Load = `FUN_10026d3aa`
+(Mac): it reads the extra chunk as NUL-terminated names and stores, for each name, a string-table id
+into the u32 slots of lists +0x08 (count +0x18), +0x0C (+0x1C), +0x10 (+0x20) and pairs in +0x14
+(+0x24, two names each); unload `FUN_10026d69e` releases them. The rerct3 lead had the counts wrong
+(+0x18/+0x1C are the list counts, not "boneCount/totalBoneCount" of a hierarchy).
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | f32 | duration | = (frame_count − 1) / 30 (30 fps) |
+| 0x04 | u32 | frame_count | 13–116 |
+| 0x08 | u32* | translation_bones | name-id slots (0 on disk); JSON: names from the extra chunk |
+| 0x0C | u32* | rotation_bones | idem |
+| 0x10 | u32* | list3 | idem; always empty (null, count 0) |
+| 0x14 | u32* | name_pairs | idem, 2 ids per entry; always empty |
+| 0x18 | u32 | translation_bone_count | 7–10 (Bip01, Spine, Spine1, clavicles, thighs, …) |
+| 0x1C | u32 | rotation_bone_count | 23–34: the whole skeleton |
+| 0x20 | u32 | list3_count | 0 |
+| 0x24 | u32 | name_pair_count | 0 |
+| 0x28 | f32* | translations | frame-major: frame f, bone b at +(f·n_t + b)·12: xyz |
+| 0x2C | f32* | rotations | frame-major: +(f·n_r + b)·16: quaternion x, y, z, w (all unit length) |
+| 0x30 | u32[10] | — | 0 everywhere |
+
+Extra chunk: `translation_bone_count + rotation_bone_count` names, translation bones first (verified
+on all 1 125 objects). Data sizes check exactly (e.g. `MaleGorillaWalkSick`: 30 × 7 × 12 = 2 520 B
+to the block end). JSON: `translations[b] = {bone, keys[f][3]}`, `rotations[b] = {bone, keys[f][4]}`.
+The float keys are not compressed (the 11/10/11 packed quaternions of the rerct3 runtime track object are
+a runtime form, not the on-disk one).
+
+#### `wad` — WildAnimalAnimData (41 objects, 19 pairs)
+
+Variable size 0x38 + 4·anim_count (31 anims → 180 B; one `Elephant:wad` has 8 → 88 B). No-op loader.
+Consumers (Mac): `FUN_1002faff0` (species setup, reached through the `{mdl, wad, …}` record at
+animal+0xD8), locomotion `FUN_1002ff6dc`, `FUN_100333a1c` (walk/run blend),
+`FUN_1002fbf10` (anim clock).
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | u32 | head_look_neck_chain | passed with "Bip01 Neck" to the head look-at controller `FUN_10025a478`: number of bones above the neck (parent chain) that share the turn (0, 2, 3) |
+| 0x04 | u32 | head_look_head_chain | idem with "Bip01 Head", bones below it (1–3) |
+| 0x08 | u32 | anim_count | 31 (8) |
+| 0x0C | ptr | anims_offset | always points at +0x38 of the struct itself (JSON: 0x38) |
+| 0x10 | f32* | anim_durations | per anim; the anim clock wraps on it (`floorf(t / d)`), = modelanim duration |
+| 0x14 | f32* | anim_speeds | per anim, m/s: position += dir · speed · dt (`FUN_1002ff6dc`); [0] walk, [1] walk sick, [2] run; 0 for in-place anims |
+| 0x18 | f32 | unk_18 | 0.12–1.74, grows with body size; no reader found |
+| 0x1C | u32 | unk_1C | 0, 1 or 2 (2: apes, bears, pandas; 1: mandrills); no reader found |
+| 0x20 | f32 | unk_20 | 0.16–2.82, body length-like; no reader found |
+| 0x24 | f32 | unk_24 | always k/30 (0.4–0.9 s): a time in frames/30; no reader found |
+| 0x28 | f32 | run_blend_in_speed | when switching to anim 2 (run): blend = (v − speed[cur]) / (speed[run] − speed[cur]); < 0 disables. Overwritten at runtime by `FUN_1006c1814` |
+| 0x2C | f32 | run_blend_out_speed | same when leaving run |
+| 0x30 | f32 | unk_30 | 0 (37×), −0.3 … 0.9; no reader found |
+| 0x34 | f32 | unk_34 | −1 (33×) or a positive value (0.78–1.91); no reader found |
+| 0x38 | modelanim&[n] | anims | inline symbol refs, fixed order: Walk, WalkSick, Run, (null), Stand, StandSick, Idle1, Idle2, EatIn/Loop/Out, DrinkIn/Loop/Out, SleepIn/Loop/Out, Scratch, InteractALoop, InteractB, HitObject, ClickReaction, Sit, InteractAIn/Out, TurnL20/45/90, TurnR20/45/90 (indices 0x19–0x1E are the turns, read by `FUN_1006c1814`) |
+
+#### `mdl` — Model (50 objects, 22 pairs)
+
+Wild-animal skinned model (`WildAnimals/*_data`). 80 B struct + 2 extra-data chunks: the model image
+and the bone names. Active loader (fgdk3 `ModelRes/Code/Runtime/Model.cpp`): Mac `FUN_100255a02`
+(relocates the image in place), `FUN_1002560f6` (per-LOD mesh setup), `FUN_10020803c` (vertex size from
+the format word), unload `FUN_1002557a8`.
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | u16 | — | 0 |
+| 0x02 | u16 | flags | 1 on disk (bit 0 asserted by `FUN_100256420`); bits 2/4/8/0x10 = runtime load stages |
+| 0x04 | u8 | lod_count | 5 or 6 |
+| 0x05 | u8 | resident_lod_count | = lod_count everywhere; LODs [0, lod_count − resident) would be streamed from a third chunk |
+| 0x06 | u16 | material_count | 1–8 |
+| 0x08 | f32[4] | bounding_sphere | centre xyz, radius (= bbox centre / half diagonal) |
+| 0x18 | f32[3] | bbox_min | |
+| 0x24 | f32[3] | bbox_max | |
+| 0x30 | — | model (Custom) | +0x30..+0x4F runtime handles (bone/material tables, LODs, buffers, +0x4C optional count), 0 on disk; the field decodes the two chunks |
+
+Model chunk (all offsets in the chunk; the loader aligns to 16 where noted):
+
+```
++0   u32 bone_count, u32 n1, u32 n2, u32 n3   (n1..n3 = 0 everywhere: extra name lists)
++10  bone[bone_count] (0x60): f32 position[4] (w = 1), f32 rotation quat[4] (xyzw),
+                              f32 inverse_bind_matrix[16] (row-major, translation in row 3)
+     u16 parent (0xFFFF root), u16 next (= i+1, 0xFFFF for the last) per bone
+     (u32[n2])                                           -> align 16
+     u32 size[material_count], then the material names (C strings of those sizes) -> align 16
+     LOD record[lod_count] (0x14): u16 material_record_count (= material_count), u16 mesh_count,
+                                   u32 bone_count, ptr records, ptr meshes, u32 has_bone_mask (0)
+     u32 lod_ext[lod_count] (0; non-zero -> one more 0x14 record) -> align 16
+     per LOD: (bone mask, unused) mesh[mesh_count] (0x20) -> align 16, then per mesh
+              vertices, u16 indices -> align 4, then material_record[n] (0x10) + their range lists
+```
+
+Mesh record (0x20): `u32 format` (0x1305 in all 321 meshes), `u32 index_count` (triangle list),
+`u16 index_sets` (1; index bytes = sets × count × 2), `u16 vertex_count`, `u16 unk_0C` (0 everywhere),
+`u16 unk_0E` (0xFFFF everywhere; libOVLng `ModelExtraMeshHeader` also leaves both unexplained),
+4 runtime pointers (0). Vertex format 0x1305 = 44 B: `f32 position[3]`, `f32 normal[3]`,
+`u8 bone[4]`, `u8 weight[4]` (sum 255 on every vertex, bones < bone_count), `u32 colour` (FFFFFFFF),
+`f32 uv[2]` — size matches `FUN_10020803c` (bits 1: xyz, 4: normal, 0x100: 4 weights, 0x200: colour,
+0x1000: one uv set). Material record (0x10): `u16 material`, `u16 n_ranges`, `u16 n_ranges_b`, `u16 0`,
+2 runtime ptrs; then `n_ranges` × `{u16 first_mesh, u16 mesh_count}` and `n_ranges_b` × same
+(`ranges_b` empty everywhere). The walk ends exactly at the chunk end on all 50 models.
+
+Name chunk: `bone_count` NUL-terminated bone names ("Bip01", "ACamChase", "Bip01 Pelvis", …), same
+names as the `modelanim` rotation bones. (Needed the PairView fix: v5 subversion-1 files start their
+extra-data stream with a 0 word.)
+
+JSON: `model = {bones[{name, parent, next, position, rotation, inverse_bind_matrix}], materials[names],
+lods[{bone_count, meshes[{format, vertex_count, index_count, unk_0C, unk_0E, positions, normals,
+bone_indices, bone_weights, colours, uvs, indices}], materials[{material, ranges, ranges_b}]}]}`.
+
+
+### 21.5 Scenery items, stalls, special attractions
+
+Layouts: `extractors/src/DataExtractor_Scenery.cpp` (`register_scenery`). `ovl_layout_check`:
+sid 5 995 / 5 995 ok, sta 89 / 89, sat 6 / 6, 0 issues. All pointers on disk stay 32-bit
+in the Mac x86_64 build (FUN_1001f2550 turns a 32-bit handle into a pointer), so the
+offsets the Mac code reads are file offsets.
+
+#### `sid` — SceneryItem (5 995 objects, 162 pairs)
+
+The struct is 0xD4 (structure_version 0), 0xE4 (1, Soaked: `_Sext`) or 0xEC (2, Wild: `_Wext`),
+chosen by the u16 at +0xA (the game itself tests `u32(+8) > 0xFFFF` / `> 0x1FFFF`).
+In the Mac game the descriptor sits at SceneryItem+0xF8.
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | u32 | — | 0 everywhere |
+| 0x04 | hex | flags | placement flags. 0x400000: sounds start without their first script (FUN_1007caaa6). Most common: 0x14E1, 0x16E1, 0x1041 (supports), 0x10E1 |
+| 0x08 | u16 | position_type | 0 full tile (5 439), 3 wall, 4 quarter, 1/2 path edge, 5 half, 6 path centre, 7 corner, 8 path-edge join |
+| 0x0A | u16 | structure_version | 0 / 1 / 2 (2 050 / 1 276 / 2 669) |
+| 0x0C | u32 | height | 0 (4 736) or the item height in height units: equals size_y and the largest square max_height_block on all 1 259 non-zero (supports 1m→1 … 8m→8, Steepslope 11, Windmill 17). libOVLng "unk1". No game reader found |
+| 0x10 / 0x14 | u32 | squares_x / squares_z | footprint |
+| 0x18 | ptr | squares | → squares_x·squares_z × square (20 B), row-major |
+| 0x1C..0x24 | f32×3 | position_x/y/z | bounding box min |
+| 0x28..0x30 | f32×3 | size_x/y/z | bounding box size (tiles of 4 m, height units) |
+| 0x34 | u32 | track_struct_count | |
+| 0x38 | ptr | track_structs | → count × track_struct (88 B); 2 903 sids |
+| 0x3C | i32 | cost | build price in cents (200 = $2 on 3 770 items) |
+| 0x40 | i32 | removal_cost | cents, negative = refund (200, −1000, −400…) |
+| 0x44 | u32 | unk_44 | 5 rides / track / stalls / most scenery (4 714), 0 walls / paths / supports / pool pieces (1 252), 4 on the 29 raised paths. Importer "unk2". No reader found |
+| 0x48 | u32 | type | scenery class (0 tree, 2 shrub, 3 flowers … 18 ride track, 27 stall; checked against the classification condition FUN_1009f04b8) |
+| 0x4C | char* | supports | support style (`ts1`, `scaffolding`, `defaultpool`, ""…) |
+| 0x50 / 0x54 | u32 / ref[] | svd_count / svds | `:svd` refs (2–4 for trees / LOD variants) |
+| 0x58 | ref | icon | `:gsi` (1 568) |
+| 0x5C | ref | group_icon | `:gsi` |
+| 0x60 | ref | group_name | `:txt` |
+| 0x64 | char* | ovl_path | |
+| 0x68 / 0x6C | u32 / ptr | param_count / params | → {char* type, char* params} (LitterBin, Sign, RideEvent…) |
+| 0x70 / 0x74 | u32 / ptr | sound_count / sounds | → sound (16 B); 114 sids, mostly ride pieces |
+| 0x78 | ref | name | `:txt` |
+| 0x7C, 0x80 | u32 | — | 0 everywhere |
+| 0x84 | i32 | break_time_min | breakdown timer, see below |
+| 0x88 | i32 | break_time_range | |
+| 0x8C..0x94 | u32×3 | default_colour_1..3 | FlexiColour indices 0..31 of the three remap channels (0 = unset on ~5 370) |
+| 0x98..0xB4 | 32 B | — | 0 everywhere |
+| 0xB8 / 0xBC | u32 / char*[] | anr_name_count / anr_names | individual animations (2 flat rides) |
+| 0xC0 | u32 | — | 0 everywhere |
+| 0xC4 | u32 | anr_age_alternatives | |
+| 0xC8 | u32 | anr_animation_chunks | |
+| 0xCC | u32 | anr_alternate_run_animations | |
+| 0xD0 | u32 | anr_cycles_per_circuit | (all four read by the flat-ride code, FUN_100421c94: `+0xC4 < 2`, `+0xC8 * +0xC4`) |
+| *v ≥ 1* | | | |
+| 0xD4 | ptr | extra_sounds | → sound_count × extra_sound (12 B) |
+| 0xD8 | u32 | — | 0 everywhere |
+| 0xDC | u32 | addon_pack | 0 vanilla, 1 Soaked, 2 Wild (read by FUN_1007ccf72) |
+| 0xE0 | u32 | generic_addon | 0 / 1 / 2 (2 on GenericStall, DonutStall…; read by FUN_1007ccf72) |
+| *v = 2* | | | |
+| 0xE4 | f32 | unk_E4 | −1 on 2 666, 0.5 Acacia, 2 Baobab, 3.4 Banyan (Wild trees). Importer "unkf". No reader found |
+| 0xE8 | i32 | billboard_aspect | −1 none, 0..6 = 8:1 … 1:8 (read when version ≥ 2, else −1) |
+
+Breakdown timer (FUN_1007cf59e, SceneryItem BREAKFLAGS @+0xBC / BREAKTIME @+0xC0): when either
+field is non-zero the item arms BREAKTIME = min + rand()·range game-time units (2880 = 1 day,
+§terrain-fog), counts it down and sends a break message at 0. Stalls (type 27) ignore the
+fields and use 6000 + rand()·8000. Stalls carry 1440 / 2880, CashMachine 0 / 2880.
+
+square (20 B), one per footprint cell:
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | hex | flags | per-cell collision / support flags (bit 0 tested by the support pass FUN_1007cf778, bit 1 "support column needed" per rerct3). Common 0xFFB, 0, 3, 0xFF9 |
+| 0x04 | i32 | min_height_block | lowest blocked height unit (−2..) |
+| 0x08 | i32 | max_height_block | highest |
+| 0x0C | ptr | block_bits | → ⌈(max−min)/32⌉ u32 bit words, one bit per height unit (ManagerSID) |
+| 0x10 | u32 | support_type | support orientation (1 vertical on 21 842, 0, 2..7 diagonal / mirrored; rerct3 RebuildCellVisuals) |
+
+track_struct (88 B), support / girder connection (libOVLng SceneryItemTrack). Three points:
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 / 0x04 | i32 | start_x / start_z | cell (0..11) |
+| 0x08 / 0x0C | u32 | start_sub_x / start_sub_z | 0..2 in the 3×3 sub-grid |
+| 0x10 / 0x14 | f32 | start_offset_x / start_offset_z | ≈ 0.5 within the sub-cell |
+| 0x18 | f32 | start_height | |
+| 0x1C / 0x20 | i32 | end_x / end_z | −1..10 |
+| 0x24 / 0x28 | u32 | end_sub_x / end_sub_z | 0..2 |
+| 0x2C | f32 | end_height | |
+| 0x30 | u32 | angled | 0 everywhere |
+| 0x34 / 0x38 | i32 | control_x / control_z | 0 everywhere (rotated by FUN_1007d304c) |
+| 0x3C / 0x40 | u32 | control_sub_x / control_sub_z | 0 |
+| 0x44 / 0x48 | f32 | control_offset_x / _z | 0.5 everywhere |
+| 0x4C | f32 | control_height | 0 |
+| 0x50 | hex | flags | 0..2 (bit 0 inverted, bit 1 reversed, rerct3) |
+| 0x54 | u32 | group | 1..9; entries with the same group share a girder (FUN_1007d341c) |
+
+The game registers a girder only when start and end cells differ (FUN_1007d1c3c compares
++0x00/+0x1C and +0x04/+0x20) and rotates each cell pair with FUN_1007ca90a
+(FUN_1007d2fe6 start, FUN_1007d2f6a end, FUN_1007d304c control).
+
+sound (16 B): `u32 sound_count; ref[] sounds (:snd); u32 script_count; ptr scripts → script_count
+script pointers` (null = no script for that animation). A script is a list of
+`{f32 time; u32 command; [f32 value; f32 end_time] if command 3 or 4}` ended by command 0
+(ManagerSID; parsed by FUN_1007cad34): 1 start a random sound of the list, 2 stop, 3 volume
+fade to `value` by `end_time`, 4 pitch fade. Over the game: 2 387 starts, 362 stops, 1 448
+volume, 1 537 pitch, 1 221 ends.
+
+extra_sound (12 B, v ≥ 1): `f32 min_distance` (< 0 → 5.0), `f32 max_distance` (< 0 → 100.0),
+`u32 category` (0 / 2: index of the sound category list / volume channel the RunningSound joins,
+FUN_10040169c). Most are (−1, −1, 0); fountains (5, 40, 2).
+
+#### `sta` — Stall (89 objects, 34 pairs)
+
+Two layouts, told apart by `u32(+0) == 0xFFFFFFFF` (FUN_100618b98; 54 SW, 35 V). The game then
+finds the sid at tail+0 when the attraction type's byte 1 is 0 / 1, else at SW +0x28.
+
+Stall_V (0x5C): Attraction_V (0x00..0x37, below) then
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x38 | ref | sid | `:sid` |
+| 0x3C | u32 | item_count | 0 on kiosks (tested at tail+4) |
+| 0x40 | ptr | items | → item_count × {ref item (`:cid`); i32 price (cents)} |
+| 0x44..0x58 | u32×6 | appeal_female_child / _teen / _adult, appeal_male_child / _teen / _adult | 0..9 |
+
+Stall_SW (0x2C): `0x00 sw_marker (0xFFFFFFFF), 0x04 item_count, 0x08 items, 0x0C..0x20 the six
+appeals, 0x24 attraction → Attraction_S / _W, 0x28 sid`.
+
+Appeal: FUN_10054a81e(stall, PersonType, SubType) returns tail+0xC/+0x10/+0x14 for a female
+(SubType 1) child / teen / adult (PersonType 0 / 1 / 2, Person+0x168/+0x169, names from
+FUN_1005df742: "Child ", "Teenage ", "Adult ", "Male", "Female") and +0x18/+0x1C/+0x20 for a male,
+5 otherwise; FUN_10054a874 feeds it into powf(). Defaults 6 7 5 / 7 8 9; pirate toys 4 3 1 / 9 3 1;
+T-shirts and kiosks 5 everywhere; pretzels 4 6 8 / 4 6 9.
+
+Attraction (shared with the flat / tracked rides: §16.1). Vanilla 0x38 inline; behind the SW
+pointer it is Attraction_S (0x40) when type byte 1 == 2 and Attraction_W (0x44) when == 3.
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | hex | type | low byte: 7 food, 8 drink, 9 misc, 0x0E info, 0x0B toilet, 0x0C ATM, 0x0D first aid; byte 1: 0 vanilla, 2 Soaked (S), 3 Wild (W) |
+| 0x04 / 0x08 | ref | name / description | `:txt` |
+| 0x0C | ref | icon | `:gsi` (all `:gsi`, empty) |
+| 0x10 | i32 | cost | cents: 10000 on 77, 30000, 1000 |
+| 0x14 | i32 | refund | cents, negative: −7500, −30000, −750 |
+| 0x18, 0x1C | u32 | — | 0 everywhere |
+| 0x20 | i32 | base_upkeep | 1500 stalls, 4960 sat |
+| 0x24 | ref | spline | `:spl` (empty) |
+| 0x28 / 0x2C | u32 / ref[] | path_count / paths | 0 on every stall / sat |
+| 0x30 | hex | flags | 0 |
+| 0x34 | i32 | max_height | 12 |
+| *S, W* | | | |
+| 0x38 | u32 | addon_pack | 0 / 1 / 2 |
+| 0x3C | u32 | generic_addon | 2 on Donut / FrenchFry / Generic stalls (same as their sid +0xE0), else 0 |
+| *W* | | | |
+| 0x40 | hex | ui_deactivation | 0 |
+
+#### `sat` — SpecialAttraction (6 objects, 4 pairs)
+
+V (0x3C) = Attraction_V + `0x38 sid`. SW (0x0C) = `0x00 sw_marker (2), 0x04 attraction →
+Attraction_S/W, 0x08 sid`; the game tests `*data != 2` (FUN_1006ec382, FUN_1006ec352 returns
+`*(+4)` or `data − 0x38`). The three vanilla utilities (Toilet, CashMachine, Mcentre) ship both:
+V in their own pair, SW (type 0x30B..0x30D, W attraction) in Style/Vanilla/Style.
+
+
+### 21.6 People parts, heads, skins; manifold meshes
+
+Layouts in `extractors/src/DataExtractor_People.cpp` (`--types data`). Evidence is
+the Mac build (`decompile/ghidra/decompiled.c`). The Mac binary is 64-bit but keeps
+the 32-bit on-disk structs: every pointer slot is a 32-bit handle turned into a
+pointer by `FUN_1001f2550`, so the offsets its consumers read are the on-disk
+offsets. Loaders: `prt` `FUN_100635c78`/`FUN_100635e5a`, `phd`
+`FUN_100626cce`/`FUN_100626dd8`; `ppg`, `ssk`, `mam` have empty loaders
+(relocate only).
+
+#### `prt` — PeoplePart (791 objects, 259 pairs)
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | u32 | `unk_00` | 1 in all 788 regular objects; no reader in the loader or the draw / pick / attachment paths. |
+| 0x04 | u32 | (zero) | Runtime: the loader allocates a 0x161 B cache (byte 0 = mesh usable, +1.. global-bone → mms-bone map, +0x15D 4 attachment-point bone indices) and stores its handle here. |
+| 0x08 | ref `tex` | `texture` | Bound before drawing the part (`FUN_1006a71a2` +8); batch key in `FUN_1006a2ef8`. 85 null (attachment dummies). |
+| 0x0C | ref `mms` | `mesh` | Loader reads the mesh's bone names ("attachmentdummyhand/head/lhand/rhand" → attachment points 0/2/1/0); renderer its vertex / index counts. |
+| 0x10 | u32 | `palette` | Index into the person's 5 palette bytes (SkinPalette … LowerSwimSuitPalette): `FUN_1006359d8` (PeoplePart_TransformAndCopyBatch) reads `palette[prt+0x10]` and offsets UVs by ((p&3)·0.25, (p>>2&3)·−0.25). |
+
+Variant `prt_stray` (3 objects, `Characters/CF/CF01/SS_SkinLegs_CF01`): `texture`
+ref at +0x00, zero +0x04/+0x08, `unk_0C` = 1, `mesh` ref at +0x10. The pair is a
+stray duplicate: the same three symbols exist well-formed in
+`CF01_SwimSuitLegs1_Main` / `CF01_SwimSuitLegs2_Main` (the ones the CF01 swimsuit
+`ppg` reference). Chosen when +0x00 is a symbol reference.
+
+#### `ppg` — PeoplePartGroup (157 objects, 157 pairs)
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | u32 | `unk_00` | 1; 2 on the Wild! groups (AK01, Smythe, Tiger). No reader found. |
+| 0x04 | u32 | `expansion` | 0 base, 1 Soaked! (BobW, Sharky), 2 Wild! (AK01, Smythe, Tiger). Same pair of words as CarriedItem +0/+4 (libOVLng `carrieditems.h`: "unk1 always 1", "addonpack"). Swimsuits and the lifeguard (Soaked! content) still say 0; no reader found. |
+| 0x08 | u32 | `unk_08` | 0/1: 1 on most guest / VIP swimsuit groups (not AM01_SwimSuitLegs2, BobW, Smythe) and on all three LG01 (lifeguard) groups. No reader found. |
+| 0x0C | u8 | `person_type` | Matches Person `PersonType` (+0x168): 0 child, 1 teen, 2 adult, 3 VIP, 4 handyman, 5 mechanic, 6 security guard, 7 entertainer, 8 vendor, 9 animal keeper, 10 paramedic, 11 park inspector (names: debug switch in `FUN_1005df742`), 12 lifeguard (LG01). |
+| 0x0D | u8 | `sub_type` | Matches Person `SubType` (+0x169): 0 male, 1 female ("Male"/"Female" in the same switch; AF/CF/TF/VF = 1). |
+| 0x0E | u8 | `slot` | 0 head, 1 body, 2 legs, 3 swimsuit body, 4 swimsuit legs (the 5 Person part-group references; `FUN_1006b7ffe` is called with slot 0..4; draw reads the person's optional-part mask word `[slot]`). BobW_SwimSuitLegs says 2. |
+| 0x0F | u8 | `optional_part_count` | Loop bound for optional parts in draw / pick / attachment / validation. |
+| 0x10 | u32 | `unk_10` | 1 on AF01, AM05, CM05, TM05 heads only, else 0. No reader found. |
+| 0x14 | f32* | `optional_part_chances` | `optional_part_count` floats: at setup (`FUN_1005df742`) bit i of the slot's optional mask is set when `rand() < chance[i]`. |
+| 0x18 | f32 | `weight` | Selection weight: `FUN_1006b893a` copies type / sub_type / slot / +0x18 into the part-group registry, `FUN_1006b7ffe` picks a group per (type, sub_type, slot) by weighted random. 100, 25 on rarer heads (AF05, AM04, CM07, TM04). Not a LOD distance (person LOD thresholds are 20/50/300 in `FUN_1006a274c`). |
+| 0x1C | 3 × lod | `lods` | Person LOD 0, 1, 2 (+0x8E selects). |
+| 0x34 | ref `phd` | `head` | Detailed head, drawn at LOD 0–1 only (`FUN_1006a6774`: skipped when LOD > 1). |
+| 0x38 | 3 × lod | `swim_lods` | Used instead of `lods` when the person's UseSwimSuit byte is set. |
+| 0x50 | ref `phd` | `swim_head` | |
+
+LOD record (8 B):
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | u8 | `fixed_count` | Parts always drawn. |
+| 0x01 | u8 | `optional_count` | Parts drawn when their mask bit is set; validation reports "%d Optional Part(s) Missing". |
+| 0x02 | u16 | (zero) | |
+| 0x04 | prt** | `parts` | `fixed_count + optional_count` refs; a null ref is an unresolved part (HM01_Head). |
+
+#### `phd` — PeopleHead (87 objects, 44 pairs)
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | f32[16] | `hat_attachment` | Row-major matrix of attachment point 2 ("attachmentdummyhead"), multiplied by the head bone's matrix in `FUN_1006a6b5c`. Translation x 0.27–0.52 along the head bone (top of the hair; AF05's tall hair 0.52). |
+| 0x40 | f32[16] | `face_attachment` | Same for attachment point 3 (no mms bone maps to it): x ≈ 0.16, z ≈ 0.15 — eye level, in front of the face (sunglasses). |
+| 0x80 | u32 | `unk_80` | 1 in all objects; no reader found. |
+| 0x84 | u32 | (zero) | Runtime: loader allocates a 0x160 B cache (word 0 = index of "Bip01 Head" in the sal, then a global-bone → sal-bone map) and stores its handle here. |
+| 0x88 | ref `tex` | `texture` | Bound before drawing the ssk (`FUN_1006a71a2`, `FUN_1006a2ef8`). |
+| 0x8C | ref `sal` | `animation` | Head bone animations: loader looks up "Bip01 Head" in its bone names; pose `FUN_100626e16`. |
+| 0x90 | 2 × 6 ref `ssk` | `lods` | `lods[person LOD (+0x8E)][expression (+0xA8)]`, each {`neutral`, `angry`, `happy`, `sad`, `scared`, `sick`} (order from the symbol suffixes; 3 heads repeat the neutral skin). |
+
+#### `ssk` — SimpleSkin (1 014 objects, 44 pairs)
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | u32 | `bone_count` | Outer loop of `FUN_1003fc026` (SimpleSkin_TransformVertices). |
+| 0x04 | char** | `bone_names` | "Bip01 Neck", "Bip01 Head", "Bip01 Ponytail1"… Not read by the Mac code paths found (bone i uses matrix i of the head's sal pose). |
+| 0x08 | u32* | `bone_vertex_counts` | Vertices of bone i follow those of bone i−1. |
+| 0x0C | u32 | `triangle_count` | |
+| 0x10 | u16* | `indices` | 3 per triangle, copied as-is to the index buffer. |
+| 0x14 | u32 | `vertex_count` | |
+| 0x18 | f32* | `vertices` | 8 floats per vertex: position (× bone matrix + translation), normal (× bone matrix, w = 0), U, V (+ the palette cell offset). Flat array in the JSON. |
+
+Rigid skinning, positions in bone space (§20.5).
+
+#### `mam` — ManifoldMesh (35 objects, 35 pairs)
+
+Proxy meshes of the `Path/UnderWater/*` scenery, referenced by their `svd`
+(`SceneryItemVisual_Sext::proxy_ref`, libOVLng `sceneryvisual.h`).
+
+| Off | Type | Field | Notes |
+|---|---|---|---|
+| 0x00 | f32[3] | `bbox_min` | +0x0C zero (libOVLng writes 0). |
+| 0x10 | f32[3] | `bbox_max` | +0x1C zero. |
+| 0x20 | u32 | `vertex_count` | |
+| 0x24 | u32 | `triangle_count` | |
+| 0x28 | vertex* | `vertices` | 16 B per vertex: x, y, z, then a word that is 0 everywhere (checked). The JSON holds x, y, z flat. |
+| 0x2C | u16* | `indices` | 3 per triangle (libOVLng pads the array to a multiple of 8 shorts; the pad is outside the field). |
+
+Consumer `FUN_1004f8d48` (via `FUN_1004f85ec`): classifies each vertex as above /
+below a height (y), then walks the triangles and builds the crossing edges — the
+mesh's cross-section at a horizontal plane, i.e. where the water surface cuts the
+underwater path piece.
+
+#### Corrections to §20 (applied to `--types people`)
+
+- `ppg` +0x18 is a selection weight, not a LOD distance (`lod_distance` in
+  `<ovl>.people.json`). `flags[4]` = person_type, sub_type, slot,
+  optional_part_count. +0x10 is not "1 on heads" (4 heads only). +0x14 points to
+  the optional-part chances (not written by PeopleExtractor).
+- `phd` matrix 0 / matrix 1 = hat / face attachment transforms relative to the
+  "Bip01 Head" bone; +0x84 is a runtime slot.
+- `prt` +0x04 is a runtime slot (always 0 on disk).
+- `ssk`: the old "lodCount / lodOffsets / boneWeightIndices" hypothesis
+  (rerct3 loader-structs.md) is refuted; the layout above matches the consumer.
